@@ -1,0 +1,32 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "{2576508A-4321-9719-845A-05828FEDA21E}",
+	"Category": "",
+	"Description": "HypeCubeJam - multiplayer space shooter whose sectors are the vertices of a randomly connected hypercube (UE 5.9, C++)",
+	"Modules": [
+		{
+			"Name": "HypeCubeJam",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"AdditionalDependencies": [ "Engine", "AIModule", "EnhancedInput" ]
+		}
+	],
+	"Plugins": [
+		{ "Name": "EnhancedInput", "Enabled": true },
+		{ "Name": "Niagara", "Enabled": true },
+		{ "Name": "CelestialVault", "Enabled": true },
+		{ "Name": "DaySequence", "Enabled": true },
+		{ "Name": "EOSShared", "Enabled": true },
+		{ "Name": "WmfMedia", "Enabled": true },
+		{ "Name": "ModelContextProtocol", "Enabled": true, "TargetAllowList": [ "Editor" ] },
+		{ "Name": "ToolsetRegistry", "Enabled": true, "TargetAllowList": [ "Editor" ] },
+		{ "Name": "EditorToolset", "Enabled": true, "TargetAllowList": [ "Editor" ] },
+		{ "Name": "ConsoleToolset", "Enabled": true, "TargetAllowList": [ "Editor" ] },
+		{ "Name": "ConfigSettingsToolset", "Enabled": true, "TargetAllowList": [ "Editor" ] },
+		{ "Name": "AutomationTestToolset", "Enabled": true, "TargetAllowList": [ "Editor" ] },
+		{ "Name": "LiveCodingToolset", "Enabled": true, "TargetAllowList": [ "Editor" ] },
+		{ "Name": "InputToolset", "Enabled": true, "TargetAllowList": [ "Editor" ] },
+		{ "Name": "PerfToolset", "Enabled": true, "TargetAllowList": [ "Editor" ] },
+		{ "Name": "SceneCaptureToolset", "Enabled": true, "TargetAllowList": [ "Editor" ] }
+	]
+}

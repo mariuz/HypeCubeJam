@@ -1,0 +1,19 @@
+Portions of this software are copyright © The FreeType Project (http://www.freetype.org). All rights reserved.
+
+HypeCubeJam is made with Unreal Engine. Unreal and its logo are Epic's trademarks or registered trademarks in the US and elsewhere.
+
+Third-party content used in this build (full list: docs/ASSETS.md in the project):
+- Spaceship Modular Star Sparrow - Ebal Studios (Fab): ships
+- Quixel Megascans boulders (Fab): asteroids
+- Space Station 4 by Gerardo Justel (Fab, CC-BY): the space stations
+- Intro video generated with Google Veo (Gemini)
+- Music generated with Google Lyria (Gemini): "Starward Bound" (title menu), "Gravity Well Hunt" (exploring),
+  "Stellar Breach" (combat)
+- Lyra Starter Game - Epic Games (Fab): sound effects and the alternative music stems
+- Hover Vehicles pack (Fab): bolt mesh, glow material, engine and explosion sounds (engine loop: Kenney, kenney.nl, CC0)
+- Niagara Examples - Epic Games (Fab): particle effects
+- CelestialVault plugin content - Epic Games (Unreal Engine): star catalogue, Milky Way, planets, Moon
+  (the HYG star database is by David Nash / astronexus, CC BY-SA 4.0)
+
+Online services: Epic Online Services SDK (EOSSDK-Win64-Shipping.dll), (c) Epic Games, Inc., used for the game
+browser, player statistics and leaderboards. Epic Online Services and its logo are trademarks of Epic Games, Inc.

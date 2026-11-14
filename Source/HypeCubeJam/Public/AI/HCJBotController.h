@@ -1,0 +1,290 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "AIController.h"
+#include "Math/RandomStream.h"
+#include "Game/HCJBalance.h"
+#include "HCJBotController.generated.h"
+
+class AHCJGameState;
+class AHCJPickup;
+class AHCJTurret;
+class AHCJShipCharacter;
+class AHCJUniverse;
+
+/** What a bot is currently doing. */
+UENUM()
+enum class EHCJBotState : uint8
+{
+	/** Fly between random free points of the current sector, looking for hostiles. */
+	Wander,
+	/** Chase, strafe around and shoot TargetShip. */
+	Attack,
+	/** Fly into the portal of TravelDim to reach another sector. */
+	Travel
+};
+
+/**
+ * Bot brain: an AAIController that flies the same AHCJShipCharacter as humans. SERVER ONLY (AI controllers are
+ * never replicated). bWantsPlayerState = true, so each bot has an AHCJPlayerState (IsABot()) and shows on the
+ * scoreboard. Spawned, named, respawned and removed exclusively by AHCJGameMode; the bot never spawns or
+ * destroys ships and never respawns itself - while it has no live ship it simply idles.
+ *
+ * DIFFICULTY: FHCJBotSkill (Game/HCJBalance.h) for the game mode's level - aim error, reaction delay before the
+ * first shot at a new target, turn rate, burst rhythm, the range from which it opens fire, how hard it strafes
+ * and the hull fraction at which it breaks off a fight for a repair pad.
+ *
+ * NO NAVMESH. Steering is direct, in world space, every Tick:
+ *  - thrust:  APawn::AddMovementInput(world direction, scale) on the ship (flying movement uses all three axes);
+ *  - aim:     the bot turns its own control rotation towards DesiredAimPoint at no more than AimTurnRateDeg per
+ *             second; the ship follows the control rotation and the server fires along it;
+ *  - boost / fire: AHCJShipCharacter::SetBoosting / SetFiring.
+ * Decisions (target choice, state changes, hunting) run in Think() every ThinkInterval seconds.
+ *
+ * BEHAVIOUR
+ *  Wander   pick AHCJUniverse::GetRandomFreeLocation in the current sector, fly there, repeat. A hostile in the
+ *           same sector within EngageRange with line of sight -> Attack. After HuntDelay seconds without a
+ *           hostile -> Travel along ChooseTravelDim.
+ *  Attack   target = nearest live hostile ship (any other ship: free-for-all) in the SAME sector. Aim at the lead
+ *           point (ComputeLeadAimPoint) plus a small skill-based error, fire while the aim error is below
+ *           FireConeDeg and line of sight is clear, keep PreferredRange by thrusting towards/away and strafe
+ *           sideways, flipping the strafe direction every few seconds. Target dead, gone from the sector or out
+ *           of sight for LoseTargetSeconds -> Wander.
+ *  Travel   fly to AHCJUniverse::GetPortalWorldTransform(sector, TravelDim) and through it; boost when far.
+ *           When GetCurrentSector() changes (the portal teleported the ship) or TravelTimeout elapses -> Wander.
+ *           A hostile that comes within EngageRange/2 interrupts Travel -> Attack.
+ *  ChooseTravelDim: let H = the sectors of human players' live ships (AHCJPlayerState: !IsABot() and
+ *           GetCurrentSector() != INDEX_NONE), excluding the bot's own sector. If H is not empty take the one
+ *           with the smallest FHCJHypercubeGraph::ShortestDistance and return NextHopDim(current, it); otherwise
+ *           return a random open dimension of the current sector.
+ *  Avoidance (always on): sphere sweep BY OBJECT TYPE ECC_WorldStatic (only asteroid ISMs have that type; ships are
+ *           Pawn, portal triggers and projectiles WorldDynamic), radius AvoidanceProbeRadius, from the ship along the
+ *           desired direction over AvoidanceLookAhead; on a hit, steer along the desired direction projected on
+ *           the plane of the hit normal, blended with the normal. Also steer back towards the sector origin when
+ *           farther than HCJ::SectorFieldRadius from it (never leave the safe radius voluntarily).
+ */
+UCLASS()
+class HYPECUBEJAM_API AHCJBotController : public AAIController
+{
+	GENERATED_BODY()
+
+public:
+	AHCJBotController(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+
+	virtual void Tick(float DeltaTime) override;
+
+	/** Development aid (HCJMenuCmd peace): every bot of this process holds still and holds its fire, for pictures. */
+	static void SetDebugIdle(bool bIdle);
+	/**
+	 * Replaces the engine's focus-based logic: the control rotation is owned by TickAim; this only makes the
+	 * pawn face the control rotation (APawn::FaceRotation) when bUpdatePawn is set.
+	 */
+	virtual void UpdateControlRotation(float DeltaTime, bool bUpdatePawn = true) override;
+
+	EHCJBotState GetBotState() const { return BotState; }
+	/** The possessed ship when it exists and is not dead, else nullptr. */
+	AHCJShipCharacter* GetShip() const;
+	AHCJShipCharacter* GetTargetShip() const { return TargetShip.Get(); }
+
+protected:
+	/** Seeds BotRandom (HCJ::MixSeed of FPlatformTime::Cycles and GetUniqueID). */
+	virtual void PostInitializeComponents() override;
+	/** Resets the brain for the new ship: state Wander, no target, timers cleared, control rotation = pawn rotation. */
+	virtual void OnPossess(APawn* InPawn) override;
+	/** Clears the target and any fire/boost intent. */
+	virtual void OnUnPossess() override;
+
+	// ---- decisions ----
+
+	/** Runs every ThinkInterval: target acquisition and state transitions described in the class comment. */
+	void Think(AHCJShipCharacter& Ship, const AHCJUniverse& Universe);
+	void SetBotState(EHCJBotState NewState);
+	/** Nearest live ship other than Ship in the same sector within MaxRange, or nullptr. */
+	AHCJShipCharacter* FindNearestHostile(const AHCJShipCharacter& Ship, const AHCJUniverse& Universe, float MaxRange) const;
+	/**
+	 * Nearest pad in the ship's sector within MaxRange that holds an item the ship can use right now (repair when
+	 * hurt, shield cell when the shield is down, a weapon when on the blaster, a power-up it does not have) and is
+	 * not behind a rock; nullptr when there is none. Only pads with an item count, so bots never wait at a pad.
+	 */
+	AHCJPickup* FindUsefulPickup(const AHCJShipCharacter& Ship, const AHCJUniverse& Universe, float MaxRange) const;
+	/** Dimension to travel along from FromSector (see class comment); INDEX_NONE when the sector has no portal. */
+	int32 ChooseTravelDim(int32 FromSector, const AHCJUniverse& Universe);
+	void PickWanderPoint(const AHCJShipCharacter& Ship, const AHCJUniverse& Universe);
+	/** No asteroid on the segment between the two ships (line trace by object type ECC_WorldStatic). */
+	bool HasLineOfSight(const AHCJShipCharacter& Ship, const AHCJShipCharacter& Other) const;
+
+	// ---- per-frame behaviour ----
+
+	void TickWander(float DeltaTime, AHCJShipCharacter& Ship, const AHCJUniverse& Universe);
+	void TickAttack(float DeltaTime, AHCJShipCharacter& Ship, const AHCJUniverse& Universe);
+	void TickTravel(float DeltaTime, AHCJShipCharacter& Ship, const AHCJUniverse& Universe);
+
+	/**
+	 * Thrusts towards WorldTarget with obstacle and sector-boundary avoidance applied; Throttle in [0, 1].
+	 * ExtraWorldInput (e.g. strafing) is added before avoidance. Slows down near the target when bArrive is set.
+	 */
+	void SteerTowards(AHCJShipCharacter& Ship, const AHCJUniverse& Universe, const FVector& WorldTarget, float Throttle, bool bArrive, const FVector& ExtraWorldInput = FVector::ZeroVector);
+	/** Desired unit direction corrected by the avoidance rules; returns DesiredDirection when the way is clear. */
+	FVector ComputeAvoidance(const AHCJShipCharacter& Ship, const AHCJUniverse& Universe, const FVector& DesiredDirection) const;
+	/**
+	 * Point to aim at so that a projectile (constant speed AHCJShipCharacter::GetProjectileSpeed, no inherited
+	 * velocity, fired from Ship's muzzle) meets Target assuming Target keeps its current velocity.
+	 * Falls back to Target's location when there is no positive intercept time.
+	 */
+	FVector ComputeLeadAimPoint(const AHCJShipCharacter& Ship, const AHCJShipCharacter& Target) const;
+	/**
+	 * Shield facings: a bot that is breaking off (running for a repair pad, or travelling on) and was hit in the last
+	 * few seconds turns a facing that still holds towards its attacker when one of its facings is weak or down
+	 * (HCJShield::PickFacingToPresent) - it replaces DesiredAimPoint, flight is unaffected (thrust is world space).
+	 * Never while the bot is shooting. It reads only its own facings, which its HUD would show a player.
+	 */
+	void TickShieldFacing(const AHCJShipCharacter& Ship);
+	/**
+	 * Photon torpedoes, every Think while attacking (HCJTorpedo::ShouldBotFire): the bot keeps its target locked (as a
+	 * player's HUD does) and fires a torpedo when the target is in sight, roughly ahead and at a sensible range, and
+	 * the facing the target shows it is down or weak - that is what the target panel tells a player, nothing more - or
+	 * now and then as an opener. How readily depends on the difficulty.
+	 */
+	void ThinkTorpedo(AHCJShipCharacter& Ship, AHCJShipCharacter& Target, float TargetDistance, bool bTargetVisible);
+	/**
+	 * Every Think: a torpedo is homing on this ship (the HUD would say INCOMING TORPEDO) and is close: by chance
+	 * (difficulty) the bot breaks away for a moment - boost, straight away from the torpedo's line of flight
+	 * (SteerTowards does it while EvadeUntilTime runs).
+	 */
+	void ThinkTorpedoEvasion(const AHCJShipCharacter& Ship);
+	/** Turns the control rotation towards DesiredAimPoint, limited by AimTurnRateDeg. */
+	void TickAim(float DeltaTime, const AHCJShipCharacter& Ship);
+	/** Angle in degrees between the ship's aim direction and the direction to WorldPoint. */
+	float GetAimErrorDegrees(const AHCJShipCharacter& Ship, const FVector& WorldPoint) const;
+
+	// ---- tuning ----
+
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float ThinkInterval = 0.25f;
+
+	/** Max control-rotation turn rate, degrees per second. */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float AimTurnRateDeg = 150.0f;
+
+	/** Random aim offset (degrees, re-rolled every think) that keeps bots beatable. */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float AimErrorDeg = 2.0f;
+
+	/** Fire only while the aim error is below this, degrees. */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float FireConeDeg = 6.0f;
+
+	/** Hostiles farther than this are ignored, uu. */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float EngageRange = 16000.0f;
+
+	/** Distance the bot tries to keep to its target, uu. */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float PreferredRange = 3500.0f;
+
+	/** Seconds a target may stay out of sight before it is dropped. */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float LoseTargetSeconds = 3.0f;
+
+	/** Seconds without any hostile in the sector before the bot travels on. */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float HuntDelay = 5.0f;
+
+	/** Give up a Travel that takes longer than this, seconds. */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float TravelTimeout = 25.0f;
+
+	/** Distance at which a wander point counts as reached, uu. */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float ArrivalTolerance = 600.0f;
+
+	/** Boost while the travel/wander target is farther than this, uu. */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float BoostDistance = 6000.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float AvoidanceLookAhead = 3000.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float AvoidanceProbeRadius = 280.0f;
+
+	/** Chance, every few seconds without a hostile ship, that a healthy bot goes for a live turret within TurretAttackRange. */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float TurretAttackChance = 0.35f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float TurretAttackRange = 11000.0f;
+
+	/** A useful pickup this near is fetched when there is nothing to shoot at / in the middle of a fight, uu. */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float PickupSeekRange = 10000.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float PickupDetourRange = 4000.0f;
+
+	/** Clearance from asteroids required for wander points, uu. */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bot")
+	float WanderClearance = 800.0f;
+
+	// ---- runtime state (server) ----
+
+	EHCJBotState BotState = EHCJBotState::Wander;
+
+	TWeakObjectPtr<AHCJShipCharacter> TargetShip;
+
+	/** A station turret the bot has decided to attack (only while no hostile ship is around and it is in good shape). */
+	TWeakObjectPtr<AHCJTurret> TurretGoal;
+	float NextTurretDecisionTime = 0.0f;
+
+	/** The pad the bot is flying to (re-chosen every Think; cleared when its item is gone). */
+	TWeakObjectPtr<AHCJPickup> PickupGoal;
+
+	/** World point the control rotation is turning towards. */
+	FVector DesiredAimPoint = FVector::ZeroVector;
+	bool bHasAimPoint = false;
+
+	FVector WanderPoint = FVector::ZeroVector;
+	bool bHasWanderPoint = false;
+
+	/** Dimension of the portal being travelled to; INDEX_NONE outside Travel. */
+	int32 TravelDim = INDEX_NONE;
+	/** Sector the bot was in when Travel started (arrival = sector differs). */
+	int32 TravelFromSector = INDEX_NONE;
+	/** Dimension of the portal the bot last came through (not picked again for a random hop when avoidable). */
+	int32 LastArrivalDim = INDEX_NONE;
+	/** A wander point not reached by this time is replaced (the bot may be stuck behind a rock). */
+	float WanderPointExpireTime = 0.0f;
+
+	/** Current aim error offset in world space at the target (re-rolled in Think). */
+	FVector AimErrorOffset = FVector::ZeroVector;
+	/** +1 / -1 strafe direction and the time it flips next. */
+	float StrafeSign = 1.0f;
+	float NextStrafeFlipTime = 0.0f;
+
+	// All times are GetWorld()->GetTimeSeconds().
+	float NextThinkTime = 0.0f;
+	float StateEnterTime = 0.0f;
+	float LastHostileSeenTime = 0.0f;
+	float LastTargetVisibleTime = 0.0f;
+
+	/** Skill row of the match's difficulty (AHCJGameMode::GetBotDifficulty), refreshed every Think. */
+	FHCJBotSkill Skill;
+	/** When the current target was taken (the reaction delay runs from here) and this bot's offset in the burst rhythm. */
+	float TargetAcquiredTime = 0.0f;
+	float BurstPhase = 0.0f;
+	/** Low on hull and a repair pad is in the sector: PickupGoal is that pad, the bot stops firing and boosts for it. */
+	bool bRetreating = false;
+
+	/** Torpedo evasion: flying EvadeDirection under boost until EvadeUntilTime; no new decision before NextEvadeDecisionTime. */
+	float EvadeUntilTime = 0.0f;
+	float NextEvadeDecisionTime = 0.0f;
+	FVector EvadeDirection = FVector::ZeroVector;
+	/** The last torpedo this bot fired (no second one at once, whatever the reload says). */
+	float LastTorpedoTime = -1000.0f;
+
+	/** TickShieldFacing: when the next "turns its facing" line may be logged. */
+	float NextShieldTurnLogTime = 0.0f;
+
+	/** Per-bot randomness for behaviour (never used for world generation). */
+	FRandomStream BotRandom;
+};

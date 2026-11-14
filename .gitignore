@@ -1,0 +1,38 @@
+# Unreal build products and caches
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+Build/
+Plugins/*/Binaries/
+Plugins/*/Intermediate/
+
+# IDE / generated project files
+.vs/
+.vscode/
+.idea/
+*.sln
+*.slnx
+*.suo
+*.user
+*.VC.db
+*.opensdf
+*.sdf
+*.xcworkspace
+*.xcodeproj
+
+# logs and crash dumps
+*.log
+*.dmp
+
+# per-user agent settings (the shared .mcp.json is tracked)
+.claude/settings.local.json
+
+# Third-party asset packs (Fab licences do not allow redistributing the files) and large binaries.
+# Only the project's own generated materials under Content/HCJ are tracked; see docs/ASSETS.md.
+Content/*
+!Content/HCJ/
+SourceAssets/
+Packaged/
+Media/raw/
+*.avi
