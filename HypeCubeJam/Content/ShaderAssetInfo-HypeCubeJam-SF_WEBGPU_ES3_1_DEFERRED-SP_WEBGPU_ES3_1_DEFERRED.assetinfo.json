@@ -1,0 +1,1272 @@
+{
+	"AssetInfoVersion": 2,
+	"ShaderCodeToAssets": [
+		{
+			"ShaderMapHash": "00E76B68E727C1E2",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_SpecularGlossiness_Opaque_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "01148F55B7D713F4",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Default_Blend_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "01E66302A567B20E",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Glass"
+			]
+		},
+		{
+			"ShaderMapHash": "025682948A4BF942",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Dirt_Explosion_Small"
+			]
+		},
+		{
+			"ShaderMapHash": "039ABD87B49291EB",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/Trails/NS_RocketTrail"
+			]
+		},
+		{
+			"ShaderMapHash": "03D4737B0C892BBE",
+			"Assets": [
+				"/Engine/EditorLandscapeResources/LayerVisMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "041A7F11C55498E9",
+			"Assets": [
+				"/Engine/EngineMaterials/PhAT_JointLimitMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "04B562C9AAB191D9",
+			"Assets": [
+				"/Engine/EditorMaterials/Dataflow/DataflowTwoSidedVertexMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "052CB439F58ECFC2",
+			"Assets": [
+				"/Engine/BasicShapes/BasicShapeMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "057E8107BF323FF1",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Dirt_Explosion_Small"
+			]
+		},
+		{
+			"ShaderMapHash": "05D11CD455A2D477",
+			"Assets": [
+				"/MeshModelingToolsetExp/Materials/PointSetOverlaidComponentMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "090F0EFF1E1821BB",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/MuzzleFlashes/Materials/Instances/MI_Flipbook_Smoke_Muzzle",
+				"/Game/NiagaraExamples/Materials/MasterMaterials/M_SmokeAndFire_Sprites"
+			]
+		},
+		{
+			"ShaderMapHash": "099D4B73BADD88BD",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_TorpedoStar"
+			]
+		},
+		{
+			"ShaderMapHash": "0A39B1B6697B52C9",
+			"Assets": [
+				"/CelestialVault/Materials/M_CelestialVault"
+			]
+		},
+		{
+			"ShaderMapHash": "0C458DDA82E42C60",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Wood"
+			]
+		},
+		{
+			"ShaderMapHash": "0C529F6A684E8FE2",
+			"Assets": [
+				"/Game/HoverVehicles/Materials/Lights/MAT_Color_PINK"
+			]
+		},
+		{
+			"ShaderMapHash": "0CA9AE08C4338AB4",
+			"Assets": [
+				"/Engine/EditorMaterials/Dataflow/M_Dataflow_CheckerBoard"
+			]
+		},
+		{
+			"ShaderMapHash": "0E6459ED4A342031",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Concrete"
+			]
+		},
+		{
+			"ShaderMapHash": "0E88B17228E18929",
+			"Assets": [
+				"/Engine/EngineDebugMaterials/DebugMeshMaterial",
+				"/Engine/EngineDebugMaterials/M_SimpleUnlitTranslucent"
+			]
+		},
+		{
+			"ShaderMapHash": "104201159CA110F5",
+			"Assets": [
+				"/Game/Megascans/Asteroids/Materials/M_Asteroid"
+			]
+		},
+		{
+			"ShaderMapHash": "1114FDFC9CAEE52B",
+			"Assets": [
+				"/Engine/EngineDebugMaterials/DebugEditorMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "138AED56FDED3208",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MasterMaterials/M_BrightCore"
+			]
+		},
+		{
+			"ShaderMapHash": "1412CA5B0C366C87",
+			"Assets": [
+				"/Engine/EngineMaterials/EmissiveMeshMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "16D3074AFDF73423",
+			"Assets": [
+				"/Game/HoverVehicles/Materials/Various/MAT_Metal_Grey"
+			]
+		},
+		{
+			"ShaderMapHash": "17322D17BD422665",
+			"Assets": [
+				"/ControlRig/Controls/ControlRigGizmoMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "17961477B36326A6",
+			"Assets": [
+				"/Engine/EngineDebugMaterials/M_VolumeRenderSphereTracePP"
+			]
+		},
+		{
+			"ShaderMapHash": "17F941E524FE5271",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Explosion_Small"
+			]
+		},
+		{
+			"ShaderMapHash": "186635F353B50A57",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_NDC/NS_NDC_Impacts"
+			]
+		},
+		{
+			"ShaderMapHash": "18875E08E7C19056",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_SpecularGlossiness_Mask_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "195D316F0CAAF74C",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Glass",
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Wood"
+			]
+		},
+		{
+			"ShaderMapHash": "197910DEC9D79174",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MasterMaterials/M_SimpleOpaque"
+			]
+		},
+		{
+			"ShaderMapHash": "1A0A0DB804945818",
+			"Assets": [
+				"/Game/HoverVehicles/Materials/Panels/CargoPanel/MAT_CargoPanel_Main_inst1"
+			]
+		},
+		{
+			"ShaderMapHash": "1A2EB938759DDB9B",
+			"Assets": [
+				"/Engine/EngineMaterials/Widget3DPassThrough_Opaque"
+			]
+		},
+		{
+			"ShaderMapHash": "1C77CB06A864C400",
+			"Assets": [
+				"/InterchangeAssets/gltf/Substrate/M_GLTF"
+			]
+		},
+		{
+			"ShaderMapHash": "1D14FEBD0CD69670",
+			"Assets": [
+				"/CommonUI/M_UI_HoldProgress"
+			]
+		},
+		{
+			"ShaderMapHash": "1D683E4FB80564BB",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MasterMaterials/M_Sparks"
+			]
+		},
+		{
+			"ShaderMapHash": "1E72AF450DD099B7",
+			"Assets": [
+				"/Engine/EditorMaterials/WidgetVertexColorMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "1E8DE4C51553BD01",
+			"Assets": [
+				"/Game/HoverVehicles/Materials/Lights/MAT_Lights"
+			]
+		},
+		{
+			"ShaderMapHash": "1EE22B180F8E5A2A",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_SpecularGlossiness_Blend_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "20851CAAB33772E0",
+			"Assets": [
+				"/Game/HoverVehicles/Materials/Panels/CargoPanel/MAT_CargoPanel_Metal_inst1"
+			]
+		},
+		{
+			"ShaderMapHash": "219814EC4AEE98E0",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/MuzzleFlashes/NS_MuzzleFlash"
+			]
+		},
+		{
+			"ShaderMapHash": "22297C9FB74E1999",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Explosion_Medium"
+			]
+		},
+		{
+			"ShaderMapHash": "23392E0DA7CADDAF",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MasterMaterials/M_BulletHole"
+			]
+		},
+		{
+			"ShaderMapHash": "254CF5C26840EACF",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_TorpedoBlast"
+			]
+		},
+		{
+			"ShaderMapHash": "254E7146FC726F3B",
+			"Assets": [
+				"/CelestialVault/Materials/M_VelocityProxy",
+				"/Engine/EngineMaterials/RemoveSurfaceMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "25F37A7FCBAB1780",
+			"Assets": [
+				"/CommonUI/VideoPlayerMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "278CE72F38EC5A9C",
+			"Assets": [
+				"/Engine/EngineMaterials/FlattenMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "281B0F979DE627F0",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Sheen_Blend_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "298660891F789AFD",
+			"Assets": [
+				"/Game/HCJ/Backdrop/M_HCJ_BlackHole"
+			]
+		},
+		{
+			"ShaderMapHash": "2C16CE73A31410A0",
+			"Assets": [
+				"/Engine/EngineMaterials/Widget3DPassThrough_Masked_OneSided"
+			]
+		},
+		{
+			"ShaderMapHash": "2C5C3CAB411D3E8D",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_WarpStreaks"
+			]
+		},
+		{
+			"ShaderMapHash": "2DFBB172EF5320E2",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_SpecularGlossiness_Blend"
+			]
+		},
+		{
+			"ShaderMapHash": "2E4C932F568E8F88",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Dirt_Explosion_Small"
+			]
+		},
+		{
+			"ShaderMapHash": "2E662E43554947E2",
+			"Assets": [
+				"/Landmass/Landscape/BlueprintBrushes/Materials/Internal/BrushBounds"
+			]
+		},
+		{
+			"ShaderMapHash": "30780FFBEFD01BA7",
+			"Assets": [
+				"/Game/HCJ/Backdrop/M_HCJ_PlanetRing"
+			]
+		},
+		{
+			"ShaderMapHash": "30E588F84B4F9597",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_ImpactStar"
+			]
+		},
+		{
+			"ShaderMapHash": "32F91F8247B80F92",
+			"Assets": [
+				"/Game/HoverVehicles/Materials/BarrelSciFi/ver1/MAT_HT1_BarrelSciFi_Main_inst1",
+				"/Game/HoverVehicles/Materials/MAT_MasterMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "33A7784F2905CC52",
+			"Assets": [
+				"/Niagara/DefaultAssets/M_Gnomon"
+			]
+		},
+		{
+			"ShaderMapHash": "33E23E196FE99C4E",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MI_SimpleDebris_Translucent"
+			]
+		},
+		{
+			"ShaderMapHash": "363BC4C248543910",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MasterMaterials/M_Quixel_Simple"
+			]
+		},
+		{
+			"ShaderMapHash": "37F4E328EBDD4DE4",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MI_SmokePuffLight_8x8"
+			]
+		},
+		{
+			"ShaderMapHash": "3820ED7C50C14FA1",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MasterMaterials/M_GlassShard"
+			]
+		},
+		{
+			"ShaderMapHash": "387C8E95C69876F9",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Explosion"
+			]
+		},
+		{
+			"ShaderMapHash": "38D3EAF002383EEB",
+			"Assets": [
+				"/CelestialVault/Materials/M_Stars",
+				"/CelestialVault/Materials/MI_Stars"
+			]
+		},
+		{
+			"ShaderMapHash": "3961C68A3FE53F9F",
+			"Assets": [
+				"/InterchangeAssets/gltf/M_Transmission"
+			]
+		},
+		{
+			"ShaderMapHash": "3A7489CD79362B1C",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Metal"
+			]
+		},
+		{
+			"ShaderMapHash": "3AEB374F5C4F8A57",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_ShieldBubble"
+			]
+		},
+		{
+			"ShaderMapHash": "3B09C89817B75F62",
+			"Assets": [
+				"/Engine/VREditor/TransformGizmo/TranslucentTransformGizmoMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "3CC4ED4EBB1AF635",
+			"Assets": [
+				"/Engine/BasicShapes/M_Cube_WorldGridMaterial_8D67460644F5AEE976EC80B26230FFEB"
+			]
+		},
+		{
+			"ShaderMapHash": "3E68D9C6D9FD5809",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Sheen_Blend"
+			]
+		},
+		{
+			"ShaderMapHash": "3F14A0455F3322E1",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_ShipGlint"
+			]
+		},
+		{
+			"ShaderMapHash": "3F2C83B054E8943F",
+			"Assets": [
+				"/Engine/EngineMaterials/Widget3DPassThrough_Translucent"
+			]
+		},
+		{
+			"ShaderMapHash": "41680EFE87AA10B2",
+			"Assets": [
+				"/Paper2D/OpaqueUnlitSpriteMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "48420D7AA6B40FE2",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Explosion"
+			]
+		},
+		{
+			"ShaderMapHash": "48A2DAC8C55272BF",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_SpecularGlossiness_Mask"
+			]
+		},
+		{
+			"ShaderMapHash": "48F565A5426B6359",
+			"Assets": [
+				"/Game/HoverVehicles/Materials/BarrelOil/ver1/MAT_HT1_BarrelOil_Main_inst1",
+				"/Game/HoverVehicles/Materials/HoverTank1/MAT_HT1_head_Main_inst1"
+			]
+		},
+		{
+			"ShaderMapHash": "4AF16A694EB2CDC8",
+			"Assets": [
+				"/Engine/EditorLandscapeResources/LandscapeDirtyMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "4DD10C601386E4FE",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_ClearCoat_Mask"
+			]
+		},
+		{
+			"ShaderMapHash": "501E7B2E28C43CDA",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/MuzzleFlashes/Materials/Instances/MI_Flipbook_Pyro_Muzzle",
+				"/Game/NiagaraExamples/FX_Weapons/MuzzleFlashes/Materials/Instances/MI_MuzzleFlash_Sphere"
+			]
+		},
+		{
+			"ShaderMapHash": "520B550A8A248C33",
+			"Assets": [
+				"/Game/HCJ/Backdrop/M_HCJ_PlanetSurface"
+			]
+		},
+		{
+			"ShaderMapHash": "52468EC1363BFFE3",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Concrete",
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Glass",
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Metal",
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Wood"
+			]
+		},
+		{
+			"ShaderMapHash": "526270E668065726",
+			"Assets": [
+				"/Engine/EngineMaterials/Widget3DPassThrough",
+				"/Engine/EngineMaterials/Widget3DPassThrough_Translucent_OneSided"
+			]
+		},
+		{
+			"ShaderMapHash": "54743A06CB56FBF4",
+			"Assets": [
+				"/Engine/EngineMaterials/DefaultPostProcessMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "5562C160AC36600A",
+			"Assets": [
+				"/Engine/EditorLandscapeResources/LandscapeLayerUsageMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "557EB21E08CCE3FA",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_ClearCoat_Opaque_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "5893CBEDF2024A14",
+			"Assets": [
+				"/Engine/EngineMaterials/NaniteHiddenSectionMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "59BAA6399E01776D",
+			"Assets": [
+				"/SpeedTreeImporter/SpeedTree9/SpeedTreeMaster"
+			]
+		},
+		{
+			"ShaderMapHash": "59DC87775CAFE496",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_ClearCoat_Mask_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "5B1D86C2164BCBA1",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Transmission_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "5B67FE26BD68A5D5",
+			"Assets": [
+				"/Game/HoverVehicles/EpicGamesContent/ExampleContent/Materials/MAT_CarPaint"
+			]
+		},
+		{
+			"ShaderMapHash": "5D3F5DE6322E865F",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Default_Mask"
+			]
+		},
+		{
+			"ShaderMapHash": "5DF4277D40B75A36",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Sheen_Mask"
+			]
+		},
+		{
+			"ShaderMapHash": "63452D1E6D3EE797",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Glass",
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Wood"
+			]
+		},
+		{
+			"ShaderMapHash": "63A7548CCAA0AA19",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_PortalRunes"
+			]
+		},
+		{
+			"ShaderMapHash": "649FBC6325A77BB0",
+			"Assets": [
+				"/Engine/EngineMaterials/GizmoMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "6625A4298A5D2399",
+			"Assets": [
+				"/Engine/EditorLandscapeResources/SelectBrushMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "6AFEAE1E39548D7D",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Explosion_Medium"
+			]
+		},
+		{
+			"ShaderMapHash": "6EDFF11C1B167728",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Metal"
+			]
+		},
+		{
+			"ShaderMapHash": "6FB5FBE4E5D3EB66",
+			"Assets": [
+				"/Engine/VREditor/SnapGrid/SnapGridMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "719297F7521FB444",
+			"Assets": [
+				"/Engine/EditorMaterials/Camera/CineMat"
+			]
+		},
+		{
+			"ShaderMapHash": "7229EDD219F65B08",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Dirt_Explosion_Medium"
+			]
+		},
+		{
+			"ShaderMapHash": "72450C013E31124E",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_ShipRim"
+			]
+		},
+		{
+			"ShaderMapHash": "725B2AF432617A1E",
+			"Assets": [
+				"/ControlRig/M_Manip"
+			]
+		},
+		{
+			"ShaderMapHash": "76E1AC24C14C4722",
+			"Assets": [
+				"/Game/HoverVehicles/Materials/Lights/MAT_Lights_Gradient_v6"
+			]
+		},
+		{
+			"ShaderMapHash": "7C856115A2CF53A4",
+			"Assets": [
+				"/Engine/EngineMaterials/PPM_DefaultCalibrationGrayscale"
+			]
+		},
+		{
+			"ShaderMapHash": "7D254E8866C824F9",
+			"Assets": [
+				"/HairStrands/Materials/HairDefaultMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "7F392C05308DD191",
+			"Assets": [
+				"/Engine/EngineMaterials/Widget3DPassThrough_OutputDepthAndVelocity",
+				"/Engine/EngineMaterials/Widget3DPassThrough_Translucent_OutputDepthAndVelocity_OneSided"
+			]
+		},
+		{
+			"ShaderMapHash": "81D772BD08D67621",
+			"Assets": [
+				"/Engine/EngineMaterials/DefaultDeferredDecalMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "821734497C3598C7",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MI_SmokeTrail_2x16"
+			]
+		},
+		{
+			"ShaderMapHash": "8319DC3E2CB7F71B",
+			"Assets": [
+				"/CelestialVault/Materials/M_Moon"
+			]
+		},
+		{
+			"ShaderMapHash": "84DAFFEA743E556E",
+			"Assets": [
+				"/Engine/EditorLandscapeResources/MaskBrushMaterial",
+				"/Engine/EditorLandscapeResources/MaskBrushMaterial_MaskedRegion"
+			]
+		},
+		{
+			"ShaderMapHash": "8780666EEFAB3106",
+			"Assets": [
+				"/Game/HCJ/Backdrop/M_HCJ_Planet"
+			]
+		},
+		{
+			"ShaderMapHash": "8A5C1CD4EA823072",
+			"Assets": [
+				"/Engine/EngineMaterials/M_InvalidLightmapSettings"
+			]
+		},
+		{
+			"ShaderMapHash": "91AFBB6A52BA39BE",
+			"Assets": [
+				"/Niagara/DefaultAssets/DefaultSpriteMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "94A3202A46CC0B6A",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/Trails/NS_RocketTrail"
+			]
+		},
+		{
+			"ShaderMapHash": "955D2791EF4956D6",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Explosion_Medium"
+			]
+		},
+		{
+			"ShaderMapHash": "95E62D66F49993BA",
+			"Assets": [
+				"/Engine/EngineMaterials/PPM_DefaultCalibrationColor"
+			]
+		},
+		{
+			"ShaderMapHash": "9860BC95BD42E686",
+			"Assets": [
+				"/Game/StarSparrow/Materials/M_StarSparrow"
+			]
+		},
+		{
+			"ShaderMapHash": "9957D3166E684061",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MI_ExplosionRoil_8x8"
+			]
+		},
+		{
+			"ShaderMapHash": "9B1F1DAFE08B5997",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MasterMaterials/M_Pebbles"
+			]
+		},
+		{
+			"ShaderMapHash": "9FE7D39DEE67390E",
+			"Assets": [
+				"/Engine/EditorMaterials/PhAT_UnselectedMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "A41F647193604920",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Unlit_Mask",
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Unlit_Mask_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "A49B99282184B650",
+			"Assets": [
+				"/Game/NiagaraExamples/StaticMesh/TestLODsMaterials/M_LODS"
+			]
+		},
+		{
+			"ShaderMapHash": "A4BF3028AB4ED609",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_PortalSwirl"
+			]
+		},
+		{
+			"ShaderMapHash": "A5B30C9E648751C7",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_PhaserBeam"
+			]
+		},
+		{
+			"ShaderMapHash": "A6EB32FEED3300D1",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_ClearCoat_Blend_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "A9766D0A8AFD7CEE",
+			"Assets": [
+				"/Engine/EditorMaterials/Dataflow/DataflowTwoSidedVertexMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "AA47741DD56537A0",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_EngineTrail"
+			]
+		},
+		{
+			"ShaderMapHash": "AA929ABB8FB38C74",
+			"Assets": [
+				"/CommonUI/M_UI_VirtualPointer"
+			]
+		},
+		{
+			"ShaderMapHash": "AB1ADBA8302F14B9",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_ClearCoat_Blend"
+			]
+		},
+		{
+			"ShaderMapHash": "AC4EB796B6D4A830",
+			"Assets": [
+				"/Landmass/Landscape/BlueprintBrushes/Materials/Sprite/M_BrushSprite_01"
+			]
+		},
+		{
+			"ShaderMapHash": "B08DDF47AC056B62",
+			"Assets": [
+				"/Engine/EngineMaterials/BaseFlattenMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "B13149AD244E6EAE",
+			"Assets": [
+				"/InterchangeAssets/gltf/M_Sheen"
+			]
+		},
+		{
+			"ShaderMapHash": "B19C59B8D68D6356",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MasterMaterials/M_Flare"
+			]
+		},
+		{
+			"ShaderMapHash": "B2BE2B2974ED3F84",
+			"Assets": [
+				"/Engine/EngineMaterials/FlattenMaterial_VT"
+			]
+		},
+		{
+			"ShaderMapHash": "B36FD7F04CD0C1BA",
+			"Assets": [
+				"/Game/HCJ/Backdrop/M_HCJ_Nebula"
+			]
+		},
+		{
+			"ShaderMapHash": "B44D97118A4A2B78",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Default_Mask_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "B66FAAF7730E8535",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Default_Blend"
+			]
+		},
+		{
+			"ShaderMapHash": "B6C88639E7336E1A",
+			"Assets": [
+				"/CelestialVault/Materials/M_Stars_EnergyConservative"
+			]
+		},
+		{
+			"ShaderMapHash": "B7B45317A4AF1E21",
+			"Assets": [
+				"/Engine/EngineMaterials/Widget3DPassThrough_Masked"
+			]
+		},
+		{
+			"ShaderMapHash": "B7D5765583D267D9",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Explosion_Small"
+			]
+		},
+		{
+			"ShaderMapHash": "B89998D45F441200",
+			"Assets": [
+				"/Engine/EngineMaterials/FlattenMaterial_WS_Normal_VT"
+			]
+		},
+		{
+			"ShaderMapHash": "B9493A73A69AA14B",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MasterMaterials/M_SimpleDebris"
+			]
+		},
+		{
+			"ShaderMapHash": "B98D6A0C464C2508",
+			"Assets": [
+				"/Game/HoverVehicles/Materials/LampPole/MAT_LampPole"
+			]
+		},
+		{
+			"ShaderMapHash": "BBBA9890EEC73DC9",
+			"Assets": [
+				"/CelestialVault/Materials/m_SimpleVolumetricCloud_TOD"
+			]
+		},
+		{
+			"ShaderMapHash": "BDBD4DEA2DA9043A",
+			"Assets": [
+				"/Game/HCJ/Cinematic/M_HCJ_DecorRock"
+			]
+		},
+		{
+			"ShaderMapHash": "BF72E206145D1B66",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MasterMaterials/M_TracerRibbon"
+			]
+		},
+		{
+			"ShaderMapHash": "BF7A403D70749AC8",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MasterMaterials/M_BulletHole_Glass"
+			]
+		},
+		{
+			"ShaderMapHash": "C22FB1234B61D237",
+			"Assets": [
+				"/InterchangeAssets/gltf/M_Default"
+			]
+		},
+		{
+			"ShaderMapHash": "C3FB020D1AEE24FB",
+			"Assets": [
+				"/Engine/EngineMaterials/DefaultMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "C4D557E9F807700D",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Concrete"
+			]
+		},
+		{
+			"ShaderMapHash": "C92E6BD818F12141",
+			"Assets": [
+				"/InterchangeAssets/gltf/M_SpecularGlossiness"
+			]
+		},
+		{
+			"ShaderMapHash": "CA8674F3B13CBD6E",
+			"Assets": [
+				"/InterchangeAssets/gltf/M_ClearCoat"
+			]
+		},
+		{
+			"ShaderMapHash": "CB3C0BC03D47C083",
+			"Assets": [
+				"/Engine/VREditor/TransformGizmo/Xray"
+			]
+		},
+		{
+			"ShaderMapHash": "CC936AAC696D364F",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_PortalRays"
+			]
+		},
+		{
+			"ShaderMapHash": "CFC5C0DE486367EA",
+			"Assets": [
+				"/Paper2D/DefaultSpriteMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "D14484D9CF8E546F",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Dirt_Explosion_Medium"
+			]
+		},
+		{
+			"ShaderMapHash": "D1E147EBDB7D202B",
+			"Assets": [
+				"/ControlRig/Controls/ControlRigXRayMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "D3EB549C2F635CF9",
+			"Assets": [
+				"/Engine/EngineMaterials/DefaultTextMaterialOpaque"
+			]
+		},
+		{
+			"ShaderMapHash": "D467E129C8B3410E",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Concrete"
+			]
+		},
+		{
+			"ShaderMapHash": "D6D35F524101EA15",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Sheen_Opaque_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "D82B7C54496430E0",
+			"Assets": [
+				"/Engine/VREditor/TransformGizmo/TransformGizmoMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "D84760E67B8889EA",
+			"Assets": [
+				"/Engine/EngineMaterials/WorldGridMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "D874276DBF2A20A6",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_ExplosionFlare"
+			]
+		},
+		{
+			"ShaderMapHash": "D9CA65497CFB3414",
+			"Assets": [
+				"/Game/HoverVehicles/Materials/Lights/MAT_Blue_Light"
+			]
+		},
+		{
+			"ShaderMapHash": "D9D2553BEF2CC51E",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Dirt_Explosion_Medium"
+			]
+		},
+		{
+			"ShaderMapHash": "DA69DC967F8E06F2",
+			"Assets": [
+				"/SpeedTreeImporter/SpeedTree9/SpeedTreeBillboardMaster"
+			]
+		},
+		{
+			"ShaderMapHash": "DB5C57997DAF2613",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Dirt_Explosion"
+			]
+		},
+		{
+			"ShaderMapHash": "DBB46AC869EC0C0D",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Sheen_Mask_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "DBF1F15C9E574040",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MasterMaterials/M_Tracer"
+			]
+		},
+		{
+			"ShaderMapHash": "DD3C5EBA5404356E",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Default_Opaque_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "DFE8B75A34B05039",
+			"Assets": [
+				"/Engine/EditorLandscapeResources/SplineEditorMeshMat"
+			]
+		},
+		{
+			"ShaderMapHash": "E0985E71396B8C21",
+			"Assets": [
+				"/Engine/EngineSky/M_SimpleSkyDome"
+			]
+		},
+		{
+			"ShaderMapHash": "E155F2F1EE2467AB",
+			"Assets": [
+				"/DaySequence/M_24HrSky"
+			]
+		},
+		{
+			"ShaderMapHash": "E22839A1D4E73382",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Dirt_Explosion"
+			]
+		},
+		{
+			"ShaderMapHash": "E2A3A2C403BB036C",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_Cloak"
+			]
+		},
+		{
+			"ShaderMapHash": "E2C1E59078D20001",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_NDC/NS_NDC_Impacts"
+			]
+		},
+		{
+			"ShaderMapHash": "E4F8239A530446A5",
+			"Assets": [
+				"/Engine/EditorMaterials/PreviewShadowIndicatorMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "E5DD8180DF94D2D5",
+			"Assets": [
+				"/HairStrands/Materials/HairMeshesDefaultMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "E64D0F075D5F1F59",
+			"Assets": [
+				"/InterchangeAssets/gltf/M_Unlit"
+			]
+		},
+		{
+			"ShaderMapHash": "E7ED1C584FCF00AD",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Explosion_Small"
+			]
+		},
+		{
+			"ShaderMapHash": "E8EF30F41A823964",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MasterMaterials/M_Decal_SubUV"
+			]
+		},
+		{
+			"ShaderMapHash": "E91ABA5F4BAAD80B",
+			"Assets": [
+				"/MeshModelingToolsetExp/Materials/LineSetOverlaidComponentMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "EA45148A6FCA4512",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_EngineJet"
+			]
+		},
+		{
+			"ShaderMapHash": "EA477151E7B85252",
+			"Assets": [
+				"/Engine/EngineMaterials/Widget3DPassThrough_Translucent_OutputDepthAndVelocity"
+			]
+		},
+		{
+			"ShaderMapHash": "EBB3F638DE09A5FA",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/MuzzleFlashes/Meshes/M_BulletShell_FX"
+			]
+		},
+		{
+			"ShaderMapHash": "EC2A601C87B0227F",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MI_RocketTrail_8x8",
+				"/Game/NiagaraExamples/Materials/MI_SmokePuffLight_8x8_Emissive",
+				"/Game/NiagaraExamples/Materials/MI_SmokeWispy_8x8_Emissive"
+			]
+		},
+		{
+			"ShaderMapHash": "EC618110AC027950",
+			"Assets": [
+				"/HairStrands/Materials/HairCardsDefaultMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "EE4E169B60A2C02D",
+			"Assets": [
+				"/Game/HoverVehicles/Materials/HoverTank1/MAT_HT1_GunLarge_Main_inst1"
+			]
+		},
+		{
+			"ShaderMapHash": "EF6689D547885A39",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Explosion"
+			]
+		},
+		{
+			"ShaderMapHash": "F0A40CD92C7560B1",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Unlit_Opaque_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "F130942DDF995E91",
+			"Assets": [
+				"/Engine/EngineMaterials/Widget3DPassThrough_Opaque_OneSided"
+			]
+		},
+		{
+			"ShaderMapHash": "F13764E188D95C02",
+			"Assets": [
+				"/Engine/EditorMaterials/Dataflow/DataflowSelection"
+			]
+		},
+		{
+			"ShaderMapHash": "F314DBC7FF6A2B56",
+			"Assets": [
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Unlit_Blend",
+				"/InterchangeAssets/gltf/MaterialInstances/MI_Unlit_Blend_DS"
+			]
+		},
+		{
+			"ShaderMapHash": "F3E578AD93267057",
+			"Assets": [
+				"/Engine/EngineSky/M_Sky_Panning_Clouds2"
+			]
+		},
+		{
+			"ShaderMapHash": "F441D661A4BE95EE",
+			"Assets": [
+				"/Niagara/DefaultAssets/DefaultRIbbonMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "F4B646096EBB36C9",
+			"Assets": [
+				"/Game/HoverVehicles/Materials/Various/MAT_Logo_Thunder"
+			]
+		},
+		{
+			"ShaderMapHash": "F4B6DD91028FFB4E",
+			"Assets": [
+				"/CelestialVault/Materials/M_Planets"
+			]
+		},
+		{
+			"ShaderMapHash": "F576EA83B76CF017",
+			"Assets": [
+				"/Engine/VREditor/TransformGizmo/Main"
+			]
+		},
+		{
+			"ShaderMapHash": "F5868DEC525EC835",
+			"Assets": [
+				"/Engine/EditorLandscapeResources/ColorMaskBrushMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "F6AC341C3EC79AE5",
+			"Assets": [
+				"/Engine/EditorMaterials/PhAT_NoCollisionMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "F74AD40B2DF5D7F3",
+			"Assets": [
+				"/Engine/EditorLandscapeResources/SelectBrushMaterial_SelectedRegion"
+			]
+		},
+		{
+			"ShaderMapHash": "F8322F68414E8D7B",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Explosions/NS_Dirt_Explosion"
+			]
+		},
+		{
+			"ShaderMapHash": "F886644265463F26",
+			"Assets": [
+				"/Engine/EditorMaterials/Dataflow/DataflowVertexMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "F8F28F67AA3B1491",
+			"Assets": [
+				"/Game/NiagaraExamples/Materials/MI_Explosion_Decal"
+			]
+		},
+		{
+			"ShaderMapHash": "F9A5EAFFD233CCC8",
+			"Assets": [
+				"/Game/NiagaraExamples/FX_Weapons/MuzzleFlashes/Materials/M_MuzzleFlash_Distortion"
+			]
+		},
+		{
+			"ShaderMapHash": "FB85317028D176D1",
+			"Assets": [
+				"/Engine/EngineMaterials/DefaultLightFunctionMaterial"
+			]
+		},
+		{
+			"ShaderMapHash": "FC5ADA4185C1BAFC",
+			"Assets": [
+				"/HairStrands/Materials/HairDebugMaterial"
+			]
+		}
+	]
+}
