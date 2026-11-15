@@ -2780,6 +2780,36 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
       - The web (Wasm) build was not compiled: nothing Windows-only was added, the only new engine calls are Enhanced
         Input, Slate and `FInputKeyEventArgs` (the last one in non-shipping code only).
 
+## 15 Nov 2026 (twenty-second session) - web build of 0.20.0 rebuilt
+37. The web (Wasm) build made again from commit 2a4f1ea (0.20.0, the game controller; tree clean) by item 28's
+    procedure, as in item 35. Nothing was committed, pushed or uploaded.
+    - Package: `PackagedWeb\Ship` deleted, then the Shipping BuildCookRun (log `PackagedWeb\logs\bcr_ship5.log`):
+      exit code 0, BUILD SUCCESSFUL, 23 min 30 s (compile, link and wasm-opt 910 s; the cook 66.5 s). **The
+      controller code compiled for Wasm as it is - no source change.** Cook: 1095 packages, 1032 cooked, 63 skipped
+      for the platform, "Success - 0 error(s), 0 warning(s)". One warning in the log, the linker's known
+      `-pthread + ALLOW_MEMORY_GROWTH` line.
+    - Stage `PackagedWeb\Ship\Wasm`: 56 files, 300 780 996 bytes with the `.br` copies; 33 files without them. Wasm
+      142 485 106 bytes (26.6 MB as Brotli; +47 749 bytes of code), container `.ucas` **99 492 320 bytes**, the same
+      as in item 35 (no new content; 507 680 bytes under 100 000 000), pak 9 158 691.
+    - `check_stage.py`: all passed, release scan 0 findings (1 warning, the stock engine font path).
+      `web_secret_scan.py` with UnrealPak: 56 staged files and 1077 extracted files (84 ini), 0 hits, RESULT clean.
+    - Browser (harness, off-screen Chrome, deferred tier, `hcj_click_play`, fixture unchanged - the PLAY click at
+      y 425 still hits): `PackagedWeb\runs\ship5_deferred` (engine server, port 8090): PASS, READY after 4.4 s,
+      0 WebGPU errors, no error line in the console log; `title.png` is the title page as before (Difficulty row,
+      PLAY, HANGAR, Bots, Hypercube, seed, pilot name, CONTROLS / SETTINGS / QUIT, keyboard prompts); `match_a..c.png`
+      show a 4-D match with bots (HUD, hypercube map, kill feed, enemy markers, the player's ship killed twice).
+      `PackagedWeb\runs\pages5_noheaders` (the GitHubPages folder from `web_plain_server.py`, port 8091): "PAGE
+      ISOLATION reload under the service worker", compatibility check passed after the reload, READY after 5.7 s,
+      PASS, the match runs. Both servers stopped. The harness needs the engine's Python
+      (`Engine\Binaries\ThirdParty\Python3\Win64\python.exe`; the system Python has no `playwright`).
+    - `PackagedWeb\GitHubPages` (deleted, then `web_split_for_pages.py`, exit 0): **36 files, 261 667 317 bytes**,
+      the wasm in three parts (50 000 000 + 50 000 000 + 42 485 106), the container 99 492 320 as it is, no `.br`,
+      `.nojekyll` there; no file of 100 000 000 bytes or more (so none near 100 MiB = 104 857 600 either).
+    - Not verified: **a controller in the browser** (none attached; no pad input was sent, and the yellow focus
+      frame is not visible on PLAY in `title.png` - only its green highlight), the SETTINGS page and its controller
+      row on the web, the forward tier, the 10-minute soak, sound by ear, the site on GitHub Pages itself, other
+      browsers. `PackagedWeb\itch` and the itch zip are still the old build (item 28).
+
 ## Measurements
 - Automation tests: 9 at the start, 81 now (item 36: 81 of 81; items 33 and 34: 77 of 77), all passing (added: the game controller - aim stick, switch, menu focus, prompt names -; the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station
