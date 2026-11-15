@@ -27,7 +27,7 @@ Before the controller work I played build 0.19.0 twice on Easy. The first match 
 - The aim stick has no invert option and no smoothing, and there is no vibration.
 - Text boxes (seed, pilot name, address) cannot be filled with a controller, and two actions (hold target, hints) have no controller button.
 - The packaged playthrough suite failed 2 of 8 scenarios once (a bot stuck for 21 seconds on its way to a pickup) and passed on the rerun. The cause is not known.
-- I still have not said how the computer voice sounds; nobody has judged it by ear on purpose.
+- Nobody has judged the computer voice by ear on purpose yet.
 - Online play between two PCs is still untested, and internet play needs UDP port 7777 forwarded on the host.
 
 Made by one person directing AI coding agents (Claude Code with Unreal Engine 5.9). Source: https://github.com/mariuz/HypeCubeJam
