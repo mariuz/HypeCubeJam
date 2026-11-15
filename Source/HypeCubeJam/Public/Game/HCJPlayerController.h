@@ -72,6 +72,13 @@ public:
 	/** Actions of the menu widget (local). */
 	void MenuPlay();
 	/**
+	 * In-match menu of the host: the bot difficulty one step up or down, for the running match and for the next ones
+	 * (the setting is saved). Does nothing on a client.
+	 */
+	void MenuStepDifficulty(int32 Step);
+	/** The level the running match is played at when this machine is the host, else the level of the settings. */
+	int32 GetMenuDifficulty() const;
+	/**
 	 * QUICK PLAY: searches the lobbies of Epic Online Services for an open match of this version and joins the best
 	 * one; hosts a match (advertised as a lobby, bots filling in) when there is none or the join fails; plays a local
 	 * match against bots when the service is not there. The steps are FHCJQuickPlay (Online/HCJEosLogic.h), kept by
@@ -105,6 +112,11 @@ public:
 	float GetLastDamageTime() const { return LastDamageTime; }
 	FVector GetLastDamageSource() const { return LastDamageSource; }
 	float GetLastDamageAmount() const { return LastDamageAmount; }
+	/**
+	 * Local: where that damage came from, seen from the own ship at that moment - the angle in degrees between its nose
+	 * and the direction to the source (0 dead ahead, 180 dead astern); -1 when there was no ship to measure from.
+	 */
+	float GetLastDamageBearingDeg() const { return LastDamageBearingDeg; }
 
 	// ---- target lock (local) ----
 
@@ -145,6 +157,22 @@ public:
 
 	virtual void PlayerTick(float DeltaTime) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+	// ---- the death camera (local, cosmetic) ----
+
+	/**
+	 * Local: the own ship was destroyed at Location while flying with Velocity; its blast comes BlastDelay seconds
+	 * later. Until the next ship the view (CalcCamera: this controller is the view target while it has no pawn) starts
+	 * where the chase camera was, pulls back UHCJAssetSettings::DeathCameraPullBack and turns slowly round the wreck,
+	 * which it keeps in the middle - before, it sat at the place of the ship, inside its own explosion. It stays out
+	 * of rocks (one line trace) and takes the shake of the blast. Nothing of this reaches the server.
+	 */
+	void NotifyOwnShipDestroyed(const FVector& Location, const FVector& Velocity, float BlastDelay);
+	/** Local world seconds since the blast of the own ship: negative before it, very large when there was none. The HUD flashes on it. */
+	float GetOwnBlastAge() const;
+	/** A pawn that is not a destroyed ship. The wreck stays this controller's pawn for a moment on a client (two actors, two updates). */
+	bool HasLivePawn() const;
+	virtual void CalcCamera(float DeltaTime, FMinimalViewInfo& OutResult) override;
 
 	/** Local: true while the scoreboard key is held. The HUD also forces the scoreboard during Intermission. */
 	bool IsScoreboardVisible() const { return bScoreboardVisible; }
@@ -382,9 +410,64 @@ protected:
 	/** Local world time at which the first ship of this controller appeared; negative before. */
 	float FirstShipTime = -1.0f;
 
+	/** The death camera: where the wreck is and drifts, and the view at the moment the ship was lost. */
+	struct FDeathCamera
+	{
+		bool bActive = false;
+		FVector Wreck = FVector::ZeroVector;
+		FVector Velocity = FVector::ZeroVector;
+		FVector StartLocation = FVector::ZeroVector;
+		FRotator StartRotation = FRotator::ZeroRotator;
+		float StartFOV = 95.0f;
+		/** Local world time of the death and of the blast. */
+		float StartTime = -1000.0f;
+		float BlastTime = -1000.0f;
+	};
+	FDeathCamera DeathCamera;
+
+	/**
+	 * Development (-HCJBlastBench=<enemy|own|crowd>[,<count>[,<distance uu>[,<sector>]]]; listen host): measures what an
+	 * explosion costs. Per round: the scene is set (HCJMenuCmd scene <sector>,dark; bots held still), the frame times
+	 * of a second and a half without anything are taken, then a ship is blown up - a bot parked <distance> ahead, the
+	 * own ship, or (crowd) four bots parked side by side from <distance> on, all in one frame - and the frame times of
+	 * the next three and a half seconds. One "BlastBench:" log line per round (mean, median, 95th percentile and
+	 * longest frame, the means of the first half second / the next second / the rest, the slowest half second) and
+	 * one at the end, which leaves the first round out (it compiles shaders in the editor binary). No picture is
+	 * taken while it runs (run it without -HCJCapture).
+	 */
+	struct FBlastBench
+	{
+		/** 0 off, 1 a bot ahead, 2 the own ship, 3 four bots at once. */
+		int32 Mode = 0;
+		int32 Total = 0;
+		int32 Done = 0;
+		float Distance = 1500.0f;
+		int32 Sector = 5;
+		/** 0 waiting for a ship, 1 settling, 2 reference, 3 blast. */
+		int32 Phase = 0;
+		double PhaseTime = 0.0;
+		bool bParked = false;
+		TArray<float> Reference;
+		TArray<float> Blast;
+		/** Sums over the rounds after the first. */
+		int32 NumCounted = 0;
+		double SumReference = 0.0;
+		double SumReferenceMedian = 0.0;
+		double SumBlast = 0.0;
+		double SumBlastMedian = 0.0;
+		double SumP95 = 0.0;
+		double SumFirstHalf = 0.0;
+		double SumSlowestHalf = 0.0;
+		float WorstFrame = 0.0f;
+		float WorstHalfSecond = 0.0f;
+	};
+	FBlastBench BlastBench;
+	void TickBlastBench();
+
 	float LastDamageTime = -1000.0f;
 	FVector LastDamageSource = FVector::ZeroVector;
 	float LastDamageAmount = 0.0f;
+	float LastDamageBearingDeg = -1.0f;
 
 	uint8 LastPickupItem = 0;
 	float LastPickupTime = -1000.0f;

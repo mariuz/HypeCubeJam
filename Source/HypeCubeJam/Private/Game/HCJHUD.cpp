@@ -8,6 +8,10 @@
 #include "Engine/Font.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "HypeCubeJam.h"
+#include "Game/HCJBalance.h"
 #include "Game/HCJUiLogic.h"
 #include "Game/HCJUserSettings.h"
 #include "UI/HCJHints.h"
@@ -113,16 +117,39 @@ void AHCJHUD::DrawHUD()
 		DrawRadar(*Ship, *GameState);
 	}
 
+	else if (Controller != nullptr && !bIntermission)
+	{
+		DrawDeathFlash(*Controller);
+	}
+
 	// After the labels: the hints use what they found out about the sector.
 	UpdateHints(LiveShip, *GameState, Controller);
 
 	DrawMatchInfo(*GameState, LocalPlayerState, LocalSector);
 
-	const float ScaledMapSize = MapSize * UIScale;
-	DrawHypercubeMap(*GameState, FVector2D(Canvas->ClipX - Margin - ScaledMapSize, Margin), ScaledMapSize, LocalSector);
-	const float LegendHeight = DrawMapLegend(FVector2D(Canvas->ClipX - Margin - ScaledMapSize, Margin + ScaledMapSize), ScaledMapSize);
-	NotePanel(Canvas->ClipX - Margin - ScaledMapSize, Margin, ScaledMapSize, ScaledMapSize + LegendHeight);
-	DrawKillFeed(*GameState, FVector2D(Canvas->ClipX - Margin, Margin + ScaledMapSize + LegendHeight + 10.0f * UIScale));
+	// The map notes its own panel; the kill feed hangs under it.
+	float MapHeight = 0.0f;
+#if UE_BUILD_SHIPPING
+	MapHeight = DrawHypercubeMap(*GameState, FVector2D(Canvas->ClipX - Margin, Margin), LocalSector, LiveShip);
+#else
+	// Development: -HCJNoMap leaves the map out (what it costs is the difference between two runs); the time the game
+	// thread spends in it is logged every 2000 frames (LogHCJ Verbose).
+	static const bool bNoMap = FParse::Param(FCommandLine::Get(), TEXT("HCJNoMap"));
+	if (!bNoMap)
+	{
+		const double MapStart = FPlatformTime::Seconds();
+		MapHeight = DrawHypercubeMap(*GameState, FVector2D(Canvas->ClipX - Margin, Margin), LocalSector, LiveShip);
+		MapDrawSeconds += FPlatformTime::Seconds() - MapStart;
+		if (++MapDrawFrames >= 2000)
+		{
+			UE_LOG(LogHCJ, Verbose, TEXT("HUD: the hypercube map takes %.1f microseconds of the game thread per frame (%d frames, %d sectors, canvas %.0f x %.0f)"),
+				1.0e6 * MapDrawSeconds / MapDrawFrames, MapDrawFrames, GameState->GetGraph() != nullptr ? GameState->GetGraph()->NumSectors() : 0, Canvas->ClipX, Canvas->ClipY);
+			MapDrawSeconds = 0.0;
+			MapDrawFrames = 0;
+		}
+	}
+#endif
+	DrawKillFeed(*GameState, FVector2D(Canvas->ClipX - Margin, Margin + MapHeight + 10.0f * UIScale));
 
 	// The big transient lines give way to the boards: they would be drawn through each other.
 	const bool bCentreFree = !bBoard && !bHelp;
@@ -878,143 +905,6 @@ void AHCJHUD::DrawMatchInfo(const AHCJGameState& GameState, const AHCJPlayerStat
 	NotePanel(Margin - 4.0f * UIScale, Margin - 4.0f * UIScale, 330.0f * HCJUi::ComputeTextScale(UIScale), static_cast<float>(Position.Y) - Margin + 8.0f * UIScale);
 }
 
-void AHCJHUD::DrawHypercubeMap(const AHCJGameState& GameState, const FVector2D& TopLeft, float Size, int32 LocalSector)
-{
-	const FHCJHypercubeGraph* Graph = GameState.GetGraph();
-	if (!Graph || !Graph->IsBuilt() || Size <= 0.0f)
-	{
-		return;
-	}
-
-	const AHCJUniverse* Universe = GameState.GetUniverse();
-	const float UIScale = GetUIScale();
-	const int32 Dimension = Graph->GetDimension();
-	const int32 NumSectors = Graph->NumSectors();
-
-	// Nearly opaque: labels of things in the world behind the map must not read through it.
-	DrawRect(FLinearColor(0.0f, 0.02f, 0.05f, 0.9f), static_cast<float>(TopLeft.X), static_cast<float>(TopLeft.Y), Size, Size);
-
-	const FVector2D Center = TopLeft + FVector2D(Size * 0.5f, Size * 0.5f);
-	const float Radius = Size * 0.5f - 18.0f * UIScale;
-
-	TArray<FVector2D, TInlineAllocator<64>> Points;
-	Points.Reserve(NumSectors);
-	for (int32 Sector = 0; Sector < NumSectors; ++Sector)
-	{
-		Points.Add(Center + ProjectSector(Sector, Dimension) * Radius);
-	}
-
-	// Sectors holding somebody else, from the always-relevant player states.
-	TArray<int32, TInlineAllocator<64>> Occupants;
-	Occupants.SetNumZeroed(NumSectors);
-	const APlayerState* LocalPlayerState = PlayerOwner ? PlayerOwner->PlayerState.Get() : nullptr;
-	for (const APlayerState* PlayerState : GameState.PlayerArray)
-	{
-		const AHCJPlayerState* HCJPlayerState = Cast<AHCJPlayerState>(PlayerState);
-		if (HCJPlayerState && HCJPlayerState != LocalPlayerState && Occupants.IsValidIndex(HCJPlayerState->GetCurrentSector()))
-		{
-			++Occupants[HCJPlayerState->GetCurrentSector()];
-		}
-	}
-
-	// Edges: each undirected edge once, from its end with the dimension bit clear.
-	for (int32 Sector = 0; Sector < NumSectors; ++Sector)
-	{
-		for (int32 Dim = 0; Dim < Dimension; ++Dim)
-		{
-			if ((Sector & (1 << Dim)) != 0 || !Graph->IsEdgeOpen(Sector, Dim))
-			{
-				continue;
-			}
-			const int32 Neighbor = Sector ^ (1 << Dim);
-			const bool bLocalEdge = LocalSector == Sector || LocalSector == Neighbor;
-			const FLinearColor EdgeColor = bLocalEdge ? FLinearColor(1.0f, 1.0f, 1.0f, 0.95f) : FLinearColor(0.45f, 0.6f, 0.75f, 0.5f);
-			DrawLine(static_cast<float>(Points[Sector].X), static_cast<float>(Points[Sector].Y),
-				static_cast<float>(Points[Neighbor].X), static_cast<float>(Points[Neighbor].Y),
-				EdgeColor, bLocalEdge ? FMath::Max(1.0f, 2.0f * UIScale) : 1.0f);
-		}
-	}
-
-	// Wormholes: dashed violet lines, so they are not taken for portals.
-	if (Universe != nullptr)
-	{
-		const FLinearColor WormholeColor(0.75f, 0.45f, 1.0f, 0.95f);
-		for (const FHCJWormholeLink& Link : Universe->GetWormholeLinks())
-		{
-			if (!Points.IsValidIndex(Link.SectorA) || !Points.IsValidIndex(Link.SectorB))
-			{
-				continue;
-			}
-			const bool bLocalLink = LocalSector == Link.SectorA || LocalSector == Link.SectorB;
-			const FVector2D A = Points[Link.SectorA];
-			const FVector2D B = Points[Link.SectorB];
-			constexpr int32 NumDashes = 7;
-			for (int32 Dash = 0; Dash < NumDashes; ++Dash)
-			{
-				const FVector2D P0 = FMath::Lerp(A, B, (Dash + 0.15) / NumDashes);
-				const FVector2D P1 = FMath::Lerp(A, B, (Dash + 0.7) / NumDashes);
-				DrawLine(static_cast<float>(P0.X), static_cast<float>(P0.Y), static_cast<float>(P1.X), static_cast<float>(P1.Y),
-					WormholeColor, bLocalLink ? FMath::Max(2.0f, 2.5f * UIScale) : FMath::Max(1.0f, 1.5f * UIScale));
-			}
-		}
-	}
-
-	const float DotSize = FMath::Max(4.0f, 8.0f * UIScale);
-	for (int32 Sector = 0; Sector < NumSectors; ++Sector)
-	{
-		const float X = static_cast<float>(Points[Sector].X);
-		const float Y = static_cast<float>(Points[Sector].Y);
-
-		if (Sector == LocalSector)
-		{
-			const float Outer = DotSize + 8.0f * UIScale;
-			DrawRect(FLinearColor::White, X - Outer * 0.5f, Y - Outer * 0.5f, Outer, Outer);
-			const float Inner = Outer - FMath::Max(2.0f, 3.0f * UIScale);
-			DrawRect(FLinearColor::Black, X - Inner * 0.5f, Y - Inner * 0.5f, Inner, Inner);
-		}
-
-		FLinearColor Tint = Universe ? Universe->GetSectorTint(Sector) : FLinearColor::White;
-		Tint.A = 1.0f;
-		DrawRect(Tint, X - DotSize * 0.5f, Y - DotSize * 0.5f, DotSize, DotSize);
-		if (Universe && Universe->HasBlackHole(Sector))
-		{
-			// A black heart in the dot: this sector has a black hole.
-			const float Core = DotSize * 0.5f;
-			DrawRect(FLinearColor::Black, X - Core * 0.5f, Y - Core * 0.5f, Core, Core);
-		}
-
-		if (Universe && Universe->HasStation(Sector))
-		{
-			// A white cross over the dot: this sector has a station (turrets).
-			const float Arm = DotSize * 0.5f + FMath::Max(3.0f, 4.0f * UIScale);
-			DrawLine(X - Arm, Y, X + Arm, Y, FLinearColor::White, FMath::Max(1.0f, 1.5f * UIScale));
-			DrawLine(X, Y - Arm, X, Y + Arm, FLinearColor::White, FMath::Max(1.0f, 1.5f * UIScale));
-		}
-
-		if (LocalSector != INDEX_NONE && Sector != LocalSector && FMath::CountBits(static_cast<uint32>(Sector ^ LocalSector)) == 1
-			&& Graph->IsEdgeOpen(LocalSector, FMath::FloorLog2(static_cast<uint32>(Sector ^ LocalSector))))
-		{
-			// One portal away: a ring and the sector id the portal labels use.
-			const float Ring = DotSize * 0.5f + FMath::Max(3.0f, 4.0f * UIScale);
-			const float Line = FMath::Max(1.0f, 1.5f * UIScale);
-			DrawLine(X - Ring, Y - Ring, X + Ring, Y - Ring, HCJAccentColor, Line);
-			DrawLine(X + Ring, Y - Ring, X + Ring, Y + Ring, HCJAccentColor, Line);
-			DrawLine(X + Ring, Y + Ring, X - Ring, Y + Ring, HCJAccentColor, Line);
-			DrawLine(X - Ring, Y + Ring, X - Ring, Y - Ring, HCJAccentColor, Line);
-			DrawLabel(FHCJHypercubeGraph::SectorToBinaryString(Sector, Dimension), FVector2D(X, Y + Ring + 1.0f * UIScale), HCJAccentColor, 0.8f, true);
-		}
-
-		if (Occupants[Sector] > 0)
-		{
-			const float Marker = FMath::Max(3.0f, 5.0f * UIScale);
-			DrawRect(HCJWarningColor, X + DotSize * 0.5f + 1.0f, Y - DotSize * 0.5f - Marker - 1.0f, Marker, Marker);
-		}
-	}
-
-	DrawLabel(FString::Printf(TEXT("%dD HYPERCUBE  -  %d sectors"), Dimension, NumSectors),
-		FVector2D(TopLeft.X + 6.0f * UIScale, TopLeft.Y + 4.0f * UIScale), HCJDimTextColor, 0.9f);
-}
-
 void AHCJHUD::DrawKillFeed(const AHCJGameState& GameState, const FVector2D& TopRight)
 {
 	const UWorld* World = GetWorld();
@@ -1028,11 +918,27 @@ void AHCJHUD::DrawKillFeed(const AHCJGameState& GameState, const FVector2D& TopR
 	const float TextScale = 1.1f;
 	float Y = static_cast<float>(TopRight.Y);
 
+	// The feed ends above the TARGET panel, which starts at half the height of the screen (the larger map of 32 and
+	// more sectors leaves room for four rows there, not six): when there are more lines than fit, the oldest wait out.
+	int32 NumLive = 0;
+	for (const FHCJKillFeedEntry& Entry : GameState.GetKillFeed())
+	{
+		NumLive += (Now - Entry.LocalTime >= 0.0f && Now - Entry.LocalTime < KillFeedSeconds) ? 1 : 0;
+	}
+	const float RowStep = static_cast<float>(MeasureLabel(TEXT("Ag"), TextScale).Y) + 4.0f * UIScale;
+	const int32 NumFit = FMath::Max(2, FMath::FloorToInt32((Canvas->ClipY * 0.5f - 6.0f * UIScale - Y) / FMath::Max(RowStep, 1.0f)));
+	int32 NumToSkip = FMath::Max(NumLive - NumFit, 0);
+
 	for (const FHCJKillFeedEntry& Entry : GameState.GetKillFeed())
 	{
 		const float Age = Now - Entry.LocalTime;
 		if (Age < 0.0f || Age >= KillFeedSeconds)
 		{
+			continue;
+		}
+		if (NumToSkip > 0)
+		{
+			--NumToSkip;
 			continue;
 		}
 
@@ -1104,6 +1010,18 @@ void AHCJHUD::DrawRespawnInfo(const AHCJGameState& GameState, const AHCJPlayerSt
 				: FString::Printf(TEXT("Destroyed by %s with the %s"), *Entry.KillerName, *Entry.Cause); break;
 			}
 			DeathTip = HCJHints::PickDeathTip(Cause, LocalPlayerState.GetDeaths());
+			// From which side: where the last damage came from, as the pilot saw it, when that was the hit that did it.
+			const AHCJPlayerController* LocalController = Cast<AHCJPlayerController>(PlayerOwner);
+			if (Cause == EHCJDeathCause::Player && LocalController != nullptr && World != nullptr
+				&& World->GetTimeSeconds() - LocalController->GetLastDamageTime() < 1.5 && LocalController->GetLastDamageBearingDeg() >= 0.0f)
+			{
+				const EHCJHitSide Side = HCJUi::ClassifyHitSide(LocalController->GetLastDamageBearingDeg());
+				DeathSummary += Side == EHCJHitSide::Behind ? TEXT("  -  from behind") : Side == EHCJHitSide::Side ? TEXT("  -  from the side") : TEXT("  -  head-on");
+				if (Side == EHCJHitSide::Behind)
+				{
+					DeathTip = TEXT("Shot from behind: watch the lower half of the radar and the '!' arrows, then turn or boost away.");
+				}
+			}
 			if (Entry.KillerName.IsEmpty() && Entry.Cause == TEXT("OWN TORPEDO"))
 			{
 				DeathSummary = TEXT("Caught in the blast of your own torpedo");
@@ -1117,7 +1035,8 @@ void AHCJHUD::DrawRespawnInfo(const AHCJGameState& GameState, const AHCJPlayerSt
 	{
 		DrawLabel(TEXT("SHIP DESTROYED"), FVector2D(CenterX, Canvas->ClipY * 0.30f), HCJWarningColor, 1.8f, true, true);
 	}
-	float Y = Canvas->ClipY * 0.44f;
+	// Below the middle of the screen: the death camera keeps the wreck there.
+	float Y = Canvas->ClipY * 0.69f;
 	Y += DrawLabel(FString::Printf(TEXT("RESPAWN IN  %d"), FMath::CeilToInt(Remaining)), FVector2D(CenterX, Y), HCJTextColor, 1.8f, true, true) + 6.0f * UIScale;
 	if (bMayRespawn)
 	{
@@ -1135,7 +1054,7 @@ void AHCJHUD::DrawRespawnInfo(const AHCJGameState& GameState, const AHCJPlayerSt
 		const float Pad = 10.0f * UIScale;
 		const float Width = FMath::Max(static_cast<float>(SummarySize.X), static_cast<float>(TipSize.X)) + 4.0f * Pad;
 		const float Height = 2.0f * Pad + static_cast<float>(SummarySize.Y) + (bTip ? static_cast<float>(TipSize.Y) + 6.0f * UIScale : 0.0f);
-		const float Top = Canvas->ClipY * 0.60f;
+		const float Top = Canvas->ClipY * 0.81f;
 		DrawPanel(CenterX - Width * 0.5f, Top, Width, Height, HCJWarningColor);
 		DrawLabel(DeathSummary, FVector2D(CenterX, Top + Pad), FLinearColor(1.0f, 0.62f, 0.5f), 1.15f, true, true);
 		if (bTip)
@@ -1256,29 +1175,6 @@ void AHCJHUD::DrawScoreboard(const AHCJGameState& GameState, const AHCJPlayerSta
 		DrawLabel(PlayerState->IsABot() ? FString(TEXT("-")) : FString::FromInt(FMath::RoundToInt32(PlayerState->GetPingInMilliseconds())), FVector2D(PingX, Y), HCJDimTextColor, TextScale);
 		Y += RowHeight;
 	}
-}
-
-FVector2D AHCJHUD::ProjectSector(int32 Sector, int32 Dimension)
-{
-	if (Dimension <= 0)
-	{
-		return FVector2D::ZeroVector;
-	}
-
-	// Axis d: the angles fan over half a turn (no two axes are parallel), the lengths shrink geometrically.
-	// Every bit contributes +-half its axis, which centres the picture on the origin.
-	FVector2D Sum = FVector2D::ZeroVector;
-	double TotalLength = 0.0;
-	double Length = 1.0;
-	for (int32 Dim = 0; Dim < Dimension; ++Dim)
-	{
-		const double Angle = 0.35 + UE_DOUBLE_PI * static_cast<double>(Dim) / static_cast<double>(Dimension);
-		const FVector2D Axis(FMath::Cos(Angle) * Length, -FMath::Sin(Angle) * Length);
-		Sum += Axis * (((Sector >> Dim) & 1) != 0 ? 0.5 : -0.5);
-		TotalLength += Length;
-		Length *= 0.72;
-	}
-	return Sum / (0.5 * TotalLength);
 }
 
 namespace

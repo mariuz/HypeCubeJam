@@ -10,6 +10,7 @@
 #include "Game/HCJPlayerController.h"
 #include "Game/HCJPlayerState.h"
 #include "GameFramework/GameStateBase.h"
+#include "Game/HCJBalance.h"
 #include "Game/HCJUiLogic.h"
 #include "Game/HCJUserSettings.h"
 #include "Hypercube/HCJHypercubeGraph.h"
@@ -31,6 +32,8 @@ namespace
 	const FLinearColor ReadDimColor(0.55f, 0.65f, 0.75f, 1.0f);
 	const FLinearColor ReadAccentColor(0.2f, 1.0f, 0.9f, 1.0f);
 	const FLinearColor ReadWarningColor(1.0f, 0.25f, 0.15f, 1.0f);
+	/** An enemy that has its nose on the own ship ("ENEMY BEHIND", the ring on the radar): no other marker is this yellow. */
+	const FLinearColor AimingColor(1.0f, 0.92f, 0.25f, 1.0f);
 	const FLinearColor ReadPanelColor(0.0f, 0.02f, 0.05f, 0.7f);
 
 	FLinearColor Faded(const FLinearColor& Color, float Alpha)
@@ -211,6 +214,8 @@ void AHCJHUD::DrawTargets(const AHCJShipCharacter& Ship)
 		bool bVisible = false;
 		/** In view, but its marker would lie on a HUD panel: it gets an arrow like the ones out of view. */
 		bool bCovered = false;
+		/** Close, with its nose on the own ship: it is about to shoot, or shooting (HCJUi::IsAimingAt). */
+		bool bAiming = false;
 	};
 	TArray<FEnemy, TInlineAllocator<16>> Enemies;
 	TArray<FHCJTargetCandidate, TInlineAllocator<16>> Candidates;
@@ -241,6 +246,7 @@ void AHCJHUD::DrawTargets(const AHCJShipCharacter& Ship)
 			&& Enemy.X >= 0.0f && Enemy.Y >= 0.0f && Enemy.X <= Canvas->ClipX && Enemy.Y <= Canvas->ClipY;
 		// Behind a rock or a station: still marked, but dimmer.
 		Enemy.bVisible = Enemy.bOnScreen && !World->LineTraceTestByObjectType(ViewLocation, Enemy.Location, FCollisionObjectQueryParams(ECC_WorldStatic));
+		Enemy.bAiming = HCJUi::IsAimingAt(Other->GetActorForwardVector(), ShipLocation - Enemy.Location);
 
 		FHCJTargetCandidate Candidate;
 		Candidate.AngleDeg = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(static_cast<float>(FVector::DotProduct((Enemy.Location - Muzzle).GetSafeNormal(), AimDirection)), -1.0f, 1.0f)));
@@ -464,19 +470,21 @@ void AHCJHUD::DrawTargets(const AHCJShipCharacter& Ship)
 			OffScreen.Add(&Enemy);
 		}
 	}
-	OffScreen.Sort([](const FEnemy& A, const FEnemy& B) { return A.Distance < B.Distance; });
+	// (One that has its nose on us comes before a nearer one that has not.)
+	OffScreen.Sort([](const FEnemy& A, const FEnemy& B) { return A.bAiming != B.bAiming ? A.bAiming : A.Distance < B.Distance; });
 	const FVector2D Centre(Canvas->ClipX * 0.5f, Canvas->ClipY * 0.5f);
 	// Inside the panels on the right and above the hint zone at the bottom, so that an arrow never lies on them.
 	const FVector2D Ring(Canvas->ClipX * 0.5f - 24.0f * UIScale - 285.0f * TextScale, Canvas->ClipY * 0.5f - 150.0f * TextScale);
 	for (int32 Index = 0; Index < FMath::Min(OffScreen.Num(), 6); ++Index)
 	{
 		const FEnemy& Enemy = *OffScreen[Index];
-		const bool bHot = Enemy.Ship == Attacker || Enemy.Ship == CurrentTarget;
+		const bool bThreat = Enemy.Ship == Attacker || Enemy.bAiming;
+		const bool bHot = bThreat || Enemy.Ship == CurrentTarget;
 		const FVector ToOther = Enemy.Location - ViewLocation;
 		float Angle = 0.0f;
 		const FVector2D Position = HCJUi::ComputeEdgeMarker(static_cast<float>(FVector::DotProduct(ToOther, ViewRight)),
 			static_cast<float>(FVector::DotProduct(ToOther, ViewUp)), Centre, Ring, Angle);
-		const float Pulse = Enemy.Ship == Attacker ? 0.7f + 0.3f * FMath::Sin(Now * 14.0f) : 1.0f;
+		const float Pulse = bThreat ? 0.7f + 0.3f * FMath::Sin(Now * 14.0f) : 1.0f;
 		const FLinearColor Color = Faded(Enemy.Ship == CurrentTarget ? LockColor : HostileColor, (bHot ? 1.0f : 0.9f) * Pulse);
 		const float Size = (bHot ? 36.0f : 28.0f) * TextScale;
 		const FVector2D Forward(FMath::Cos(Angle), FMath::Sin(Angle));
@@ -496,7 +504,7 @@ void AHCJHUD::DrawTargets(const AHCJShipCharacter& Ship)
 			DrawLine(static_cast<float>(Tip.X), static_cast<float>(Tip.Y), static_cast<float>(Base.X), static_cast<float>(Base.Y), Color, MarkerThickness);
 		}
 		const FVector2D LabelPosition = Position - Forward * (Size * 0.45f + 16.0f * TextScale);
-		const FString Label = Enemy.Ship == Attacker ? FString::Printf(TEXT("! %d m"), FMath::RoundToInt32(Enemy.Distance / 100.0f)) : FString::Printf(TEXT("%d m"), FMath::RoundToInt32(Enemy.Distance / 100.0f));
+		const FString Label = bThreat ? FString::Printf(TEXT("! %d m"), FMath::RoundToInt32(Enemy.Distance / 100.0f)) : FString::Printf(TEXT("%d m"), FMath::RoundToInt32(Enemy.Distance / 100.0f));
 		DrawLabel(Label, FVector2D(LabelPosition.X, LabelPosition.Y - 7.0f * TextScale), Color, 1.0f, true, bHot);
 	}
 
@@ -507,10 +515,46 @@ void AHCJHUD::DrawTargets(const AHCJShipCharacter& Ship)
 
 	// A homing missile is after us.
 	const float WarningAge = Now - Controller->GetLastMissileWarningTime();
-	if (WarningAge >= 0.0f && WarningAge < 2.5f)
+	const bool bMissileLock = WarningAge >= 0.0f && WarningAge < 2.5f;
+	if (bMissileLock)
 	{
 		DrawLabel(TEXT("MISSILE LOCK  -  BREAK AWAY"), FVector2D(Canvas->ClipX * 0.5f, Canvas->ClipY * 0.11f),
 			Faded(HostileColor, 0.6f + 0.4f * FMath::Sin(Now * 18.0f)), 1.7f, true, true);
+	}
+
+	// An enemy behind us has its nose on us: say so before it fires (bots hold their fire for a moment when they
+	// get behind a player; this is what fills that moment). The nearest such ship is named.
+	const FEnemy* Behind = nullptr;
+	for (const FEnemy& Enemy : Enemies)
+	{
+		if (Enemy.bAiming && FVector::DotProduct((Enemy.Location - ViewLocation).GetSafeNormal(), ViewForward) < HCJBalance::RearArcDot
+			&& (Behind == nullptr || Enemy.Distance < Behind->Distance))
+		{
+			Behind = &Enemy;
+		}
+	}
+	// (A nose that only sweeps past is not a warning: the line and the cue wait until it has stayed on us for a moment.
+	// The "!" arrow and the ring on the radar show at once.)
+	EnemyBehindSince = Behind == nullptr ? -1.0f : EnemyBehindSince < 0.0f ? Now : EnemyBehindSince;
+	if (Behind != nullptr && Now - EnemyBehindSince >= HCJUi::AimWarnDwellSeconds)
+	{
+		const AHCJPlayerState* BehindState = Behind->Ship->GetPlayerState<AHCJPlayerState>();
+		const int32 Metres = FMath::RoundToInt32(Behind->Distance / 100.0f);
+		if (!bMissileLock)
+		{
+			DrawLabel(FString::Printf(TEXT("ENEMY BEHIND  -  %s  %d m"), BehindState != nullptr ? *BehindState->GetPlayerName() : TEXT("?"), Metres),
+				FVector2D(Canvas->ClipX * 0.5f, Canvas->ClipY * 0.11f), Faded(AimingColor, 0.82f + 0.18f * FMath::Sin(Now * 14.0f)), 1.7f, true, true);
+		}
+		if (Now - LastEnemyBehindCueTime > 4.0f)
+		{
+			// One cue every few seconds at most, however many ships take their turn behind us.
+			LastEnemyBehindCueTime = Now;
+			const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
+			// The warning tick, a fifth lower than the torpedo's and the missile's "break away": this one says "turn round".
+			UHCJAssetSettings::PlaySound2D(this, Settings.TorpedoWarningSounds.Num() > 0 ? Settings.TorpedoWarningSounds : Settings.LowHealthSounds, TEXT("enemy behind"), Settings.UiCueVolume,
+				EHCJSoundGroup::UI, HCJUi::AimWarnCuePitch);
+			UE_LOG(LogHCJ, Log, TEXT("Threat warning: %s is behind the own ship with its nose on it, %d m out"), BehindState != nullptr ? *BehindState->GetPlayerName() : TEXT("?"), Metres);
+		}
 	}
 	DrawTorpedoWarning(Ship);
 }
@@ -828,6 +872,11 @@ void AHCJHUD::DrawRadar(const AHCJShipCharacter& Ship, const AHCJGameState& Game
 		{
 			DrawCircle(P.X, P.Y, S * 2.1f, Color, 1.5f, 12);
 		}
+		if (HCJUi::IsAimingAt(Other->GetActorForwardVector(), ShipLocation - Other->GetActorLocation()))
+		{
+			// Its nose is on us: a ring that pulses, in a colour no other blip has.
+			DrawCircle(P.X, P.Y, Mark * (1.6f + 0.25f * FMath::Sin(static_cast<float>(World->GetTimeSeconds()) * 14.0f)), AimingColor, 2.0f, 12);
+		}
 	}
 
 	// Over the radar: how many enemies are here, or where the nearest one is.
@@ -853,6 +902,42 @@ void AHCJHUD::DrawRadar(const AHCJShipCharacter& Ship, const AHCJGameState& Game
 	}
 }
 
+void AHCJHUD::DrawVignette(const FLinearColor& Color, float Strength, int32 NumBands, float BandWidth)
+{
+	// Bands along the screen edges, strongest at the edge.
+	const float ClipX = Canvas->ClipX;
+	const float ClipY = Canvas->ClipY;
+	NumBands = FMath::Clamp(NumBands, 1, 24);
+	const float Band = BandWidth * GetUIScale();
+	for (int32 Index = 0; Index < NumBands; ++Index)
+	{
+		const float Alpha = Strength * FMath::Square(1.0f - static_cast<float>(Index) / NumBands);
+		const float Inset = Index * Band;
+		const FLinearColor BandColor(Color.R, Color.G, Color.B, Alpha);
+		DrawRect(BandColor, Inset, Inset, ClipX - 2.0f * Inset, Band);
+		DrawRect(BandColor, Inset, ClipY - Inset - Band, ClipX - 2.0f * Inset, Band);
+		DrawRect(BandColor, Inset, Inset + Band, Band, ClipY - 2.0f * (Inset + Band));
+		DrawRect(BandColor, ClipX - Inset - Band, Inset + Band, Band, ClipY - 2.0f * (Inset + Band));
+	}
+}
+
+void AHCJHUD::DrawDeathFlash(const AHCJPlayerController& Controller)
+{
+	// The own ship blew up: the whole screen for a moment, then the edges for a little longer.
+	constexpr float FlashSeconds = 0.22f;
+	constexpr float VignetteSeconds = 1.0f;
+	const float Age = Controller.GetOwnBlastAge();
+	if (Age < 0.0f || Age >= VignetteSeconds)
+	{
+		return;
+	}
+	if (Age < FlashSeconds)
+	{
+		DrawRect(FLinearColor(1.0f, 0.86f, 0.62f, 0.4f * FMath::Square(1.0f - Age / FlashSeconds)), 0.0f, 0.0f, Canvas->ClipX, Canvas->ClipY);
+	}
+	DrawVignette(FLinearColor(1.0f, 0.32f, 0.08f), 0.4f * FMath::Square(1.0f - Age / VignetteSeconds), 16, 9.0f);
+}
+
 void AHCJHUD::DrawDamageFeedback(const AHCJShipCharacter& Ship, const AHCJPlayerController* Controller)
 {
 	const UWorld* World = GetWorld();
@@ -864,23 +949,6 @@ void AHCJHUD::DrawDamageFeedback(const AHCJShipCharacter& Ship, const AHCJPlayer
 	const float Now = static_cast<float>(World->GetTimeSeconds());
 	const float ClipX = Canvas->ClipX;
 	const float ClipY = Canvas->ClipY;
-
-	// Bands along the screen edges, strongest at the edge.
-	const auto DrawVignette = [this, ClipX, ClipY, UIScale](const FLinearColor& Color, float Strength)
-	{
-		constexpr int32 NumBands = 6;
-		const float Band = 16.0f * UIScale;
-		for (int32 Index = 0; Index < NumBands; ++Index)
-		{
-			const float Alpha = Strength * FMath::Square(1.0f - static_cast<float>(Index) / NumBands);
-			const float Inset = Index * Band;
-			const FLinearColor BandColor(Color.R, Color.G, Color.B, Alpha);
-			DrawRect(BandColor, Inset, Inset, ClipX - 2.0f * Inset, Band);
-			DrawRect(BandColor, Inset, ClipY - Inset - Band, ClipX - 2.0f * Inset, Band);
-			DrawRect(BandColor, Inset, Inset + Band, Band, ClipY - 2.0f * (Inset + Band));
-			DrawRect(BandColor, ClipX - Inset - Band, Inset + Band, Band, ClipY - 2.0f * (Inset + Band));
-		}
-	};
 
 	// Low hull: a slow red pulse that gets stronger as the hull goes.
 	if (const UHCJHealthComponent* Health = Ship.GetHealthComponent())
@@ -898,7 +966,7 @@ void AHCJHUD::DrawDamageFeedback(const AHCJShipCharacter& Ship, const AHCJPlayer
 		return;
 	}
 	const float Age = Now - Controller->GetLastDamageTime();
-	if (Age < 0.0f || Age > 1.4f)
+	if (Age < 0.0f || Age > 2.0f)
 	{
 		return;
 	}
@@ -924,25 +992,47 @@ void AHCJHUD::DrawDamageFeedback(const AHCJShipCharacter& Ship, const AHCJPlayer
 	const float Forward = static_cast<float>(FVector::DotProduct(ToSource, ViewAxes.GetUnitAxis(EAxis::X)));
 	// From dead ahead there is no screen direction: show it at the top; from behind, at the bottom.
 	float Angle = 0.0f;
+	// A hit from behind the view must not look like one from below (or, as it did, from wherever on the screen the
+	// shooter would be if the view were turned): its arc is placed as on the radar - behind is down, left and right
+	// are kept - and it is wider, heavier, stays longer and says so.
+	const bool bFromBehind = FVector::DotProduct(ToSource.GetSafeNormal(), ViewAxes.GetUnitAxis(EAxis::X)) < HCJBalance::RearArcDot;
 	const bool bAxial = FMath::Square(Right) + FMath::Square(Up) < FMath::Square(0.12f * FMath::Abs(Forward));
-	HCJUi::ComputeEdgeMarker(bAxial ? 0.0f : Right, bAxial ? (Forward >= 0.0f ? 1.0f : -1.0f) : Up, FVector2D::ZeroVector, FVector2D(1.0, 1.0), Angle);
+	if (bFromBehind)
+	{
+		HCJUi::ComputeEdgeMarker(Right, Forward, FVector2D::ZeroVector, FVector2D(1.0, 1.0), Angle);
+	}
+	else
+	{
+		HCJUi::ComputeEdgeMarker(bAxial ? 0.0f : Right, bAxial ? 1.0f : Up, FVector2D::ZeroVector, FVector2D(1.0, 1.0), Angle);
+	}
 
-	const FLinearColor ArcColor = Faded(ReadWarningColor, FMath::Clamp(1.4f - Age, 0.0f, 1.0f));
+	const float FadeSeconds = bFromBehind ? 2.0f : 1.4f;
+	if (Age > FadeSeconds)
+	{
+		return;
+	}
+	const FLinearColor ArcColor = Faded(ReadWarningColor, FMath::Clamp(FadeSeconds - Age, 0.0f, 1.0f));
 	const float Radius = ClipY * 0.19f;
-	const float HalfArc = 0.38f;
+	const float HalfArc = bFromBehind ? 0.60f : 0.38f;
 	constexpr int32 Segments = 10;
 	const float CentreX = ClipX * 0.5f;
 	const float CentreY = ClipY * 0.5f;
-	for (int32 Layer = 0; Layer < 2; ++Layer)
+	const int32 NumLayers = bFromBehind ? 3 : 2;
+	const float LineThickness = bFromBehind ? FMath::Max(3.0f, 5.0f * UIScale) : FMath::Max(2.0f, 3.0f * UIScale);
+	for (int32 Layer = 0; Layer < NumLayers; ++Layer)
 	{
-		const float LayerRadius = Radius + Layer * 5.0f * UIScale;
+		const float LayerRadius = Radius + Layer * (bFromBehind ? 7.0f : 5.0f) * UIScale;
 		for (int32 Index = 0; Index < Segments; ++Index)
 		{
 			const float A0 = Angle - HalfArc + 2.0f * HalfArc * Index / Segments;
 			const float A1 = Angle - HalfArc + 2.0f * HalfArc * (Index + 1) / Segments;
 			DrawLine(CentreX + LayerRadius * FMath::Cos(A0), CentreY + LayerRadius * FMath::Sin(A0),
-				CentreX + LayerRadius * FMath::Cos(A1), CentreY + LayerRadius * FMath::Sin(A1), ArcColor, FMath::Max(2.0f, 3.0f * UIScale));
+				CentreX + LayerRadius * FMath::Cos(A1), CentreY + LayerRadius * FMath::Sin(A1), ArcColor, LineThickness);
 		}
+	}
+	if (bFromBehind)
+	{
+		DrawLabel(TEXT("HIT FROM BEHIND"), FVector2D(CentreX, CentreY + Radius + 30.0f * UIScale), ArcColor, 1.5f, true, true);
 	}
 }
 
@@ -1074,62 +1164,6 @@ void AHCJHUD::DrawPortalLabels(const AHCJShipCharacter& Ship)
 		DrawWay(Universe->GetWormholeLocation(Sector), 700.0f,
 			FString::Printf(TEXT("WORMHOLE > %s"), *FHCJHypercubeGraph::SectorToBinaryString(Universe->GetWormholeDest(Sector), Dimension)), LeadColor, true);
 	}
-}
-
-float AHCJHUD::DrawMapLegend(const FVector2D& TopLeft, float Width)
-{
-	const float UIScale = GetUIScale();
-	const float RowHeight = static_cast<float>(MeasureLabel(TEXT("Ag"), 0.85f).Y) + 3.0f * UIScale;
-	const float Padding = 5.0f * UIScale;
-	const float Height = 2.0f * Padding + 3.0f * RowHeight;
-	DrawRect(FLinearColor(0.0f, 0.02f, 0.05f, 0.9f), static_cast<float>(TopLeft.X), static_cast<float>(TopLeft.Y), Width, Height);
-
-	const float Icon = FMath::Max(5.0f, 7.0f * UIScale);
-	const float Line = FMath::Max(1.0f, 1.5f * UIScale);
-	const FLinearColor Violet(0.75f, 0.45f, 1.0f, 1.0f);
-	// Two columns, three rows: the same marks the map draws.
-	for (int32 Index = 0; Index < 6; ++Index)
-	{
-		const float X = static_cast<float>(TopLeft.X) + Padding + (Index % 2) * Width * 0.5f;
-		const float Y = static_cast<float>(TopLeft.Y) + Padding + (Index / 2) * RowHeight;
-		const float CX = X + Icon;
-		const float CY = Y + RowHeight * 0.5f - 1.0f * UIScale;
-		const TCHAR* Text = TEXT("");
-		switch (Index)
-		{
-		case 0:
-			DrawRect(FLinearColor::White, CX - Icon * 0.8f, CY - Icon * 0.8f, Icon * 1.6f, Icon * 1.6f);
-			DrawRect(FLinearColor::Black, CX - Icon * 0.55f, CY - Icon * 0.55f, Icon * 1.1f, Icon * 1.1f);
-			DrawRect(ReadAccentColor, CX - Icon * 0.3f, CY - Icon * 0.3f, Icon * 0.6f, Icon * 0.6f);
-			Text = TEXT("you are here");
-			break;
-		case 1:
-			DrawLine(CX - Icon, CY, CX + Icon, CY, FLinearColor::White, Line);
-			Text = TEXT("portal");
-			break;
-		case 2:
-			DrawLine(CX - Icon, CY, CX - Icon * 0.3f, CY, Violet, Line * 1.5f);
-			DrawLine(CX + Icon * 0.3f, CY, CX + Icon, CY, Violet, Line * 1.5f);
-			Text = TEXT("wormhole");
-			break;
-		case 3:
-			DrawRect(ReadDimColor, CX - Icon * 0.6f, CY - Icon * 0.6f, Icon * 1.2f, Icon * 1.2f);
-			DrawRect(FLinearColor::Black, CX - Icon * 0.3f, CY - Icon * 0.3f, Icon * 0.6f, Icon * 0.6f);
-			Text = TEXT("black hole");
-			break;
-		case 4:
-			DrawLine(CX - Icon, CY, CX + Icon, CY, FLinearColor::White, Line);
-			DrawLine(CX, CY - Icon, CX, CY + Icon, FLinearColor::White, Line);
-			Text = TEXT("station (turrets)");
-			break;
-		default:
-			DrawRect(ReadWarningColor, CX - Icon * 0.4f, CY - Icon * 0.4f, Icon * 0.8f, Icon * 0.8f);
-			Text = TEXT("enemies");
-			break;
-		}
-		DrawLabel(Text, FVector2D(X + 2.0f * Icon + 5.0f * UIScale, Y), ReadDimColor, 0.85f);
-	}
-	return Height;
 }
 
 void AHCJHUD::DrawCenterMessage(AHCJGameState& GameState, bool bDraw)

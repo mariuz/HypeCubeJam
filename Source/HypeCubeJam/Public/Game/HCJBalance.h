@@ -49,7 +49,39 @@ struct HYPECUBEJAM_API FHCJBotSkill
 	/** Chance per decision (a few times a second) to put a torpedo through a facing of the target that is DOWN (the phasers opened it). */
 	float ComboChance = 0.3f;
 
-	/** The row for Difficulty (0 easy, 1 normal, 2 hard; clamped). */
+	// ---- fairness towards people (see docs/DEVLOG_NOTES.md, item 29) ----
+	// These apply only when the ship a bot deals with is flown by a person; bots among themselves are untouched. The
+	// defaults here are "off" - what the bots did before, and what the Ace level and -HCJNoFair still do.
+
+	/** At most this many bots attack one human ship at a time; one the human shot may always answer (0 = no limit). */
+	int32 MaxAttackersOnHuman = 0;
+	/** Bots that travel stop routing to a human's sector once it holds this many bot ships (0 = no limit). */
+	int32 MaxHuntersPerHuman = 0;
+	/** A bot that is in a human's rear arc holds its fire for this long after getting there (seconds), and its aim error is multiplied by RearAimErrorScale while it is there. */
+	float RearFireDelay = 0.0f;
+	float RearAimErrorScale = 1.0f;
+	/** How strongly a bot that fights a human slides round to the front of it, 0..1 (added to the strafe). */
+	float FrontBias = 0.0f;
+	/** Target score of a human ship that shows the bot its tail (bots among themselves: +1.5, "it is busy with somebody else"). */
+	float HumanTailScore = 1.5f;
+	/** Flank tactics against humans: the scout's approach under cloak to the tail, the boosted close pass. */
+	bool bFlankHumans = true;
+	/** Seconds after a human ship appears in a sector (spawn, portal, wormhole) before a bot may pick it as a target; also while its spawn shield is up. */
+	float ArrivalGrace = 0.0f;
+	/**
+	 * A breather between fights: once no bot is attacking a human ship any more (its attacker was destroyed, broke off or
+	 * lost it), no other bot may pick it for this many seconds - time for its shields to come back and its pilot to look around.
+	 */
+	float RespiteSeconds = 0.0f;
+	/** Damage a bot does to a human ship is multiplied by this on the server (every weapon). */
+	float DamageToHumanScale = 1.0f;
+	/** A bot that would fire a photon torpedo at a human ship does so with this chance (a torpedo through an open facing nearly ends a ship). */
+	float TorpedoOnHumanChance = 1.0f;
+
+	/** Sets the fairness fields back to the defaults above ("off"). */
+	void ClearFairness();
+
+	/** The row for Difficulty (0 easy, 1 normal, 2 hard, 3 ace; clamped). */
 	static FHCJBotSkill Get(int32 Difficulty);
 };
 
@@ -86,6 +118,30 @@ enum class EHCJBotTactic : uint8
 
 namespace HCJBalance
 {
+	/** Bot difficulty levels: 0 easy, 1 normal, 2 hard, 3 ace (hard without the fairness rules). */
+	inline constexpr int32 NumBotDifficulties = 4;
+	/**
+	 * "Behind": the direction to the other ship makes more than about 107 degrees with the nose (dot product below
+	 * this). Used for the rear arc of a human ship (bots), of the view (HUD) and for the "Fair:" log lines.
+	 */
+	inline constexpr float RearArcDot = -0.3f;
+	/** "From the side" in the death recap: more than 60 degrees off the nose (and not behind). */
+	inline constexpr float SideArcDot = 0.5f;
+	/** A bot that a human hit this recently may answer, whatever the attack cap, the grace or the rear hold say (seconds). */
+	inline constexpr float ProvokedSeconds = 4.0f;
+
+	/** "Easy", "Normal", "Hard", "Ace" (clamped). */
+	HYPECUBEJAM_API const TCHAR* GetDifficultyName(int32 Difficulty);
+	/** One line for the menu: what the level does to the player (under 74 characters). */
+	HYPECUBEJAM_API const TCHAR* GetDifficultyDescription(int32 Difficulty);
+	/**
+	 * Angle in degrees between Forward and the direction ToOther (0 dead ahead, 180 dead astern); -1 when ToOther has
+	 * no length. Pure.
+	 */
+	HYPECUBEJAM_API float BearingDegrees(const FVector& Forward, const FVector& ToOther);
+	/** Whether a bearing of BearingDegrees is in the rear arc (RearArcDot). */
+	HYPECUBEJAM_API bool IsRearBearing(float BearingDeg);
+
 	/** Name of a tactic for log lines ("retreats"). */
 	HYPECUBEJAM_API const TCHAR* GetTacticName(EHCJBotTactic Tactic);
 	/** Key of a tactic for the structured "Playthrough:" lines ("bot_retreats"). */

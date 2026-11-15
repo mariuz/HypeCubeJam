@@ -37,7 +37,10 @@
 #include "MediaTexture.h"
 #include "HAL/FileManager.h"
 #include "Misc/App.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "Camera/PlayerCameraManager.h"
 #include "HypeCubeJam.h"
 #include "InputAction.h"
 #include "InputActionValue.h"
@@ -81,6 +84,17 @@ AHCJShipCharacter* AHCJPlayerController::GetShip() const
 {
 	AHCJShipCharacter* Ship = Cast<AHCJShipCharacter>(GetPawn());
 	return (IsValid(Ship) && !Ship->IsDead()) ? Ship : nullptr;
+}
+
+bool AHCJPlayerController::HasLivePawn() const
+{
+	const APawn* Current = GetPawn();
+	if (!IsValid(Current))
+	{
+		return false;
+	}
+	const AHCJShipCharacter* Ship = Cast<AHCJShipCharacter>(Current);
+	return Ship == nullptr || !Ship->IsDead();
 }
 
 void AHCJPlayerController::ServerRequestRespawn_Implementation()
@@ -512,7 +526,274 @@ void AHCJPlayerController::PlayerTick(float DeltaTime)
 		GHelpAutoShown = true;
 		FirstShipTime = static_cast<float>(GetWorld()->GetTimeSeconds());
 	}
+
+	if (DeathCamera.bActive && HasLivePawn())
+	{
+		// A new ship: its own camera takes over. (Not the wreck: on a client the death of the ship may arrive a frame
+		// before the controller lets go of it, and the camera would end in the frame it began.)
+		DeathCamera.bActive = false;
+	}
+#if !UE_BUILD_SHIPPING
+	TickBlastBench();
+#endif
 }
+
+void AHCJPlayerController::NotifyOwnShipDestroyed(const FVector& Location, const FVector& Velocity, float BlastDelay)
+{
+	const UWorld* World = GetWorld();
+	if (World == nullptr || !IsLocalController())
+	{
+		return;
+	}
+	DeathCamera.bActive = true;
+	DeathCamera.Wreck = Location;
+	DeathCamera.Velocity = Velocity;
+	DeathCamera.StartTime = static_cast<float>(World->GetTimeSeconds());
+	DeathCamera.BlastTime = DeathCamera.StartTime + FMath::Max(BlastDelay, 0.0f);
+	// Where the view is now: the chase camera of the ship (or its cockpit).
+	DeathCamera.StartLocation = Location - GetControlRotation().Vector() * 1100.0;
+	DeathCamera.StartRotation = GetControlRotation();
+	DeathCamera.StartFOV = 95.0f;
+	if (PlayerCameraManager != nullptr)
+	{
+		DeathCamera.StartLocation = PlayerCameraManager->GetCameraLocation();
+		DeathCamera.StartRotation = PlayerCameraManager->GetCameraRotation();
+		DeathCamera.StartFOV = FMath::Clamp(PlayerCameraManager->GetFOVAngle(), 60.0f, 110.0f);
+	}
+	UE_LOG(LogHCJ, Verbose, TEXT("Death camera: the own ship was lost at %s, the view starts %.0f uu from it"), *Location.ToCompactString(), FVector::Dist(DeathCamera.StartLocation, Location));
+}
+
+float AHCJPlayerController::GetOwnBlastAge() const
+{
+	const UWorld* World = GetWorld();
+	return World != nullptr ? static_cast<float>(World->GetTimeSeconds()) - DeathCamera.BlastTime : 1000.0f;
+}
+
+void AHCJPlayerController::CalcCamera(float DeltaTime, FMinimalViewInfo& OutResult)
+{
+	Super::CalcCamera(DeltaTime, OutResult);
+
+	const UWorld* World = GetWorld();
+	if (!DeathCamera.bActive || HasLivePawn() || World == nullptr)
+	{
+		return;
+	}
+	const float Age = static_cast<float>(World->GetTimeSeconds()) - DeathCamera.StartTime;
+	if (Age < 0.0f || Age > 30.0f)
+	{
+		return;
+	}
+	const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
+	// The wreck stands still until the blast; what is left of it then drifts on like its debris (60 % of the speed, damped).
+	const float Drifting = FMath::Max(Age - (DeathCamera.BlastTime - DeathCamera.StartTime), 0.0f);
+	const FVector Focus = DeathCamera.Wreck + DeathCamera.Velocity * (0.6 * (1.0 - FMath::Exp(-0.45 * Drifting)) / 0.45);
+
+	// Back along the line from the wreck to where the view was, farther and farther, turning slowly round the wreck.
+	FVector Back = DeathCamera.StartLocation - DeathCamera.Wreck;
+	double StartDistance = Back.Size();
+	if (StartDistance < 150.0)
+	{
+		// First person: the view was in the ship.
+		Back = -DeathCamera.StartRotation.Vector() + FRotationMatrix(DeathCamera.StartRotation).GetUnitAxis(EAxis::Z) * 0.25;
+		StartDistance = 150.0;
+	}
+	Back.Normalize();
+	Back = Back.RotateAngleAxis(Settings.DeathCameraOrbitDegrees * Age, FRotationMatrix(DeathCamera.StartRotation).GetUnitAxis(EAxis::Z));
+	const double Distance = StartDistance + Settings.DeathCameraPullBack * (1.0 - FMath::Exp(-1.6 * Age));
+	FVector Location = Focus + Back * Distance;
+	// Not into a rock: stop in front of it.
+	FHitResult Hit;
+	if (World->LineTraceSingleByObjectType(Hit, Focus, Location, FCollisionObjectQueryParams(ECC_WorldStatic), FCollisionQueryParams(SCENE_QUERY_STAT(HCJDeathCamera), false))
+		&& !Hit.bStartPenetrating)
+	{
+		Location = Focus + Back * FMath::Max(Hit.Distance - 80.0, 100.0);
+	}
+	// The wreck in the middle, turning to it from where the view pointed.
+	const FQuat Look = (Focus - Location).ToOrientationQuat();
+	FRotator Rotation = FQuat::Slerp(DeathCamera.StartRotation.Quaternion(), Look, FMath::SmoothStep(0.0f, 0.35f, Age)).Rotator();
+	if (const UHCJEffectsDirector* Effects = UHCJEffectsDirector::Get(this))
+	{
+		// The blast shakes the view (off with the "Camera shake" setting).
+		const FVector Shake = Effects->GetCameraShake();
+		const FRotationMatrix Axes(Rotation);
+		Location += Axes.GetUnitAxis(EAxis::Y) * Shake.Y + Axes.GetUnitAxis(EAxis::Z) * Shake.Z;
+	}
+	OutResult.Location = Location;
+	OutResult.Rotation = Rotation;
+	OutResult.FOV = DeathCamera.StartFOV;
+}
+
+#if !UE_BUILD_SHIPPING
+void AHCJPlayerController::TickBlastBench()
+{
+	if (BlastBench.Mode == 0 && BlastBench.Total == 0)
+	{
+		// Once: is a bench asked for?
+		BlastBench.Total = -1;
+		FString Spec;
+		if (FParse::Value(FCommandLine::Get(), TEXT("HCJBlastBench="), Spec, /*bShouldStopOnSeparator*/ false) && HasAuthority())
+		{
+			TArray<FString> Parts;
+			Spec.ParseIntoArray(Parts, TEXT(","));
+			BlastBench.Mode = Parts.Num() > 0 && Parts[0].Equals(TEXT("own"), ESearchCase::IgnoreCase) ? 2 : Parts.Num() > 0 && Parts[0].Equals(TEXT("crowd"), ESearchCase::IgnoreCase) ? 3 : 1;
+			BlastBench.Total = Parts.Num() > 1 ? FMath::Clamp(FCString::Atoi(*Parts[1]), 1, 50) : 6;
+			BlastBench.Distance = Parts.Num() > 2 ? FMath::Clamp(FCString::Atof(*Parts[2]), 300.0f, 30000.0f) : 1500.0f;
+			BlastBench.Sector = Parts.Num() > 3 ? FCString::Atoi(*Parts[3]) : 5;
+			UE_LOG(LogHCJ, Log, TEXT("BlastBench: event=start mode=%s rounds=%d distance=%.0f sector=%d classic=%d"), BlastBench.Mode == 2 ? TEXT("own") : BlastBench.Mode == 3 ? TEXT("crowd") : TEXT("enemy"), BlastBench.Total,
+				BlastBench.Distance, BlastBench.Sector, UHCJEffectsDirector::IsClassicBlast() ? 1 : 0);
+		}
+	}
+	if (BlastBench.Mode == 0)
+	{
+		return;
+	}
+	const float FrameMs = static_cast<float>(FApp::GetDeltaTime() * 1000.0);
+	BlastBench.PhaseTime += FApp::GetDeltaTime();
+	const auto Mean = [](const TArray<float>& Values)
+	{
+		double Sum = 0.0;
+		for (const float Value : Values)
+		{
+			Sum += Value;
+		}
+		return Values.Num() > 0 ? static_cast<float>(Sum / Values.Num()) : 0.0f;
+	};
+	const auto Percentile = [](TArray<float> Values, float Share)
+	{
+		Values.Sort();
+		return Values.Num() > 0 ? Values[FMath::Clamp(FMath::FloorToInt32(Share * Values.Num()), 0, Values.Num() - 1)] : 0.0f;
+	};
+	switch (BlastBench.Phase)
+	{
+	case 0:
+		// A ship, and the world around it loaded: six seconds after the first one, two after every later one.
+		if (GetShip() != nullptr && BlastBench.PhaseTime > (BlastBench.Done == 0 ? 6.0 : 2.0))
+		{
+			HCJMenuCmd(TEXT("skiptutorial"), FString());
+			HCJMenuCmd(TEXT("peace"), FString());
+			HCJMenuCmd(TEXT("scene"), FString::Printf(TEXT("%d,dark"), BlastBench.Sector));
+			BlastBench.Phase = 1;
+			BlastBench.PhaseTime = 0.0;
+			BlastBench.bParked = false;
+		}
+		else if (GetShip() == nullptr)
+		{
+			BlastBench.PhaseTime = 0.0;
+		}
+		break;
+	case 1:
+		if (BlastBench.Mode != 2 && !BlastBench.bParked && BlastBench.PhaseTime > 0.5)
+		{
+			BlastBench.bParked = true;
+			if (BlastBench.Mode == 3)
+			{
+				// Four side by side, each a little farther: the farthest first, so that "the nearest" is always a new one.
+				for (int32 Index = 3; Index >= 0; --Index)
+				{
+					HCJParkEnemy(BlastBench.Distance + 700.0f * Index, -1350.0f + 900.0f * Index, 150.0f * (Index % 2), 3);
+				}
+			}
+			else
+			{
+				HCJParkEnemy(BlastBench.Distance, 0.0f, 0.0f, 0);
+			}
+		}
+		if (BlastBench.PhaseTime > 2.5)
+		{
+			BlastBench.Phase = 2;
+			BlastBench.PhaseTime = 0.0;
+			BlastBench.Reference.Reset();
+			BlastBench.Blast.Reset();
+		}
+		break;
+	case 2:
+		BlastBench.Reference.Add(FrameMs);
+		if (BlastBench.PhaseTime > 1.5)
+		{
+			BlastBench.Phase = 3;
+			BlastBench.PhaseTime = 0.0;
+			for (int32 Kill = 0; Kill < (BlastBench.Mode == 3 ? 4 : 1); ++Kill)
+			{
+				HCJMenuCmd(BlastBench.Mode == 2 ? TEXT("die") : TEXT("killenemy"), FString());
+			}
+		}
+		break;
+	default:
+		BlastBench.Blast.Add(FrameMs);
+		if (BlastBench.PhaseTime > 3.5)
+		{
+			++BlastBench.Done;
+			const float ReferenceMean = Mean(BlastBench.Reference);
+			const float ReferenceMedian = Percentile(BlastBench.Reference, 0.5f);
+			const float BlastMean = Mean(BlastBench.Blast);
+			const float BlastMedian = Percentile(BlastBench.Blast, 0.5f);
+			const float BlastP95 = Percentile(BlastBench.Blast, 0.95f);
+			// By time since the ship was lost: the first half second (pops, blast), the next second (fireball), the rest
+			// (smoke); and the slowest half second anywhere, as a frame rate.
+			float Worst = 0.0f;
+			double Elapsed = 0.0;
+			double WindowSum[3] = { 0.0, 0.0, 0.0 };
+			int32 WindowFrames[3] = { 0, 0, 0 };
+			float SlowestHalf = 0.0f;
+			for (int32 Index = 0; Index < BlastBench.Blast.Num(); ++Index)
+			{
+				const float Value = BlastBench.Blast[Index];
+				Worst = FMath::Max(Worst, Value);
+				const int32 Window = Elapsed < 500.0 ? 0 : Elapsed < 1500.0 ? 1 : 2;
+				WindowSum[Window] += Value;
+				++WindowFrames[Window];
+				Elapsed += Value;
+				// The half second that starts with this frame.
+				double Span = 0.0;
+				int32 Frames = 0;
+				for (int32 Other = Index; Other < BlastBench.Blast.Num() && Span < 500.0; ++Other)
+				{
+					Span += BlastBench.Blast[Other];
+					++Frames;
+				}
+				if (Span >= 500.0)
+				{
+					SlowestHalf = FMath::Max(SlowestHalf, static_cast<float>(Span / Frames));
+				}
+			}
+			const float FirstHalf = WindowFrames[0] > 0 ? static_cast<float>(WindowSum[0] / WindowFrames[0]) : 0.0f;
+			const float NextSecond = WindowFrames[1] > 0 ? static_cast<float>(WindowSum[1] / WindowFrames[1]) : 0.0f;
+			const float Rest = WindowFrames[2] > 0 ? static_cast<float>(WindowSum[2] / WindowFrames[2]) : 0.0f;
+			if (BlastBench.Done > 1)
+			{
+				++BlastBench.NumCounted;
+				BlastBench.SumReference += ReferenceMean;
+				BlastBench.SumReferenceMedian += ReferenceMedian;
+				BlastBench.SumBlast += BlastMean;
+				BlastBench.SumBlastMedian += BlastMedian;
+				BlastBench.SumP95 += BlastP95;
+				BlastBench.SumFirstHalf += FirstHalf;
+				BlastBench.SumSlowestHalf += SlowestHalf;
+				BlastBench.WorstFrame = FMath::Max(BlastBench.WorstFrame, Worst);
+				BlastBench.WorstHalfSecond = FMath::Max(BlastBench.WorstHalfSecond, SlowestHalf);
+			}
+			const TCHAR* ModeName = BlastBench.Mode == 2 ? TEXT("own") : BlastBench.Mode == 3 ? TEXT("crowd") : TEXT("enemy");
+			const UHCJEffectsDirector* Effects = UHCJEffectsDirector::Get(this);
+			UE_LOG(LogHCJ, Log, TEXT("BlastBench: event=round n=%d mode=%s classic=%d ref_ms=%.2f ref_median_ms=%.2f blast_ms=%.2f blast_median_ms=%.2f blast_p95_ms=%.2f blast_max_ms=%.2f first_half_s_ms=%.2f next_s_ms=%.2f rest_ms=%.2f slowest_half_s_ms=%.2f slowest_half_s_fps=%.1f frames=%d blasts_played=%d"),
+				BlastBench.Done, ModeName, UHCJEffectsDirector::IsClassicBlast() ? 1 : 0, ReferenceMean, ReferenceMedian, BlastMean, BlastMedian, BlastP95, Worst, FirstHalf, NextSecond, Rest,
+				SlowestHalf, SlowestHalf > 0.0f ? 1000.0f / SlowestHalf : 0.0f, BlastBench.Blast.Num(), Effects != nullptr ? Effects->GetNumBlastsPlayed() : 0);
+			if (BlastBench.Done >= BlastBench.Total)
+			{
+				const double Rounds = FMath::Max(BlastBench.NumCounted, 1);
+				UE_LOG(LogHCJ, Log, TEXT("BlastBench: event=summary mode=%s classic=%d rounds_counted=%d ref_ms=%.2f ref_median_ms=%.2f blast_ms=%.2f blast_median_ms=%.2f blast_p95_ms=%.2f first_half_s_ms=%.2f slowest_half_s_ms=%.2f worst_half_s_ms=%.2f worst_half_s_fps=%.1f blast_max_ms=%.2f ref_fps=%.1f blast_fps=%.1f"),
+					ModeName, UHCJEffectsDirector::IsClassicBlast() ? 1 : 0, BlastBench.NumCounted, BlastBench.SumReference / Rounds, BlastBench.SumReferenceMedian / Rounds, BlastBench.SumBlast / Rounds,
+					BlastBench.SumBlastMedian / Rounds, BlastBench.SumP95 / Rounds, BlastBench.SumFirstHalf / Rounds, BlastBench.SumSlowestHalf / Rounds, BlastBench.WorstHalfSecond,
+					BlastBench.WorstHalfSecond > 0.0f ? 1000.0f / BlastBench.WorstHalfSecond : 0.0f, BlastBench.WorstFrame, 1000.0 * Rounds / FMath::Max(BlastBench.SumReference, 0.001),
+					1000.0 * Rounds / FMath::Max(BlastBench.SumBlast, 0.001));
+				BlastBench.Mode = 0;
+			}
+			BlastBench.Phase = 0;
+			BlastBench.PhaseTime = 0.0;
+		}
+		break;
+	}
+}
+#endif
 
 AHCJShipCharacter* AHCJPlayerController::GetTarget() const
 {
@@ -1023,6 +1304,25 @@ void AHCJPlayerController::MenuCancelConnect()
 	}
 }
 
+void AHCJPlayerController::MenuStepDifficulty(int32 Step)
+{
+	AHCJGameMode* GameMode = GetWorld() != nullptr ? GetWorld()->GetAuthGameMode<AHCJGameMode>() : nullptr;
+	if (GameMode == nullptr)
+	{
+		return;
+	}
+	UHCJUserSettings& Settings = UHCJUserSettings::Get();
+	Settings.BotDifficulty = FMath::Clamp(GameMode->GetBotDifficulty() + Step, 0, HCJBalance::NumBotDifficulties - 1);
+	Settings.Save();
+	GameMode->SetBotDifficulty(Settings.BotDifficulty);
+}
+
+int32 AHCJPlayerController::GetMenuDifficulty() const
+{
+	const AHCJGameMode* GameMode = GetWorld() != nullptr ? GetWorld()->GetAuthGameMode<AHCJGameMode>() : nullptr;
+	return GameMode != nullptr ? GameMode->GetBotDifficulty() : UHCJUserSettings::Get().BotDifficulty;
+}
+
 void AHCJPlayerController::MenuResume()
 {
 	if (!bInStartMenu)
@@ -1086,6 +1386,9 @@ void AHCJPlayerController::ClientDamageTaken_Implementation(FVector_NetQuantize 
 	LastDamageSource = SourceLocation;
 	LastDamageAmount = Amount;
 	LastDamageTime = GetWorld() != nullptr ? static_cast<float>(GetWorld()->GetTimeSeconds()) : 0.0f;
+	// Where it came from as the pilot saw it (the respawn screen says "from behind" when this was the last hit).
+	const APawn* OwnPawn = GetPawn();
+	LastDamageBearingDeg = OwnPawn != nullptr ? HCJBalance::BearingDegrees(OwnPawn->GetActorForwardVector(), FVector(SourceLocation) - OwnPawn->GetActorLocation()) : -1.0f;
 }
 
 void AHCJPlayerController::HCJGotoHole(float InfluenceFraction)
@@ -1242,26 +1545,58 @@ void AHCJPlayerController::HCJMenuCmd(const FString& Action, const FString& Argu
 	else if (Action == TEXT("hints")) { ToggleHints(); }
 	else if (Action == TEXT("skiptutorial")) { AHCJHUD::DebugSkipOnboarding(); }
 	else if (Action == TEXT("resethints")) { AHCJHUD::DebugResetHints(); }
+	else if (Action == TEXT("mapjump")) { AHCJHUD::DebugMapJumpAge = Argument.IsEmpty() ? -1.0f : FCString::Atof(*Argument); }
 	else if (Action == TEXT("settings") && MenuWidget.IsValid()) { MenuWidget->SetPage(EHCJMenuPage::Settings); }
 	else if (Action == TEXT("controls") && MenuWidget.IsValid()) { MenuWidget->SetPage(EHCJMenuPage::Controls); }
 	else if (Action == TEXT("die"))
 	{
 		if (AHCJShipCharacter* Ship = HasAuthority() ? GetShip() : nullptr)
 		{
-			// Credited to another ship when there is one, so that the respawn screen shows what a real kill shows.
-			AHCJShipCharacter* Other = nullptr;
-			for (TActorIterator<AHCJShipCharacter> It(GetWorld()); It; ++It)
+			// Credited to another ship when there is one - the nearest, so that a ship parked with HCJParkEnemy is the
+			// one - so that the respawn screen shows what a real kill shows, the side it came from included.
+			AHCJShipCharacter* Other = FindNthOtherShip(Ship, 0);
+			if (Other != nullptr && Other->GetController() == nullptr)
 			{
-				if (*It != Ship && !It->IsDead() && It->GetController() != nullptr)
-				{
-					Other = *It;
-					break;
-				}
+				Other = nullptr;
 			}
+			Ship->SetCanBeDamaged(true);
 			Ship->TakeDamage(100000.0f, FDamageEvent(), Other != nullptr ? Other->GetController() : nullptr, Other);
 		}
 	}
 	else if (Action == TEXT("main") && MenuWidget.IsValid()) { MenuWidget->SetPage(EHCJMenuPage::Main); }
+	else if (Action == TEXT("difficulty"))
+	{
+		// What the Difficulty row of the title menu does: "difficulty 2" sets the level (not saved until PLAY), no number steps it up.
+		UHCJUserSettings& Settings = UHCJUserSettings::Get();
+		Settings.BotDifficulty = Argument.IsEmpty() ? (Settings.BotDifficulty + 1) % HCJBalance::NumBotDifficulties : FMath::Clamp(FCString::Atoi(*Argument), 0, HCJBalance::NumBotDifficulties - 1);
+		UE_LOG(LogHCJ, Log, TEXT("Menu: difficulty %d (%s) - %s"), Settings.BotDifficulty, HCJBalance::GetDifficultyName(Settings.BotDifficulty), HCJBalance::GetDifficultyDescription(Settings.BotDifficulty));
+	}
+	else if (Action == TEXT("matchdifficulty"))
+	{
+		// What the stepper of the in-match menu does (host): "matchdifficulty 1" one level up, "matchdifficulty -1" one down.
+		MenuStepDifficulty(Argument.IsEmpty() ? 1 : FCString::Atoi(*Argument));
+	}
+	else if (Action == TEXT("enemybehind"))
+	{
+		// Listen host, with "peace": the nearest other ship is put Argument uu (default 2500) behind the own ship, a little
+		// to the side, its nose on the own ship - what a bot looks like that is about to open fire from behind.
+		AHCJShipCharacter* Ship = HasAuthority() ? GetShip() : nullptr;
+		AHCJShipCharacter* Enemy = FindNthOtherShip(Ship, 0);
+		if (Ship != nullptr && Enemy != nullptr)
+		{
+			const float Distance = FMath::Clamp(Argument.IsEmpty() ? 2500.0f : FCString::Atof(*Argument), 800.0f, 8000.0f);
+			const FRotationMatrix Axes(Ship->GetActorRotation());
+			const FVector Location = Ship->GetActorLocation() - Axes.GetUnitAxis(EAxis::X) * Distance + Axes.GetUnitAxis(EAxis::Y) * (0.3 * Distance) + Axes.GetUnitAxis(EAxis::Z) * (0.15 * Distance);
+			const FRotator Facing = (Ship->GetActorLocation() - Location).Rotation();
+			Enemy->GetCharacterMovement()->StopMovementImmediately();
+			Enemy->TeleportTo(Location, Facing, false, true);
+			if (AController* EnemyController = Enemy->GetController())
+			{
+				EnemyController->SetControlRotation(Facing);
+			}
+			UE_LOG(LogHCJ, Log, TEXT("Debug: %s put %.0f uu behind the own ship, aiming at it"), *GetNameSafe(Enemy), Distance);
+		}
+	}
 	else if (Action == TEXT("lobbies") && MenuWidget.IsValid()) { MenuWidget->SetPage(EHCJMenuPage::Lobbies); }
 	else if (Action == TEXT("leaderboards") && MenuWidget.IsValid()) { MenuWidget->SetPage(EHCJMenuPage::Leaderboards); }
 	else if (Action == TEXT("refresh"))

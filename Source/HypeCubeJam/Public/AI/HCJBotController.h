@@ -75,6 +75,26 @@ enum class EHCJBotState : uint8
  *             stands off and fires torpedoes twice as readily; the cruiser reaches for its tractor beam.
  *           - surroundings: a small rock in the line of fire is shot away with the phaser, the reach of a station's
  *             turrets is steered out of unless the bot attacks the turrets, a fight far away is reached at warp.
+ *  FAIRNESS towards people (FHCJBotSkill, per difficulty; off on Ace and with -HCJNoFair; bots among themselves are
+ *           untouched; counted by AHCJGameMode in the "Fair:" log lines):
+ *           - attack cap: at most MaxAttackersOnHuman bots are in Attack on one human ship (IsOffLimits keeps the others
+ *             from picking it; a bot the human shot in the last HCJBalance::ProvokedSeconds may always answer). A bot
+ *             that finds itself over the cap and was not shot by that human goes back to Wander - it makes room for
+ *             the bot the human shot, and among the others the junior one goes first. So a player who fights one
+ *             bot at a time has one bot at a time on Easy.
+ *           - grace: a human ship under its spawn shield, or less than ArrivalGrace seconds in its sector (spawn,
+ *             portal, wormhole), is not picked as a target.
+ *           - respite: a human ship whose attacker is gone (destroyed, broke off, lost it) is not picked by another
+ *             bot for RespiteSeconds.
+ *           - rear arc: a bot more than about 107 degrees off a human's nose holds its fire (guns, beam, torpedoes,
+ *             tractor) for RearFireDelay seconds after getting there, aims RearAimErrorScale times worse while it is
+ *             there, and slides round to the human's front (FrontBias). A human's tail is no reason to pick it
+ *             (HumanTailScore); scouts do not ambush humans from cloak and nobody makes close passes around them below
+ *             Hard (bFlankHumans). A human that was out of sight for a second gets the reaction delay again.
+ *           - hunters: bots that travel do not route to a human's sector that already holds MaxHuntersPerHuman bots
+ *             (those on their way into it count), and do not roam into it while they have another way out.
+ *           - torpedoes: a torpedo a bot would fire at a human is fired with the chance TorpedoOnHumanChance only; and
+ *             whatever a bot hits a human with does DamageToHumanScale of its damage (AHCJShipCharacter::TakeDamage).
  *  Avoidance (always on): sphere sweep BY OBJECT TYPE ECC_WorldStatic (only asteroid ISMs have that type; ships are
  *           Pawn, portal triggers and projectiles WorldDynamic), radius AvoidanceProbeRadius, from the ship along the
  *           desired direction over AvoidanceLookAhead; on a hit, steer along the desired direction projected on
@@ -201,6 +221,24 @@ protected:
 	/** Every Think while attacking a target behind a rock: a small rock in the way is shot at with the phaser for a moment. */
 	void ThinkRockShot(AHCJShipCharacter& Ship, const AHCJUniverse& Universe, const AHCJShipCharacter& Target, float TargetDistance);
 	void NotifyTactic(EHCJBotTactic Tactic) const;
+
+	// ---- fairness towards people (see the class comment) ----
+
+	/** The ship is flown by a person (its controller is a player controller). */
+	static bool IsHumanShip(const AHCJShipCharacter& Ship);
+	/**
+	 * Other bots that are attacking Other right now (in Attack on it and not breaking off); with bAheadOnly only those
+	 * that come before this bot when the attack cap is full: the ones Other shot, and the ones that took it before this
+	 * bot did (ties: the lower unique id).
+	 */
+	int32 CountBotsAttacking(const AHCJShipCharacter& Other, bool bAheadOnly) const;
+	/**
+	 * This bot may not pick Other as a target now: a person's ship that has just arrived or is under its spawn shield,
+	 * or one that has its share of attackers. Never true for the current target or for a ship that shot this bot.
+	 */
+	bool IsOffLimits(const AHCJShipCharacter& Ship, const AHCJShipCharacter& Other) const;
+	/** Keeps RearArcSince and bRearHold: whether this bot sits in the rear arc of a person's ship and still holds its fire. */
+	void UpdateRearHold(const AHCJShipCharacter& Ship, const AHCJShipCharacter& Target, float Now);
 
 	/** Turns the control rotation towards DesiredAimPoint, limited by AimTurnRateDeg. */
 	void TickAim(float DeltaTime, const AHCJShipCharacter& Ship);
@@ -384,6 +422,18 @@ protected:
 	/** A boosted pass close around the target runs until this time; the next one not before NextClosePassTime. */
 	float ClosePassUntil = 0.0f;
 	float NextClosePassTime = 0.0f;
+
+	// ---- fairness towards people ----
+
+	/** Since when this bot is in the rear arc of its human target (-1: it is not), and whether it holds its fire for that. */
+	float RearArcSince = -1.0f;
+	bool bRearHold = false;
+	/** When a human target came back into sight after more than a second (the reaction delay runs again from here). */
+	float ResightTime = -1000.0f;
+	/** This Think: a human ship was left alone because of the attack cap / the arrival grace (counted once per Think). */
+	mutable bool bHeldByCap = false;
+	mutable bool bHeldByGrace = false;
+	mutable bool bHeldByRespite = false;
 
 	/** Per-bot randomness for behaviour (never used for world generation). */
 	FRandomStream BotRandom;

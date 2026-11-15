@@ -1745,8 +1745,568 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
       `-WebGPUPipelineRecord` / `pipeline_list.py`), so things flicker in for a few frames the first time they are
       drawn (about 1300 draws skipped in the first 40 s of a run).
 
+## 15 Nov 2026 (fourteenth session) - difficulty in the menu, bots that are fair to a player
+29. "Less bots that shoots you from the back" (the player, after one match of 9.4 minutes on build 0.17.0: Easy, 7 bots,
+    4-D; earlier: "enemies are hard to spot"). What the game log of that match says: 2 kills, 30 deaths - one every
+    19 s; 27 by bots (every one of the seven at least twice), 3 with no killer; eight deaths within 12 s of the one
+    before; killed by phaser 8, torpedo 6, scatter 4, missiles 4, pulse 3, rail 1, blaster 1. The log could not say
+    from which side. Built from a design spec (`fairness_spec.md`, written from reading the code; what it got wrong is
+    at the end). No replicated property, no RPC, no lobby key changed: an old and a new build play together, and the
+    rules are the server's. Layout checksum of seed 1234 unchanged (7C0CB60C).
+    - **A. Difficulty: four levels, first row of the menu.** Easy / Normal / Hard / **Ace** (`?Difficulty=0..3`,
+      `HCJBalance::NumBotDifficulties`). The skill rows of Easy, Normal and Hard are untouched; Ace flies with Hard's
+      numbers and has none of the rules below - it is what Hard was. The stepper moved from the middle of the title
+      page to the top, above QUICK PLAY and PLAY (outside the `PLATFORM_WASM` switch: the web build has it), with one
+      line under it that follows the setting (`HCJBalance::GetDifficultyDescription`, under 74 characters, tested):
+      "One bot at a time. Slow, wide aim, and they come at you from the front." / "Two on you at most. A moment's
+      warning before any fire from behind." / "Three on you. Sharp aim, torpedo combos, scouts ambush from cloak." /
+      "No rules: every bot hunts you, from any side, with everything it has." The in-match menu (Esc) has "Bot
+      difficulty (applies now)" for the host and a single player (`AHCJPlayerController::MenuStepDifficulty` ->
+      `AHCJGameMode::SetBotDifficulty`; bots read their row every Think, the setting is saved).
+    - **B. The fairness rules** (`AHCJBotController`, class comment; numbers in `FHCJBotSkill`; `README.md`, "Bots and
+      people", has the table). They apply only when the other ship's controller is a player controller. Bots among
+      themselves are untouched, so the bot matches, their kill rates and the kill minimums of the playthrough tests
+      do not move.
+
+      | | Easy | Normal | Hard | Ace |
+      |---|---|---|---|---|
+      | `MaxAttackersOnHuman` | 1 | 2 | 3 | 0 (no limit) |
+      | `MaxHuntersPerHuman` | 3 | 4 | 6 | 0 |
+      | `RearFireDelay`, s | 2.5 | 1.2 | 0.5 | 0 |
+      | `RearAimErrorScale` | 2 | 1.5 | 1 | 1 |
+      | `FrontBias` | 1.0 | 0.6 | 0.3 | 0 |
+      | `HumanTailScore` | -2 | -1 | 0 | +1.5 |
+      | `bFlankHumans` | no | no | yes | yes |
+      | `ArrivalGrace`, s | 4 | 2 | 1 | 0 |
+      | `RespiteSeconds` | 6 | 3 | 0 | 0 |
+      | `DamageToHumanScale` | 0.5 | 0.8 | 1 | 1 |
+      | `TorpedoOnHumanChance` | 0.35 | 0.7 | 1 | 1 |
+
+      - *Attack cap and grace* (`IsOffLimits`, asked by `FindNearestHostile` and by the smart loop of `PickTarget`,
+        i.e. by every way a bot gets a target): a human ship is not picked while it is under its spawn shield, for
+        `ArrivalGrace` seconds after it appeared in its sector (spawn, portal, wormhole:
+        `AHCJShipCharacter::GetSectorArrivalTime`), while `MaxAttackersOnHuman` bots are attacking it, and for
+        `RespiteSeconds` after its last attacker is gone. A bot the human hit in the last 4 s
+        (`HCJBalance::ProvokedSeconds`) may always answer. A bot with nobody else to fight travels on after 5 s, as
+        before. (Normal's last four rows of the table above were changed in item 31: 3.5 s, 5 s, 0.55, 0.45.)
+      - *Rear arc* (`UpdateRearHold`): "behind" is more than about 107 degrees off the nose of the human's ship (dot
+        product below `HCJBalance::RearArcDot` = -0.3, the threshold `PickTarget` already used). A bot that gets
+        there holds guns, beam, torpedoes and tractor for `RearFireDelay`, aims `RearAimErrorScale` times worse for
+        as long as it is there, and its strafe is pulled round to the human's front (`FrontBias`: the part of the
+        human's forward vector that lies across the line between the two). A human's tail is no bonus in the target
+        score; no cloaked approach to the tail and no close pass around a human below Hard; a human that was out of
+        sight for more than a second gets the reaction delay again.
+      - *Hunters*: `ChooseTravelDim` does not route to a human's sector that already holds `MaxHuntersPerHuman` bots.
+      - *Damage*: `AHCJShipCharacter::TakeDamage` multiplies what a bot does to a human by `DamageToHumanScale` before
+        anything else is computed from it - every weapon, the torpedo's share for the shield and each phaser step.
+        A torpedo a bot would fire at a human is fired with `TorpedoOnHumanChance` only.
+      - *Spawns* (bots too): spawn shield 2 -> 3 s (the first shot still ends it), no spawn within 80 m of an enemy
+        instead of 50 (`SpawnSafeEnemyDistance`; 90 would break the scoring test), and a new ship is turned to face
+        the nearest ship of its sector (no extra draw from `GameplayRandom`).
+      - `-HCJNoFair` (`AHCJGameMode::IsNoFair`): `FHCJBotSkill::ClearFairness` on the row every Think and no damage
+        scale - the bots of before on every level, in the same binary. The spawn changes and the HUD stay.
+    - **C. What the player is told** (client side, from data every machine already has).
+      - ENEMY BEHIND: an enemy within 90 m whose nose is within 12 degrees of the own ship (`HCJUi::IsAimingAt`) gets
+        the pulsing "!" edge arrow (first among the arrows) and a yellow ring on the radar; when it is in the view's
+        rear arc the screen says "ENEMY BEHIND - Bot-04 26 m" in yellow with a cue (the torpedo warning sound, at
+        most every 4 s) and the log `Threat warning: ...`. This is what fills the 2.5 / 1.2 / 0.5 s in which a bot
+        behind a player holds its fire. It also fires for a bot that is aiming at somebody else on the same line.
+      - HIT FROM BEHIND: a hit from the view's rear arc draws a wider arc (0.60 instead of 0.38 rad each side), three
+        heavier lines, for 2 s instead of 1.4, with the label under it. The arc is placed as on the radar - behind is
+        down, left and right are kept. Before, a hit from behind and to the right was drawn at the right of the ring
+        (where the shooter would be on the screen if the view were turned), a hit from dead astern like one from
+        below. (The first picture of the real beam showed the new label at the bottom and the arc at the upper right;
+        the placement was changed after that.)
+      - Respawn screen: "Destroyed by Bot-04 with the RAPID PULSE - from behind" (or "from the side", "head-on":
+        `HCJUi::ClassifyHitSide` of `AHCJPlayerController::GetLastDamageBearingDeg`, computed in `ClientDamageTaken`
+        from the own ship's nose; only when the last damage is less than 1.5 s old), and for "from behind" the tip
+        "Shot from behind: watch the lower half of the radar and the '!' arrows, then turn or boost away."
+    - **D. Fairness telemetry** (server, `LogHCJ`, Log level, key=value like the `Playthrough:` lines; never the word
+      "Error:"). `docs/tools/fair_stats.py <logs>` prints all of the numbers below per log and per group of logs.
+      - `Fair: event=rules match= difficulty= level= nofair= max_attackers= max_hunters= rear_fire_delay= rear_aim_scale=
+        front_bias= tail_score= flank= arrival_grace= damage_scale= respite= torpedo_chance=` - at every match start
+        and when the level is changed in a match: what the match is played with.
+      - `Fair: event=spawn t= name= nearest= enemies= sector=` - a human's new ship; `nearest` is the distance to the
+        nearest ship of that sector (-1: nobody there).
+      - `Fair: event=hit t= victim= attacker= attacker_bot= weapon= facing= bearing= dist= dmg= hull_after= fatal= rear=
+        raw= scale=` - every hit on a human ship. `bearing` is the angle between the victim's nose and the direction
+        to the attacker's ship (0 dead ahead, 180 dead astern; -1 unknown), `rear=1` when that is in the rear arc
+        (above 107.5), `facing` the shield facing it landed on, `dmg` what shield and hull took, `raw` the damage
+        before the difficulty's `scale`. The steps of a phaser beam are added up per attacker: one line every 0.5 s
+        (and at once for the step that destroys the ship).
+      - `Fair: event=death t= name= killer= cause= bearing= dist= killer_bot= rear= alive= attackers=` - a human's
+        death: the weapon or `turret`, `own_torpedo`, `black_hole`, `out_of_the_sector`,
+        `no_shooter_inside_the_sector`; `alive` seconds since the spawn, `attackers` bots attacking it at that moment.
+        The plain line is now `Death: <name> (no killer: <cause>)`.
+      - `Fair: event=status t= match= difficulty= nofair= humans= dmg_total= dmg_rear= dmg_aft= deaths= rear_deaths=
+        peak_attackers= held_cap= held_rear= held_grace= bot_deaths= dmg_unscaled= human_ships= match_t= held_respite=`
+        - every 15 s, at the end of a match and when the world ends; summed over all humans and reset with the match.
+        `dmg_*` is damage by bots only, added up per damage step (exact); `peak_attackers` the most bots attacking
+        one human at a time; `held_*` the number of bot Thinks (4 a second per bot) in which a bot left a human alone
+        because of the cap / held its fire in the rear arc / because of the arrival grace / because of the respite.
+      - **Rear share of a log**: `dmg_rear / dmg_total` of its last `event=status` line. **Deaths per minute**:
+        `deaths / (match_t / 60)` of that line, or the `event=death` lines over the time since the first
+        `event=spawn`. By hand:
+        `Select-String 'Fair: event=status' HypeCubeJam.log | Select-Object -Last 1`. The same from the hit lines
+        (sum of `dmg` with `attacker_bot=1 rear=1` over the sum with `attacker_bot=1`) differs by a point or two,
+        because a phaser line carries the bearing of its last step.
+    - **Measured.** `docs/tools/fair_matches.py`: one human on an autopilot against seven bots (`?Bots=8`), seed 99,
+      no limits, headless editor binary, 245 s per process (4.1 minutes of match), six processes at a time; "before"
+      is the same binary with `-HCJNoFair`. Two pilots, because the first one cannot show the rear share: the
+      autopilot of the playthrough tests ("aiming": its nose follows the nearest ship in sight, it fires all the time
+      and so provokes every bot near it) faces whoever attacks it - 2 % of its damage comes from behind with or
+      without the rules. The "blind" pilot (`-HCJAutoFly` alone: circles, fires straight ahead, never hits) is the
+      player who does not find the enemy: a third of its damage comes from behind without the rules (the spec had
+      guessed 35 % for a uniform orbit).
+
+      | Easy | aiming, before | aiming, fair | blind, before | blind, fair |
+      |---|---|---|---|---|
+      | matches / minutes | 6 / 24.4 | 6 / 24.4 | 3 / 12.2 | 3 / 12.2 |
+      | human deaths per minute | 3.44 (84) | **1.31** (32; 29 by bots, 3 in a black hole) | 2.21 (27) | **0.74** (9) |
+      | per match | 2.7-3.9 | 1.0-2.0 | 1.7-2.9 | 0.25-1.2 |
+      | rear share of bot damage | 2.2 % | 0.1 % | **32.8 %** | **3.2 %** |
+      | deaths by a bot in the rear arc | 2 of 82 | 0 of 29 | 7 of 26 (27 %) | 1 of 9 (11 %) |
+      | deaths within 12 s of the spawn | 44 of 84 | 3 of 32 | 6 of 27 | 0 of 9 |
+      | seconds alive at death, median | 12 | 35 | 19 | 53 |
+      | spawn to the first bot hit, median s | 4.6 | 8.9 | 5.0 | 12.9 |
+      | bots that hit it in its last 8 s: 1 / 2 / 3 | 54 / 26 / 2 | 29 / 1 / 0 | 25 / 2 / 0 | 9 / 0 / 0 |
+      | `peak_attackers` per match | 2 3 3 2 2 3 | 2 1 1 2 2 2 | 3 2 2 | 1 2 1 |
+      | `held_cap` / `held_rear` / `held_grace` / `held_respite` | 0 / 0 / 0 / 0 | 1306 / 20 / 348 / 1440 | 0 / 0 / 0 / 0 | 734 / 290 / 162 / 896 |
+      | bot damage on the human, applied (before the scale) | 11768 | 5421 (10841) | 4657 | 2249 (4498) |
+      | torpedo share of that damage | 19 % | 5 % | 12 % | 1 % |
+      | the human's kills | 17 | 27 | 0 | 0 |
+      | kills in the match, all ships | 397 | 360 | 193 | 170 |
+
+      | Normal, Hard, Ace | deaths per minute | rear share | deaths in the rear arc | `peak_attackers` | held cap / rear / grace / respite |
+      |---|---|---|---|---|---|
+      | Normal aiming, before (2 matches) | 4.79 (39) | 0.1 % | 0 of 39 | 2 2 | 0 |
+      | Normal aiming, fair (2) | 3.92 (32) | 1.5 % | 1 of 32 | 2 2 | 25 / 35 / 189 / 112 |
+      | Normal blind, before (2) | 4.04 (33) | 30.6 % | 10 of 31 | 3 2 | 0 |
+      | Normal blind, fair (2) | 2.96 (24) | 7.1 % | 3 of 22 | 2 2 | 19 / 157 / 170 / 158 |
+      | Hard blind, before (2) | 3.93 (32) | 32.0 % | 10 of 32 | 3 2 | 0 |
+      | Hard blind, fair (2) | 4.18 (34) | 19.8 % | 10 of 33 | 2 2 | 0 / 84 / 132 / 0 |
+      | Hard aiming, before / fair (1 each) | 5.39 / 5.63 | 0.9 % / 2.8 % | 0 / 0 | 2 / 2 | 0 / 7 / 84 / 0 (fair) |
+      | Ace aiming (1) | 4.16 (17) | 2.6 % | 1 of 17 | 2 | 0 / 0 / 0 / 0 |
+
+      - Read. (1) Easy: a player who does not find the enemy dies a third as often (0.74 against 2.21 a minute) and
+        takes a tenth of the share from behind (3 % against 33 %); a player who always fights dies 1.3 times a minute
+        instead of 3.4, lives 35 s instead of 12, and is almost never killed in its first 12 s (3 of 32 against 44 of
+        84) or with two or more bots on it (1 of 32 against 28 of 84). Targets of the orchestrator for the aiming pilot on
+        Easy - at most 1.5 deaths a minute, at least 40 % below the baseline: 1.31 and -62 % over six matches; **one
+        of the six matches was above 1.5** (2.0, two of its eight deaths in a black hole), and 32 deaths put the rate
+        at 1.3 +- 0.25. (2) Normal: rear share 7 % (target 25), deaths 18 % (aiming) and 27 % (blind) below the
+        baseline, at most two attackers - but still a death every 15-20 s for these pilots and half of them within
+        12 s of the spawn: Normal's fairness numbers are the spec's and were not tuned. (3) Hard: the rear share
+        falls from 32 to 20 % (target 35), deaths do not change (no damage scale, cap of three). **`held_cap` stays 0
+        on Hard**: three bots on one human did not happen in these matches with or without the cap (7 bots on 16
+        sectors; the peak was 2, once 3 in a baseline). (4) Ace: every counter 0. (5) The bots still fight each other:
+        kills in the match 360 against 397 (Easy), and no `stuck`, `out_of_bounds` or `nan` event and no error line in
+        any of the 49 match logs of this session.
+      - How the Easy numbers were reached (aiming pilot, deaths per minute; three matches unless said):
+        the spec's numbers with `DamageToHumanScale` 0.6: 1.56; plus the respite and 4 s of arrival grace: 1.63 (no
+        gain for this pilot: it shoots at whatever is near, and a bot it shot may answer); plus "the others make room
+        for the bot the player shot": 1.31 and 1.63 in two batches (1.48 over six) - before that, in 10 of 19 deaths
+        two or more bots had hit it in its last 8 s, afterwards in 1 of 16; plus `DamageToHumanScale` 0.5 and
+        `TorpedoOnHumanChance` 0.35: 1.31 over six. The steps are inside each other's noise (a match has 4-8 human
+        deaths); what is solid is the distance to the baseline (3.3-3.6 in every batch).
+    - **The three deaths with no killer.** Not a collision: rocks do no damage at flying speed - only a collision at
+      warp does (22 points), and that match's log says "0 collisions". Not a black hole ("by black holes 0"). What is
+      left in the code: beyond 260 m from the middle of a sector the hull loses 25 points a second and at 400 m the
+      ship is gone ("THE VOID" in the kill feed, "RETURN TO SECTOR" on the HUD); the blast of the own torpedo; and no
+      bot had hit the ship in the 5 s before, or that bot would have been credited. The three came within 100 s of
+      each other near the end of the match (t = 435, 453 and 536 s), the first 1.3 s after the player's second kill.
+      Most likely the player flew out of the sector, probably running from the bots; the 0.17.0 log cannot prove it.
+      Nothing was changed for it. From now on the log says which: `Death: <name> (no killer: out of the sector | own
+      torpedo | black hole | no shooter inside the sector)` and `cause=` of `Fair: event=death`.
+    - **Verification.** `HypeCubeJamEditor` and `HypeCubeJam` (Win64 Development) built. 71 of 71 automation tests
+      (the count is unchanged: the new checks are inside `HypeCubeJam.Balance.BotDifficulty` - four levels, Ace =
+      Hard's numbers, every fairness field ordered across the levels, Ace and `ClearFairness` all off, names and
+      descriptions, bearings and the rear arc - and inside `HypeCubeJam.UI.Targeting`: `IsAimingAt`,
+      `ClassifyHitSide`). Playthrough suite (editor binary, headless, four scenarios at a
+      time, 516 s, exit code 0): 8 of 8.
+
+      | scenario | result | checks | what it saw |
+      |---|---|---|---|
+      | `match_cycle` | pass | 21 | match 1 won with 5 kills after 36 s; layouts 7C0CB60C -> 5671F10D |
+      | `difficulty_easy` | pass | 29 | 52 kills (item 27: 52), 55 portal / 11 wormhole jumps, 48 pickups; every type killed and died |
+      | `difficulty_normal` | pass | 31 | 76 kills (76), 44 / 10 jumps, 53 pickups |
+      | `difficulty_hard` | pass | 31 | 71 kills (62), 55 / 11 jumps, 71 pickups |
+      | `small_universe` | pass | 13 | 92 kills (92) on four sectors; 81 turret shots, no ship shot down and no rock broken in this run |
+      | `net_host_client_late` | pass | 49 | client 3 kills / 2 deaths, 3.9 corrections per 100 s; late joiner 2 / 4, 2.7 per 100 s and one rock already gone; 3 rocks destroyed, 3 destroyed-set states compared by each |
+      | `autopilot_hangar_match` | pass | 17 | cruiser chosen, PLAY, three matches to the limit of 4 (Normal); the player 5 kills / 2 deaths |
+      | `all_matches_together` | pass | 20 | kills: phaser 139, torpedo 84, blaster 57, missiles 54, pulse 45, scatter 35, rail 25; turrets shot 5 ships down, 7 turrets destroyed; 8 rocks destroyed |
+
+      Server frames 1.5-2.2 ms mean, longest 400 ms. The two scenarios with a human were also run by themselves
+      (twice; see below for the first).
+      - *Found by the suite:* `net_host_client_late` failed its first run with "no rock was destroyed in this run
+        (nothing to compare)". Until now the torpedoes of autopilots that died every few seconds broke a rock or two
+        in every run; pilots that live longer are handed fewer torpedoes (65 fired against 109 with `-HCJNoFair` in a
+        pair of runs side by side: 2 and 4 rocks). The scenario no longer leaves that to chance: its host runs
+        `HCJMenuCmd breakrock` after 64, 128 and 168 s (`docs/tools/playthrough.py`).
+      - Not packaged (the next step of the session is somebody else's). The staged build in `Packaged\Temp` and the
+        zip are still 0.17.0 without these changes.
+    - Development aids added: `-HCJNoFair`, the `Fair:` lines, `docs/tools/fair_matches.py`, `docs/tools/fair_stats.py`,
+      `HCJMenuCmd difficulty [n]` (the menu row; not saved), `matchdifficulty <+1|-1>` (the in-match stepper),
+      `enemybehind [uu]` (listen host, with `peace`: the nearest ship is put behind the own one with its nose on it);
+      `HCJMenuCmd die` now credits the nearest ship.
+    - Pictures (editor binary with `-game`, 1280x720, the capture switch; the menu rows by `HCJMenuCmd difficulty`, the
+      enemy placed by `enemybehind` while the bots were held still with `peace`, the kill by `enemyfire`):
+      `Media/121_title_menu_difficulty_easy.png`, `122_..._normal.png`, `123_..._hard.png`, `124_..._ace.png` (the
+      Difficulty row and its line; taken before the last tuning steps - the menu code did not change after them),
+      `125_enemy_behind_warning.png` (the line, the "!" arrow, the yellow ring on the radar),
+      `126_hit_from_behind_development_hit.png` (`HCJMenuCmd shieldhit 1,12`: a hit on the aft facing from dead
+      astern), `127_hit_from_behind_phaser_of_a_bot_behind.png` (the beam of the bot behind, both warnings),
+      `128_death_recap_from_behind.png` ("Destroyed by Bot-03 with the BLASTER - from behind" and the tip),
+      `129_in_match_menu_bot_difficulty.png` (after one step: Normal). The cue of ENEMY BEHIND was not heard (the
+      runs had no sound).
+    - **What the spec had wrong, and what was done differently.**
+      - Its measurement could not show its main number: the autopilot it names turns its nose to the nearest ship,
+        so its rear share is 2 % before any rule. The blind pilot was added for that.
+      - `?Bots=7` is seven combatants, i.e. six bots next to the human: the matches here use `?Bots=8`.
+      - "A bot the human shot may always answer" plus a plain cap gave an aggressive player two bots at once on Easy
+        most of the time. Now the other bots make room for the one the player shot (`CountBotsAttacking` with
+        `bAheadOnly`).
+      - The arrival time is also set at the spawn, not only after a jump: the spawn shield ends with the first shot,
+        and a pilot who fires at once had no grace at all.
+      - Bots that are breaking off or running for a repair pad are not counted as attackers (they hold their fire).
+      - "playthrough.py needs no change": see the rock check above.
+      - The ring on the radar is yellow, not `ReadWarningColor`: that red is the colour of the blip it surrounds.
+      - Added to its numbers: `RespiteSeconds`, `TorpedoOnHumanChance`, `DamageToHumanScale` (asked for after the
+        player's data: 0.6 on Easy, lowered to 0.5 while tuning), Easy `ArrivalGrace` 3 -> 4. Its optional parts were
+        all built (ENEMY BEHIND, the recap, the in-match stepper).
+      - Its line numbers were right to within a line or two, and its three open questions: the two playthrough
+        automation tests have no human ship (they pass unchanged); no Blueprint overrides the ship class
+        (`DefaultPawnClass` is the C++ class), so the 3 s apply; whether a player can look away from the ship's nose
+        was not checked - the rules measure "behind" from the nose of the ship.
+    - Judged from logs of autopilot matches, the test runs and nine still pictures. Nobody has played against the
+      fair bots, heard the ENEMY BEHIND cue or used the two difficulty steppers with a mouse.
+
+## 15 Nov 2026 (fifteenth session) - the hypercube map, the explosion of a ship
+30. "Improve the hypercube visualization on the right , improve particles when my ship explodes" (the player). Both are
+    client-side and cosmetic: no replicated property, no RPC, no gameplay value changed (an old and a new build play
+    together); nothing platform-specific. Built on item 29 as it stood. Not packaged.
+    - **A. The hypercube map** (`Private/Game/HCJHUDMap.cpp`, new; `AHCJHUD::DrawHypercubeMap`).
+      - *What it was* (`Media/131`-`133`): the 2^n sectors on a fan of n axes in the plane - a tangle from 16 sectors
+        on, unreadable at 32 (two labels on top of each other in the first picture taken) -, 4-pixel dots, the own
+        sector a white square the size of the others, neighbours a thin ring with the id under it, one red speck for
+        "somebody is there", and three rows of legend.
+      - *Layout* (`HCJUi::ProjectMapSector`, plain C++, tested): the sectors are the corners of cubes. The first three
+        bits span one cube seen 27 degrees from the right and 24 from above with a mild perspective; every further bit
+        shifts the whole cube - two cubes side by side for 16 sectors, four (two by two) for 32, a second layer behind
+        them for 64. So a portal of one dimension always runs in the same direction on the map. The depth of a corner
+        sizes and shades its mark (2 to 3.6 px half width, 50 to 100 % brightness); a line whose ends are both at the
+        back is one pixel and dim. The cubes sway 4 degrees to either side in 18 s (`MapSwayDegrees`, 0 = still).
+        Nearest two sectors on the map at 1280x720 (worked out from the projection, not measured in a picture): about
+        50 px (8 sectors), 26 px (16) and 27 px (32, in its wider panel); the old layout had 28, 19 and 6 px. Tried
+        first and dropped: the cube-in-a-cube picture of a tesseract (18 px and 11 px: the two corners on the line of
+        sight fall on each other).
+      - *What it shows* (class comment of `AHCJHUD`): the own sector - a white ring, "YOU", a slow halo; for a second
+        after a jump (or a new ship) two rings run out from it, the mark slides along the line it travelled and that
+        line lights up. One jump away - thick lines from the own sector, a diamond and the sector id, the text and the
+        colour of the in-world "PORTAL > 0101" marker; violet with a round ring for the far end of the own wormhole.
+        Enemies - a red badge with their number (the replicated sector of every player state; a pilot waiting for a
+        ship is not counted; the own sector shows what the radar counts, so a cloaked ship is not given away there).
+        Target - yellow corner brackets, the id and the way there hop by hop in yellow: the sector the HUD is guiding
+        to (`GuideSector`), or red brackets on the sector of the locked ship. Nearest fight - a pulsing red ring with
+        four sparks on the nearest other sector (by the route table) where a ship was lost in the last 8 s (a death
+        count that went up) or that holds two or more ships. Station - a white frame; black hole - an orange ring
+        round a black core; wormhole - a violet dashed arc. The legend is one row (station, black hole, wormhole), and
+        only for what the universe has.
+      - *Labels* (`HCJUi::PlaceMapLabels`, tested): each label takes the best of 16 places next to its mark (below,
+        above, beside, diagonal; near, or one line farther with a thin tie line) - off the marks, the badges, the other
+        labels and the panel edge, preferably on the side away from the own sector - in three rounds. Run on the
+        positions at rest, so the sway cannot make a label jump. The test places the labels of the own sector and of
+        all its neighbours for every own sector of a 3-D, 4-D and 5-D universe with every portal open at the sizes of
+        1280x720 and 1920x1080: no overlap at all with 8 and 16 sectors; with 32 a tenth of a label at most.
+      - *Size*: 300 px wide at 1080p (was 260), 390 px from 32 sectors on; at 1280x720 200 and 260 px. Height about the
+        same as before (the legend lost two rows).
+      - *Cost*: game thread, a timer round the call, averages of 2000 frames (editor binary, 1280x720): 0.13-0.16 ms
+        a frame with 8 and with 16 sectors, 0.24-0.27 ms with 32. Most of it is text: the 8-sector map with a third
+        of the lines takes as long as the 16-sector one (about 14 texts: the title, three legend words, YOU, the ids,
+        the badges; 150 to 400 canvas lines). The whole frame with and without the map (`-HCJNoMap`; bots held still,
+        sector 0101, medians of 1.5 s): 8 sectors 7.59-7.68 / 7.60-7.76 ms, 16 sectors 7.69-7.84 / 7.81-7.86 ms, 32
+        sectors 8.14-8.23 / 8.03-8.14 ms - nothing this measurement can show for 8 and 16, a tenth of a millisecond at
+        most for 32 (the frame waits for the GPU). The old map was not measured this way (its code is gone). Per frame
+        the map itself allocates nothing: inline arrays, the sector names / title / badge digits and all text sizes
+        are kept per universe and canvas size (measuring them every frame was a fifth of the time with 16 sectors);
+        `DrawLabel` builds one `FText` per text, as for every label of the HUD. No render target.
+      - *Problems found in the pictures and fixed*: a label one line away from its mark read as the label of the sector
+        next to it (the far places were too cheap: now only better than two square pixels of overlap, and tied to the
+        mark by a line); a badge covered the label of its own sector (badges are obstacles for the labels now); the
+        wormhole arcs were long dashes that read as noise (shorter, fainter unless it is the own one); the three dashes
+        of the legend ran into one line.
+      - Not built: a larger map on the scoreboard (there was none before either).
+    - **B. A ship's explosion** (`UHCJEffectsDirector::PlayShipDeath`; `README.md`, "Explosions").
+      - *What it was* (`Media/151`, slowed to 6 %): the flare with its streak for half a second, the small Niagara
+        explosion, fourteen light grey plates and ten embers. For the own ship the view was put AT the place of the
+        ship (`SetInitialLocationAndRotation` in `NotifyShipKilled`): the player sat inside the flare and saw white
+        rectangles fly past for four seconds.
+      - *Staged* (stages and times: `HCJEffects::BlastStageTime`, tested). The hull fails for 0.32 s
+        (`HullFailSeconds`): it stays in view, rolls faster and faster, its lights flare orange-white, and three pops
+        run along it - an impact star, the metal impact system, a few sparks, the hull impact sound at 0.7 of its
+        pitch. Then the blast: the flare as the core flash; the first puff of the fireball; a shockwave ring in the
+        plane of the hull (tipped towards a view that is close to that plane); the Niagara explosion of before; three
+        large plates that tumble away slowly with a trail of fire and smoke (`NS_RocketTrail` of the Niagara Examples
+        on a pool of five components that follow a debris slot), fourteen plates, twenty-two sparks (the ember cube
+        drawn out along its flight, gone in under a second), ten embers; the camera shake; the sounds. Three more puffs come
+        0.07, 0.15 and 0.27 s later, off-centre, the second with a small flash of its own. The first puff lives three
+        seconds: fire for 0.7 s, then the smoke that stays and thins out, with cells that glow a little longer.
+      - *Materials* (`docs/tools/make_explosion_materials.py`, editor Python like the other `make_*` scripts; nothing
+        imported): `M_HCJ_Fireball` - alpha composite, so that fire adds light and smoke covers; a ball whose edge
+        billows by two samples of `T_HCJ_CloudNoise` (the cloud texture of the sky) that it carries outwards; heat
+        from white-yellow through orange to dark red by the seconds it has burnt; a rounder outline for the smoke.
+        `M_HCJ_ShockRing` - additive, a thin broken-up ring that runs out fast and slows. `M_HCJ_HullDebris` - lit
+        grey metal whose torn edges glow by per-instance custom data (`HCJEffects::PlateHeat`: hot for a second and a
+        half). No new Niagara system: the trail and the two impact systems are the pack's, unchanged.
+      - *The own ship*: full detail whatever else is going on; the shake is 2.4 times a normal blast's for 0.45 s
+        (off with the "Camera shake" setting); the screen flashes warm for 0.22 s (alpha 0.4 at most) with an orange
+        vignette for a second; a low boom (the torpedo explosion at 0.6 of its pitch) under the explosion sound.
+        **Death camera** (`AHCJPlayerController::CalcCamera`): from where the chase camera was the view pulls back
+        15 m along the line wreck -> camera, turns 7 degrees a second round the wreck and keeps it in the middle for
+        the whole respawn countdown (4 s; left mouse or R after 1.5 s, unchanged); it stops in front of a rock. The
+        respawn lines moved below the middle of the screen (69 % and 81 % of the height instead of 44 % and 60 %).
+      - *Budget*: three levels (`HCJEffects::PickBlastDetail`, tested) - within 70 m everything; to 160 m, or with two
+        other blasts in their first second (unless nearer than 28 m), one lobe, half the pieces, no trails; beyond
+        that, or with four running, no pops, no ring, one short puff, a few pieces. Hard caps: 14 puffs, 3 rings, 5
+        trails, 8 blasts, 120 debris pieces (was 72), 6 flares (as before). The director still ticks only while
+        something is alive.
+      - *Frame time*: `-HCJBlastBench` (new; `AHCJPlayerController::TickBlastBench`): bots held still, the own ship in
+        sector 0101 looking at dark sky, cinematic look on; per round the frame times of 1.5 s with nothing going on,
+        then a ship is blown up and the frame times of the next 3.5 s. Editor binary with `-game`, 1280x720, GTX 950,
+        nothing else running, no picture taken; eight rounds a run, the first left out (it compiles shaders in the
+        editor binary: one frame of 0.3-0.9 s with either version). "Before" is the same binary with `-HCJClassicBlast`.
+
+        | ms a frame (fps) | | quiet, median | the 3.5 s after, mean | first 0.5 s | 0.5-1.5 s | 1.5-3.5 s | slowest half second of any round | longest frame |
+        |---|---|---|---|---|---|---|---|---|
+        | a bot 15 m ahead | before | 7.38 (135) | 8.38 (119) | 8.69 | 8.45 | 8.27 | 8.75 (114) | 19 |
+        | | after | 7.35 (136) | 8.67 (115) | 8.56 | 8.92 | 8.57 | 9.23 (108) | 30 |
+        | the own ship | before | 7.39 (135) | 8.50 (118) | 8.79 | 8.64 | 8.35 | 8.97 (111) | 29 |
+        | | after | 7.37 (136) | 9.06 (110) | 8.74 | 9.22 | 9.06 | 9.74 (103) | 29 |
+        | four bots in one frame, 15 to 36 m | before | 7.46 (134) | 9.19 (109) | 9.74 | 9.43 | 8.92 | 9.91 (101) | 16 |
+        | | after | 7.49 (134) | 9.47 (106) | 9.06 | 10.01 | 9.32 | 10.54 (95) | 21 |
+
+        So: the new explosion costs 0.3 to 0.6 ms a frame more than the old one while it runs, most while the fireball
+        is at its largest; the slowest half second measured is 95 fps (four ships at once), 103 fps for the own ship.
+        A kill costs about a millisecond a frame for a few seconds with either version (messages, the kill feed, the
+        Niagara system). The longest single frames (19-30 ms, one round in seven) come with both.
+        - The first version of the fireball - five puffs, the last a smoke cloud 1.3 times as wide, three octaves of
+          hash noise per pixel - was measured before it was changed: 12.05 ms in its slowest half second for the own
+          ship (83 fps) against 8.84 ms before. A fireball 23 m across seen from 15 m is several layers over most of
+          the screen. Now the first puff turns into the smoke (one layer less, and the largest) and the billows are
+          two texture samples: 9.5 ms.
+        - A run in which I worked on the machine at the same time read 11-12 ms for the same quiet scene (7.4 ms
+          otherwise) and is not in the table.
+        - Not measured: the packaged build (nothing was packaged), a fight in a dense field, a client.
+      - *Problems found in the pictures and fixed*: the first fireball was a pale butter-coloured blob with a flat
+        edge (brightness 3 -> 2.4, a steeper ramp to red, the heat follows the noise); the ring of the own ship swept
+        through the camera, which sits in the plane of the hull (tipped towards the view when the view is within 30
+        degrees of the plane); the vignette showed its bands (16 bands of 9 px instead of 6 of 26); the respawn text
+        and the recap panel lay on the wreck (moved down); with the cloud texture the first version sampled the wrong
+        channels (mean 0.26 instead of 0.5: almost no fire and no smoke - seen at once in the pictures); the smoke had
+        the ragged outline of the flames (its own rounder outline); plates were dark frames (lighter metal); the trail
+        was a hair (scale 2.5).
+      - `-HCJClassicBlast`: the single pop and the view of before, in the same binary - the baseline of the numbers.
+    - **Verification.** `HypeCubeJamEditor` and `HypeCubeJam` (Win64 Development) built. **73 of 73** automation tests on the
+      final code (two new: `HypeCubeJam.UI.HypercubeMap` - the projection inside the square, sectors apart, portals of
+      one dimension parallel, depth in [0, 1], the labels as above; `HypeCubeJam.Effects.BlastStages` - the stages in
+      order and on the right side of the blast, the detail by distance and by the number of blasts, the own ship always
+      full, plates cool, the caps of the settings carry one full blast). The first run was 72 of 73: the new map test
+      itself asked a universe of one dimension (two sectors on a line, which no match has) to stay inside the panel
+      under the sway; the check now starts at two dimensions. Playthrough suite (editor binary, headless, four scenarios
+      at a time), twice - before the last map changes and on the final binaries: **8 of 8** both times (522 and 528 s,
+      exit code 0).
+
+      | scenario | result | checks | what the last run saw |
+      |---|---|---|---|
+      | `match_cycle` | pass | 21 | match 1 won with 5 kills after 83 s; layouts 7C0CB60C -> 5671F10D |
+      | `difficulty_easy` | pass | 29 | 49 kills, 58 portal / 7 wormhole jumps, 55 pickups |
+      | `difficulty_normal` | pass | 30 | 65 kills, 66 / 9 jumps, 55 pickups |
+      | `difficulty_hard` | pass | 31 | 75 kills, 57 / 6 jumps, 65 pickups |
+      | `small_universe` | pass | 14 | 98 kills on four sectors; 86 turret shots, 2 turrets destroyed, 1 rock |
+      | `net_host_client_late` | pass | 49 | client 1 kill / 1 death, 6.1 corrections per 100 s; late joiner 2 / 2, 2.7 per 100 s and one rock already gone; 3 rocks destroyed |
+      | `autopilot_hangar_match` | pass | 17 | cruiser chosen, PLAY, three matches; the player 5 kills / 3 deaths |
+      | `all_matches_together` | pass | 20 | kills: phaser 151, torpedo 87, missiles 53, blaster 41, pulse 30, scatter 28, rail 22; 7 ships shot down by turrets, 9 rocks destroyed |
+
+      The bot matches are not repeatable (they run in real time): `difficulty_easy` had 74, 60 and 49 kills in three
+      runs of this session's builds (item 29: 52), `difficulty_normal` 70, 74 and 65 (76), `small_universe` 83, 89 and
+      98 (92). Nothing in this item touches a bot, a weapon or the server; the layout checksum of seed 1234 is
+      unchanged (7C0CB60C).
+    - Development aids added: `-HCJClassicBlast`, `-HCJBlastBench=<enemy|own|crowd>[,<rounds>[,<uu>[,<sector>]]]` (the
+      `BlastBench:` lines), `-HCJNoMap`, the verbose line `HUD: the hypercube map takes ... microseconds`,
+      `HCJMenuCmd mapjump <s>` (the jump animation of the map frozen at that age; no number: as it runs).
+    - Pictures (editor binary with `-game`, 1280x720 unless said, the capture switch; scenes by `HCJMenuCmd scene
+      5,dark`, `peace`, `HCJParkEnemy`, `killenemy`, `die`). **The explosion pictures were taken with the game slowed
+      to 5 % (`HCJMenuCmd slomo 0.05`), one picture every 0.1 s of game time; nothing was lengthened.**
+      `Media/131_map_before_3d_build_0_17.png`, `133_map_before_5d_build_0_17.png` (the map as it was, from the
+      packaged build 0.17.0 started with `?Dim=3` and `?Dim=5`), `132_map_before_4d.png` (the editor binary before the
+      first change); `134_map_new_3d.png` (three portals out of the own sector, badges, a fight on 001),
+      `135_map_new_4d.png` (the way to the enemies in yellow: PORTAL > 0100, brackets on the sector it leads to, a
+      fight top centre), `136_map_new_5d.png` (32 sectors: four portals out of the own sector, a fight bottom right),
+      `137_map_new_4d_after_a_jump.png` (`HCJMenuCmd mapjump 0.25`: the rings, the line just travelled),
+      `138_map_new_4d_1920x1080.png`, `139_map_new_5d_1920x1080.png`, `140_map_before_and_after_enlarged_3x.png` (the six
+      panels of 131-136 cut out and enlarged three times); `141`-`148_own_ship_*.png` (the own ship: the first pop,
+      the hull glowing and rolling, flash and ring with the vignette, the ring passing, the fireball, the flames
+      cooling, dark smoke with embers and glowing plates, the smoke thinning - 0.1, 0.3, 0.4, 0.5, 0.7, 0.9, 1.2 and
+      1.9 s after the death; the blast is at 0.32 s), `149_enemy_explosion_mid_distance_90m.png` (a bot 90 m ahead, the simpler version: ring
+      and fireball), `150_enemy_explosion_35m_sequence.png` (eight frames of a bot 35 m ahead, full detail),
+      `151_own_ship_explosion_before_sequence.png` (six frames of the own ship's death before the change, slowed to 6 %:
+      the view inside the flare, the plates).
+    - Weak, or not done: nobody has seen either in motion; the explosion was judged from stills in slow motion, the sounds (the
+      pops, the low boom) were not heard (the runs had no sound).
+      - The fireball is flat: quads that face the view, so as the death camera turns round the wreck the flames turn
+        with it, and from close up their edge looks cut out. It burns for 0.7 s.
+      - The smoke is thinned near the view (so that a blast in front of the nose does not blind): for the own ship it
+        is a faint brown cloud; 35 m ahead it is a dark blob for about two seconds that can hide a ship behind it.
+      - The trails behind the three large plates are rows of white puffs (the pack's rocket trail at 2.5 times its
+        size), not fire. The hull does not break up: it is hidden at the blast and the plates are boxes.
+      - "KILLED BY ..." (the centre message, 30 % of the height) lies over the top of the fireball.
+      - The death camera was only run on a listen host, in third person, in an open field. On a client it starts when
+        the death arrives (the network scenario ran it headless: no picture); first person takes another branch (the
+        view starts inside the ship) that was not run; the camera stops in front of a rock on the line to the wreck
+        but may then sit close to it.
+      - The frame times are the editor binary's on a quiet machine; the packaged build was not measured.
+      - Map: with 32 sectors it is dense, and the labels of an own sector with all five portals open may touch by a
+        corner (the test allows a tenth of a label); 64 sectors work by the test only. The sway was seen as two
+        pictures that differ, not in motion. A locked target is nearly always in the own sector, so the red brackets
+        were never seen. A "fight" is two ships in a sector or a death there - two bots passing each other count.
+        0.13-0.27 ms of the game thread a frame is not nothing, even though the frame time does not show it.
+      - `-HCJClassicBlast` keeps the old explosion code alive (about forty lines).
+
+## 15 Nov 2026 (sixteenth session) - review fixes, Normal tuned, final measurement, packaged
+31. Items 29 and 30 were read by four reviewers (netcode, design, regression, performance / look). This session checked
+    each finding against the code, fixed what was real, tuned Normal, measured again, and packaged. No replicated
+    property, no RPC, no lobby key changed (`ProjectVersion` stays 0.2.0; layout checksum of seed 1234 still 7C0CB60C).
+    - **Findings and what was done.**
+      - *Death camera cancelled on a network client* (major, real by reading): `PlayerTick` ended the camera whenever
+        the controller had a pawn, and on a client the dead ship can still be the pawn for a frame (the ship's
+        `bIsDead` and the controller's `Pawn` travel on two actors). Now `AHCJPlayerController::HasLivePawn` (a pawn
+        that is not a destroyed ship) decides, in `PlayerTick` and in `CalcCamera`. Seen on a real client: packaged
+        build, a headless listen host (`-nullrhi`, Hard, `-HCJNoFair`, so that the client dies often) and a rendered
+        client at 1280x720, one picture a second - five deaths in a minute, five `Death camera:` lines, and the four
+        pictures looked at (0.2 to 1.4 s after a death) show the view pulled back with the wreck in the middle
+        (`Media/162`).
+      - *`bWasLocalShip` overwritten every tick* (minor, real): the other order of the same two updates cleared it just
+        before the death, and the own ship then got a stranger's explosion and no camera. It is only ever set now.
+      - *Fairness telemetry allocated strings on every step of a beam* (minor, real): the attacker's name is made once
+        per beam entry (two a second), the victim's once per ship; discrete hits as before.
+      - *Normal untuned* (major, real): see below.
+      - *The hunters cap only blocked the "hunt" route* (minor, real): `ChooseTravelDim` now also counts the bots that
+        are travelling into a person's sector, and the roam fallback drops a portal (or the wormhole) into a sector
+        that is full while another way out is open. New counter `held_hunters` on the `Fair: event=status` line
+        (`fair_stats.py` prints it): 44 in six Easy matches, 6 in six Normal ones. Among bots nothing changes (no
+        such sector without a person; the same draw from `BotRandom`).
+      - *ENEMY BEHIND cue is the torpedo warning, and fires for a nose that sweeps past* (minor, real - and the
+        fallback the reviewer proposed, `LowHealthSounds`, is the same wave: every warning of the game is the one
+        tick). The line and the cue now wait until the nose has stayed on the own ship for 0.3 s
+        (`HCJUi::AimWarnDwellSeconds`; the "!" arrow and the radar ring still show at once), and the cue is that tick
+        at 0.67 of its pitch (`AimWarnCuePitch`; `UHCJAssetSettings::PlaySound2D` got a pitch). Still nobody has heard
+        it. It still fires for a bot that keeps its nose on the player while aiming at somebody behind the player.
+      - *`net_host_client_late` at the limit of its score checks* (major, real: five runs of the day gave 1 to 6 events
+        per remote player and once a single remote death): the host of that scenario runs with `-HCJNoFair` now. The
+        scenario is about the network; its checks were written for easy bots that treat a person like any ship. The
+        rules with remote people in a match are therefore no longer part of the suite (they ran in the five suite
+        runs of items 29 and 30, without an error line).
+      - *Spawn changes not switched off by `-HCJNoFair`* (minor, real as a wrong comment): the comment of
+        `AHCJGameMode::IsNoFair` and the README now say that the 3 s spawn shield, the 80 m and the facing stay. So
+        every "before" column of items 29 and 31 is the game with those three changes, not build 0.17.0.
+      - *Crowd throttle of ship blasts saw only the first 0.27 s* (minor, real): a blast slot stays taken until one
+        second after its blast, which is what `PlayShipDeath` counts.
+      - *Kill feed over the TARGET panel under the larger map* (minor, real by reading; not reproduced): the feed
+        shows as many rows as fit above half the screen height (at least two); the oldest wait out.
+      - *Map: travelled line and sliding mark after a respawn in a sector that is not joined* (minor, real): only for
+        a jump (one open portal apart, or the wormhole); a new ship elsewhere gets the rings alone.
+      - Not changed: "KILLED BY ..." over the top of the fireball, "RESPAWN IN" on the failing hull for the first
+        0.3 s, the fill cost of the fireball at 1920x1080 (not measured), the first-person branch of the death camera
+        (not run).
+    - **Normal** (`FHCJBotSkill::Get(1)`): `ArrivalGrace` 2 -> 3.5 s, `RespiteSeconds` 3 -> 5 s, `DamageToHumanScale`
+      0.8 -> 0.55, `TorpedoOnHumanChance` 0.7 -> 0.45 (first step 3 / 4.5 / 0.65 / 0.5: 3.10 deaths a minute over three
+      matches). Cap 2, rear wait 1.2 s and the rest as they were. The aiming pilot now dies 2.69 times a minute (six
+      matches, 1.96 to 3.92) against 4.65 without the rules; 24 of 66 deaths within 12 s of the spawn against 43 of
+      57; median 14 s alive against 5. The reviewer's 2 to 2.5 a minute is not reached: one Normal bot wins its duel
+      with this autopilot in about ten seconds, and a pilot that shoots first has no grace. Not measured on Normal:
+      the blind pilot.
+    - **Final measurement** (`fair_matches.py`, as in item 29: one autopilot against seven bots, seed 99, 245 s a
+      process, six at a time, headless editor binary; logs `Saved\Fair\final_pool`). The Easy and the baseline
+      matches ran on the binary before the last change of Normal's numbers, which they do not read.
+
+      | | matches / minutes | deaths a minute (deaths) | per match | within 12 s of the spawn | median s alive | rear share of bot damage | deaths by a bot in the rear arc | `peak_attackers` | held cap / rear / grace / respite / hunters |
+      |---|---|---|---|---|---|---|---|---|---|
+      | Easy, `-HCJNoFair`, aiming | 6 / 24.5 | 2.45 (60) | 1.96-3.18 | 20 | 18 | 3.5 % | 1 of 57 | 3 3 3 2 3 3 | 0 |
+      | **Easy, fair, aiming** | 6 / 24.5 | **1.06** (26) = -57 % | 0.73-1.22 | 0 | 41 | 0.1 % | 0 of 26 | 2 2 2 2 1 2 | 1109 / 30 / 398 / 1544 / 44 |
+      | Easy, `-HCJNoFair`, blind | 3 / 12.2 | 2.53 (31) | 2.45-2.69 | 15 | 13 | **45.7 %** | 15 of 30 | 2 2 2 | 0 |
+      | **Easy, fair, blind** | 3 / 12.2 | **1.22** (15; 13 by bots) = -52 % | 0.73-1.71 | 0 | 31 | **3.0 %** | 0 of 13 | 1 1 1 | 473 / 231 / 151 / 770 / 31 |
+      | Normal, `-HCJNoFair`, aiming | 3 / 12.2 | 4.65 (57) | 4.16-5.14 | 43 | 5 | 2.4 % | 2 of 57 | 2 2 2 | 0 |
+      | **Normal, fair, aiming** | 6 / 24.5 | **2.69** (66; 63 by bots) = -42 % | 1.96-3.92 | 24 | 14 | 2.1 % | 1 of 63 | 2 2 2 2 2 2 | 111 / 83 / 688 / 704 / 6 |
+
+      Easy: every one of the six matches of the aiming pilot is below 1.5 a minute; of the three of the blind pilot
+      one is above (1.71: seven deaths, one of them by a turret). The baseline of this session is lower than item
+      29's (2.45 against 3.44 a minute for the same pilot and switches): the matches of an afternoon differ by that
+      much, so only columns of one session compare. No error line and no `stuck` / `out_of_bounds` / `nan` event in
+      the 27 logs. `peak_attackers` 2 on Easy is the moment in which the bot the player shot comes in and the other
+      has not let go yet (two bots had hit the pilot in its last 8 s in 4 of 26 deaths, against 20 of 60).
+    - **Verification.** `HypeCubeJamEditor` (Win64 Development) built; **73 of 73** automation tests, twice (the second
+      time on the final sources), exit code 0. Playthrough suite, editor binary, headless: **8 of 8**, 518 s, exit
+      code 0 (`Saved\Playthrough\20261115_163415`; after it only comments and documents changed).
+
+      | scenario | result | checks | what it saw |
+      |---|---|---|---|
+      | `match_cycle` | pass | 21 | match 1 won with 5 kills after 72 s; layouts 7C0CB60C -> 5671F10D |
+      | `difficulty_easy` | pass | 29 | 48 kills, 61 portal / 9 wormhole jumps, 73 pickups |
+      | `difficulty_normal` | pass | 30 | 60 kills, 70 / 9 jumps, 78 pickups |
+      | `difficulty_hard` | pass | 31 | 73 kills, 57 / 10 jumps, 63 pickups |
+      | `small_universe` | pass | 13 | 93 kills on four sectors; 76 turret shots, 4 turrets destroyed |
+      | `net_host_client_late` | pass | 49 | client 2 kills / 3 deaths, 5.6 corrections per 100 s; late joiner 1 / 2, none, one rock already gone; 2 rocks destroyed |
+      | `autopilot_hangar_match` | pass | 17 | cruiser chosen, PLAY, three matches; the player 2 kills / 4 deaths |
+      | `all_matches_together` | pass | 20 | kills: phaser 141, torpedo 95, scatter 44, missiles 42, blaster 37, pulse 36, rail 23; 4 ships shot down by turrets, 9 turrets destroyed, 6 rocks |
+
+      The same suite on the packaged build (`--binary packaged`, headless, after the zip was made; its logs go to the
+      stage's `Saved\`, which the zip leaves out): **8 of 8**, 489 s, exit code 0 - 60 / 71 / 69 kills on easy /
+      normal / hard, 98 on four sectors, client 1 kill / 2 deaths and late joiner 3 / 3 in the network scenario, 5
+      rocks destroyed there, the autopilot player 3 kills / 3 deaths as a cruiser over three matches.
+    - **Packaged** (the command of the README, "Packaged build"; 3 min 14 s): the game target compiled and linked, 1083
+      packages in the cook (1054 cooked, 29 skipped for the platform; 1080 before - the three explosion materials are
+      new and compiled for SM5 and SM6), 0 errors, 0 warnings. `docs\tools\make_zip.ps1`:
+      `Packaged\mariuz_HypeCubeJam.zip` 585.0 MB (613,390,843 bytes), 883.9 MB unpacked, 48 files; `python -I` /
+      `zipfile.testzip()`: nothing wrong, 48 entries, forward slashes, no `.pdb`.
+      - Run from a copy extracted to `F:\work\HCJ_final_check` (not in the project), 1280x720, `-HCJNoEOS -HCJNoStats
+        -HCJNoIntro`, ports 7821 to 7826: the title menu comes up with the Difficulty row first and its line; the row
+        steps to Normal and back; PLAY starts a match on Easy with the rules in the log (`Fair: event=rules ...
+        max_attackers=1 ...`), 64 to 88 fps averages over 4 s with a picture taken in each; the process quits by
+        itself. One error line per log (the known CelestialVault message). On the 2 GB card two of the runs
+        logged "video memory 89 to 229 MB over budget" in two of their intervals each, 0 in all the others.
+      - EOS values (`web_secret_scan.py` on the extracted copy, with UnrealPak; it prints names and counts, never a
+        value): loose files - 0 values, 1 hit for the section name (a string of the executable); inside
+        `HypeCubeJam-Windows.pak` - 6 hits, all in the staged `Config/DefaultEngine.ini` (the five values of
+        `[HypeCubeJam.EOS]` and the section name). That is how the Windows build has been since the client secret
+        went into `DefaultEngine.ini` (the game signs in with it; the web build's scan found the same in the Windows
+        stage). The logs of the packaged runs, of the fairness matches and of the suite: 0 hits.
+    - Pictures (**packaged build**, 1280x720, the capture switch; numbered from 152 because 141-151 are item 30's):
+      `Media/152_packaged_title_menu_difficulty_row_easy.png`, `153_..._normal.png`;
+      `154_packaged_match_with_the_hypercube_map.png` (a match after PLAY, the autopilot flying);
+      `155_packaged_enemy_behind_warning.png` (`peace`, `scene 5,dark`, `enemybehind 2500`);
+      `156_packaged_hit_from_behind_with_enemy_behind.png` (the beam of that bot: the wide arc with its label, AFT
+      SHIELD DOWN, both warnings); `157`-`160_packaged_own_ship_explosion_*.png` (slowed to 5 %, 0.2 / 0.4 / 0.7 /
+      1.2 s after the death: the hull glowing with pops, flash and ring with the vignette, the fireball with the
+      ring passing, cooling flames with glowing plates); `161_..._real_time_recap_from_behind.png` (at full speed,
+      0.7 s after a bot's kill from behind, with the recap line); `162_packaged_death_camera_on_a_network_client.png`.
+    - Weak, or not done.
+      - Nobody has played this build. Everything about the bots is autopilot data; nothing was heard.
+      - Normal is above the 2 to 2.5 deaths a minute the review asked for (2.69), and the blind pilot was not run
+        there. Hard and Ace were not measured again.
+      - The Easy numbers are the two autopilots'. The margin to 1.5 is 0.44 for the aiming pilot (26 deaths: about
+        +-0.2) and 0.28 for the blind one (15 deaths: about +-0.3; one match of three above 1.5).
+      - The kill-feed limit, the map after a respawn and the blast throttle were changed by reading; none of the
+        three situations was produced in a run. `held_hunters` counts, but whether fewer bots crowd a player's
+        sector was not measured.
+      - The ENEMY BEHIND cue has a pitch of its own, not a sound of its own.
+      - The death camera on a client was seen in four pictures of one run on one PC (no packet loss, no load); the
+        cockpit view was not run.
+      - In the pictures "KILLED BY ..." still lies over the top of the fireball, and the fireball is flat.
+      - Every picture taken costs a frame of 0.1 to 0.6 s in the capture runs (the "worst frame" of the `Capture`
+        lines); frame times of the packaged build without pictures were not measured in this session.
+
 ## Measurements
-- Automation tests: 9 at the start, 71 now, all passing (added: two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
+- Automation tests: 9 at the start, 73 now (item 31: 73 of 73 on the final sources), all passing (added: the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station
   placement, lead aim).
 - Frame rate (editor binary, -game, 8 s averages): 101-128 fps with basic shapes (`-HCJNoAssets`), 98-129 fps
@@ -1757,6 +2317,35 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
   also with basic shapes only.
 
 ## Not done / open
+- Item 30 (the hypercube map, the explosion of a ship) was judged from still pictures (the explosion in slow motion),
+  frame-time measurements with the editor binary and the test runs. Nobody has played with either.
+  - Packaged in item 31 (the three new materials cook; the explosion and the map were looked at in pictures of the
+    packaged build).
+  - The fireball is flat quads facing the view; the smoke of a blast 35 m ahead hides what is behind it for about two
+    seconds; the trails of the burning pieces are rows of white puffs; the hull does not break up.
+  - The death camera was run on a listen host and (item 31, after a fix) on one network client, in third person;
+    not from the cockpit.
+  - The sounds of the pops and the low boom of the own ship were not heard.
+  - The map with 32 sectors is dense; 64 sectors were not looked at; it takes 0.13-0.27 ms of the game thread a frame.
+  - No larger map on the scoreboard.
+- Item 29 (difficulty in the menu, bots that are fair to a player) was judged from autopilot matches, test runs and
+  still pictures. Nobody has played against the fair bots.
+  - Packaged in item 31.
+  - Normal was tuned in item 31: 2.69 deaths a minute for the aiming autopilot (4.65 without the rules), a death every
+    22 s, a third of them within 12 s of the spawn. The review asked for 2 to 2.5.
+  - Easy (item 31): 1.06 deaths a minute for the pilot that always fights, 1.22 for the one that does not find the
+    enemy (target 1.5); one match of nine above it. A match has 3-7 human deaths, so one match says little.
+  - `held_cap` is 0 on Hard: three bots on one player did not happen in the measured matches, with or without the cap.
+  - Ace was measured with one match (its counters are 0); that it equals Hard without the rules is the unit test's word.
+  - "Behind" is measured from the nose of the player's ship; whether a player can look elsewhere was not checked.
+  - ENEMY BEHIND also fires for a bot that is aiming at somebody else on the same line (after 0.3 s since item 31),
+    and its cue (the warning tick, lower) repeats every 4 s for as long as a ship sits behind the player. Nobody has
+    heard it.
+  - A player who flies out of a sector still dies of it without a shooter (most likely the three deaths with no
+    killer of the player's match); the log now says so.
+  - The rules count a ship as a person's by its controller on the server: they apply to every human in a network
+    match, but that was only run with the autopilots of `net_host_client_late`, on Easy - and since item 31 that
+    scenario runs with `-HCJNoFair`, so no test has the rules and a remote person together.
 - Item 27 (bot tactics, playthrough tests, quick play) was judged from logs, bot matches, test runs and still pictures.
   - Bots: on easy and normal the interceptor is now clearly the best type (K/D about a third above the mean of the five
     over twelve matches each) and gunship and cruiser the worst (16-24 % below); on hard all five are inside 10 %. The

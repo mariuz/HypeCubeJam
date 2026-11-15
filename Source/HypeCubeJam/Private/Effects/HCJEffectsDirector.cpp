@@ -10,7 +10,10 @@
 #include "GameFramework/PlayerController.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "NiagaraComponent.h"
+#include "NiagaraSystem.h"
 
 #include "Assets/HCJAssetSettings.h"
 #include "Game/HCJGameMode.h"
@@ -29,6 +32,27 @@ namespace
 	constexpr float DebrisRestitution = 0.45f;
 	/** Rock chunks are drawn with at most this many of the rock meshes. */
 	constexpr int32 MaxRockKinds = 2;
+	/** Ships going up at the same time that are kept track of; one more replaces the one that is furthest along. */
+	constexpr int32 MaxShipBlasts = 8;
+	/** A spark is drawn as long as it flies in this many seconds (within limits, uu). */
+	constexpr float SparkStreakSeconds = 0.05f;
+	/** The base colour of the fire; a little of the ship's own colour is mixed in. */
+	const FLinearColor FireColor(1.0f, 0.5f, 0.14f);
+}
+
+bool UHCJEffectsDirector::IsClassicBlast()
+{
+#if UE_BUILD_SHIPPING
+	return false;
+#else
+	static const bool bClassic = FParse::Param(FCommandLine::Get(), TEXT("HCJClassicBlast"));
+	return bClassic;
+#endif
+}
+
+float UHCJEffectsDirector::GetHullFailSeconds()
+{
+	return IsClassicBlast() ? 0.0f : FMath::Max(UHCJAssetSettings::Get().HullFailSeconds, 0.0f);
 }
 
 UHCJEffectsDirector* UHCJEffectsDirector::Get(const UObject* WorldContextObject)
@@ -50,7 +74,8 @@ TStatId UHCJEffectsDirector::GetStatId() const
 bool UHCJEffectsDirector::IsTickable() const
 {
 	// Nothing ticks while nothing flies, flares or shakes.
-	return bReady && (Debris.NumActive() > 0 || GetNumFlares() > 0 || NumActiveStars > 0 || ShakeAmount > 0.0f);
+	return bReady && (Debris.NumActive() > 0 || GetNumFlares() > 0 || NumActiveStars > 0 || ShakeAmount > 0.0f
+		|| NumActiveBlasts > 0 || NumActivePuffs > 0 || NumActiveRings > 0 || NumActiveTrails > 0);
 }
 
 void UHCJEffectsDirector::Deinitialize()
@@ -68,6 +93,19 @@ void UHCJEffectsDirector::Deinitialize()
 	StarMaterials.Reset();
 	Stars.Reset();
 	NumActiveStars = 0;
+	PuffQuads.Reset();
+	PuffMaterials.Reset();
+	RingQuads.Reset();
+	RingMaterials.Reset();
+	TrailComponents.Reset();
+	Puffs.Reset();
+	Rings.Reset();
+	Trails.Reset();
+	Blasts.Reset();
+	NumActivePuffs = 0;
+	NumActiveRings = 0;
+	NumActiveTrails = 0;
+	NumActiveBlasts = 0;
 	bReady = false;
 	Super::Deinitialize();
 }
@@ -126,11 +164,12 @@ bool UHCJEffectsDirector::EnsureReady()
 	const int32 Capacity = FMath::Clamp(Settings.MaxDebris, 0, 256);
 	Debris.SetCapacity(Capacity);
 	SlotKinds.Init(INDEX_NONE, Capacity);
-	const auto AddDebrisMesh = [this, Root, Capacity](UStaticMesh* Mesh, UMaterialInterface* Material)
+	const auto AddDebrisMesh = [this, Root, Capacity](UStaticMesh* Mesh, UMaterialInterface* Material, int32 NumCustomFloats = 0)
 	{
 		UInstancedStaticMeshComponent* Component = NewObject<UInstancedStaticMeshComponent>(Host, NAME_None, RF_Transient);
 		Component->SetMobility(EComponentMobility::Movable);
 		Component->SetStaticMesh(Mesh);
+		Component->SetNumCustomDataFloats(NumCustomFloats);
 		if (Material != nullptr)
 		{
 			Component->SetMaterial(0, Material);
@@ -166,15 +205,19 @@ bool UHCJEffectsDirector::EnsureReady()
 		UMaterialInterface* ShapeMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
 		if (Cube != nullptr)
 		{
-			UMaterialInstanceDynamic* Plate = ShapeMaterial != nullptr ? UMaterialInstanceDynamic::Create(ShapeMaterial, Host) : nullptr;
+			// Hull plates: dark metal whose torn edges glow while the piece is hot (heat: per-instance custom data 0);
+			// the plain light grey of before with -HCJClassicBlast or when that material is missing.
+			UMaterialInterface* HullMaterial = IsClassicBlast() ? nullptr : UHCJAssetSettings::Load<UMaterialInterface>(Settings.HullDebrisMaterial, TEXT("hull debris"));
+			UMaterialInstanceDynamic* Plate = HullMaterial == nullptr && ShapeMaterial != nullptr ? UMaterialInstanceDynamic::Create(ShapeMaterial, Host) : nullptr;
 			if (Plate != nullptr)
 			{
 				Plate->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.42f, 0.44f, 0.48f));
 				Plate->SetScalarParameterValue(TEXT("Roughness"), 0.35f);
 				DebrisMaterials.Add(Plate);
 			}
+			bPlatesHaveHeat = HullMaterial != nullptr;
 			PlateKind = DebrisMeshes.Num();
-			AddDebrisMesh(Cube, Plate);
+			AddDebrisMesh(Cube, HullMaterial != nullptr ? HullMaterial : static_cast<UMaterialInterface*>(Plate), bPlatesHaveHeat ? 1 : 0);
 
 			// Embers: the same cube with the unlit glow of the pads and beacons, so that a wreck reads against black space.
 			UMaterialInterface* Glow = UHCJAssetSettings::Load<UMaterialInterface>(Settings.PickupMaterial, TEXT("debris ember glow"));
@@ -192,6 +235,22 @@ bool UHCJEffectsDirector::EnsureReady()
 				DebrisMaterials.Add(Ember);
 				EmberKind = DebrisMeshes.Num();
 				AddDebrisMesh(Cube, Ember);
+			}
+			// Sparks: the same cube again, drawn out along its flight, hotter and brighter than an ember.
+			UMaterialInstanceDynamic* Spark = Glow != nullptr ? UMaterialInstanceDynamic::Create(Glow, Host) : nullptr;
+			if (Spark != nullptr)
+			{
+				if (!Settings.PickupColorParameter.IsNone())
+				{
+					Spark->SetVectorParameterValue(Settings.PickupColorParameter, FLinearColor(1.0f, 0.7f, 0.32f));
+				}
+				if (!Settings.PickupBrightnessParameter.IsNone())
+				{
+					Spark->SetScalarParameterValue(Settings.PickupBrightnessParameter, Settings.DebrisEmberBrightness * 2.5f);
+				}
+				DebrisMaterials.Add(Spark);
+				SparkKind = DebrisMeshes.Num();
+				AddDebrisMesh(Cube, Spark);
 			}
 		}
 	}
@@ -243,9 +302,59 @@ bool UHCJEffectsDirector::EnsureReady()
 		StarMaterials.Add(Material);
 	}
 
+	// The staged explosion of a ship: fireball puffs, shockwave rings, trails of burning pieces.
+	const auto MakeQuads = [this, Root, Plane](UMaterialInterface* Base, int32 Num, int32 SortPriority, TArray<TObjectPtr<UStaticMeshComponent>>& OutQuads, TArray<TObjectPtr<UMaterialInstanceDynamic>>& OutMaterials)
+	{
+		for (int32 Index = 0; Index < Num; ++Index)
+		{
+			UMaterialInstanceDynamic* Material = UMaterialInstanceDynamic::Create(Base, Host);
+			UStaticMeshComponent* Quad = NewObject<UStaticMeshComponent>(Host, NAME_None, RF_Transient);
+			Quad->SetMobility(EComponentMobility::Movable);
+			Quad->SetStaticMesh(Plane);
+			Quad->SetMaterial(0, Material);
+			Quad->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Quad->SetGenerateOverlapEvents(false);
+			Quad->SetCanEverAffectNavigation(false);
+			Quad->SetCastShadow(false);
+			Quad->SetReceivesDecals(false);
+			Quad->SetTranslucentSortPriority(SortPriority);
+			Quad->SetVisibility(false);
+			Quad->SetupAttachment(Root);
+			Quad->RegisterComponent();
+			OutQuads.Add(Quad);
+			OutMaterials.Add(Material);
+		}
+	};
+	const bool bStaged = !IsClassicBlast();
+	UMaterialInterface* FireballBase = bStaged ? UHCJAssetSettings::Load<UMaterialInterface>(Settings.FireballMaterial, TEXT("fireball")) : nullptr;
+	const int32 NumPuffs = (Plane != nullptr && FireballBase != nullptr) ? FMath::Clamp(Settings.MaxFireballs, 0, 24) : 0;
+	// Smoke covers what is behind it: drawn before the additive flares, rings and stars, so that a flash is never dulled by it.
+	MakeQuads(FireballBase, NumPuffs, -1, PuffQuads, PuffMaterials);
+	Puffs.SetNum(NumPuffs);
+	UMaterialInterface* RingBase = bStaged ? UHCJAssetSettings::Load<UMaterialInterface>(Settings.ShockRingMaterial, TEXT("shockwave ring")) : nullptr;
+	const int32 NumRings = (Plane != nullptr && RingBase != nullptr) ? FMath::Clamp(Settings.MaxShockRings, 0, 8) : 0;
+	MakeQuads(RingBase, NumRings, 0, RingQuads, RingMaterials);
+	Rings.SetNum(NumRings);
+	UNiagaraSystem* TrailSystem = bStaged ? UHCJAssetSettings::Load<UNiagaraSystem>(Settings.DebrisTrailEffect, TEXT("debris trail")) : nullptr;
+	const int32 NumTrails = (TrailSystem != nullptr && PlateKind != INDEX_NONE) ? FMath::Clamp(Settings.MaxDebrisTrails, 0, 8) : 0;
+	for (int32 Index = 0; Index < NumTrails; ++Index)
+	{
+		UNiagaraComponent* Trail = NewObject<UNiagaraComponent>(Host, NAME_None, RF_Transient);
+		Trail->SetAutoActivate(false);
+		Trail->SetAsset(TrailSystem);
+		Trail->SetWorldScale3D(FVector(Settings.DebrisTrailScale));
+		Trail->SetupAttachment(Root);
+		Trail->RegisterComponent();
+		TrailComponents.Add(Trail);
+	}
+	Trails.SetNum(NumTrails);
+	Blasts.SetNum(MaxShipBlasts);
+
 	bReady = true;
-	UE_LOG(LogHCJ, Log, TEXT("Effects: %d debris slots on %d meshes (%d rock, hull plate %s, ember %s), %d flare quads, camera shake %s"), Capacity, DebrisMeshes.Num(), NumRockKinds,
-		PlateKind != INDEX_NONE ? TEXT("yes") : TEXT("no"), EmberKind != INDEX_NONE ? TEXT("yes") : TEXT("no"), NumFlares, UHCJUserSettings::Get().bCameraShake ? TEXT("on") : TEXT("off"));
+	UE_LOG(LogHCJ, Log, TEXT("Effects: %d debris slots on %d meshes (%d rock, hull plate %s, ember %s, spark %s), %d flare quads, %d fireball puffs, %d shockwave rings, %d debris trails, ship blast %s, camera shake %s"),
+		Capacity, DebrisMeshes.Num(), NumRockKinds, PlateKind != INDEX_NONE ? (bPlatesHaveHeat ? TEXT("with heat") : TEXT("plain")) : TEXT("no"), EmberKind != INDEX_NONE ? TEXT("yes") : TEXT("no"),
+		SparkKind != INDEX_NONE ? TEXT("yes") : TEXT("no"), NumFlares, NumPuffs, NumRings, NumTrails, bStaged ? TEXT("staged") : TEXT("classic (-HCJClassicBlast)"),
+		UHCJUserSettings::Get().bCameraShake ? TEXT("on") : TEXT("off"));
 	return true;
 }
 
@@ -368,14 +477,15 @@ void UHCJEffectsDirector::PlayImpactStar(const FVector& Location, float Scale, c
 	++NumStarsSpawned;
 }
 
-void UHCJEffectsDirector::SpawnDebris(const FVector& Location, const FVector& BaseVelocity, int32 Count, int32 KindMin, int32 KindMax, float Spread, float Speed,
-	const FVector& ScaleMin, const FVector& ScaleMax, bool bUniformScale)
+int32 UHCJEffectsDirector::SpawnDebris(const FVector& Location, const FVector& BaseVelocity, int32 Count, int32 KindMin, int32 KindMax, float Spread, float Speed,
+	const FVector& ScaleMin, const FVector& ScaleMax, bool bUniformScale, float LifeScale)
 {
 	if (Debris.GetCapacity() == 0 || DebrisMeshes.Num() == 0 || KindMax < KindMin)
 	{
-		return;
+		return INDEX_NONE;
 	}
-	const float Life = FMath::Max(UHCJAssetSettings::Get().DebrisSeconds, 0.2f);
+	const float Life = FMath::Max(UHCJAssetSettings::Get().DebrisSeconds * LifeScale, 0.1f);
+	int32 FirstSlot = INDEX_NONE;
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
 		const FVector Direction = Random.VRand();
@@ -393,7 +503,7 @@ void UHCJEffectsDirector::SpawnDebris(const FVector& Location, const FVector& Ba
 		const int32 Slot = Debris.Spawn(Piece);
 		if (Slot == INDEX_NONE)
 		{
-			return;
+			return FirstSlot;
 		}
 		if (SlotKinds[Slot] != INDEX_NONE && SlotKinds[Slot] != Piece.Kind)
 		{
@@ -401,6 +511,123 @@ void UHCJEffectsDirector::SpawnDebris(const FVector& Location, const FVector& Ba
 		}
 		SlotKinds[Slot] = Piece.Kind;
 		++NumDebrisSpawned;
+		if (FirstSlot == INDEX_NONE)
+		{
+			FirstSlot = Slot;
+		}
+	}
+	return FirstSlot;
+}
+
+void UHCJEffectsDirector::SpawnPuff(const FVector& Location, const FVector& Velocity, float Size, float Seconds, float FireSeconds, float Brightness, float Smoke, const FLinearColor& Color)
+{
+	if (Puffs.Num() == 0)
+	{
+		return;
+	}
+	// A free quad, else the one that is nearly over.
+	int32 Slot = 0;
+	float BestLeft = TNumericLimits<float>::Max();
+	for (int32 Index = 0; Index < Puffs.Num(); ++Index)
+	{
+		const float Left = Puffs[Index].bActive ? Puffs[Index].Duration - Puffs[Index].Age : -1.0f;
+		if (Left < BestLeft)
+		{
+			BestLeft = Left;
+			Slot = Index;
+		}
+	}
+	FVector ViewLocation = Location;
+	FRotator ViewRotation = FRotator::ZeroRotator;
+	GetLocalView(ViewLocation, ViewRotation);
+	// Right in front of the view a fireball would be all there is to see: smaller, dimmer and thinner the nearer.
+	const float Nearness = FMath::Clamp(static_cast<float>(FVector::Dist(ViewLocation, Location)) / 2200.0f, 0.35f, 1.0f);
+
+	FFlare& Puff = Puffs[Slot];
+	NumActivePuffs += Puff.bActive ? 0 : 1;
+	Puff.bActive = true;
+	Puff.Age = 0.0f;
+	Puff.Duration = FMath::Max(Seconds, 0.05f);
+	Puff.Brightness = Brightness * Nearness;
+	Puff.Velocity = Velocity;
+	UMaterialInstanceDynamic* Material = PuffMaterials[Slot];
+	Material->SetVectorParameterValue(TEXT("Color"), FLinearColor(Color.R, Color.G, Color.B, 1.0f));
+	Material->SetScalarParameterValue(TEXT("Brightness"), Puff.Brightness);
+	Material->SetScalarParameterValue(TEXT("Age"), 0.0f);
+	Material->SetScalarParameterValue(TEXT("Seconds"), Puff.Duration);
+	Material->SetScalarParameterValue(TEXT("Fire"), FMath::Clamp(FireSeconds, 0.05f, Puff.Duration));
+	Material->SetScalarParameterValue(TEXT("Seed"), Random.FRandRange(0.0f, 1.0f));
+	Material->SetScalarParameterValue(TEXT("Smoke"), Smoke * Nearness);
+	UStaticMeshComponent* Quad = PuffQuads[Slot];
+	const float Shown = Size * FMath::Lerp(0.65f, 1.0f, Nearness);
+	Quad->SetWorldLocation(Location);
+	Quad->SetWorldScale3D(FVector(Shown / 100.0f, Shown / 100.0f, 1.0f));
+	const FVector ToView = ViewLocation - Location;
+	if (ToView.SizeSquared() > 1.0)
+	{
+		Quad->SetWorldRotation(FRotationMatrix::MakeFromZX(ToView, FRotationMatrix(ViewRotation).GetUnitAxis(EAxis::Y)).Rotator());
+	}
+	Quad->SetVisibility(true);
+}
+
+void UHCJEffectsDirector::SpawnRing(const FVector& Location, const FVector& Normal, float Size, float Seconds, const FLinearColor& Color)
+{
+	if (Rings.Num() == 0)
+	{
+		return;
+	}
+	int32 Slot = 0;
+	float BestLeft = TNumericLimits<float>::Max();
+	for (int32 Index = 0; Index < Rings.Num(); ++Index)
+	{
+		const float Left = Rings[Index].bActive ? Rings[Index].Duration - Rings[Index].Age : -1.0f;
+		if (Left < BestLeft)
+		{
+			BestLeft = Left;
+			Slot = Index;
+		}
+	}
+	FFlare& Ring = Rings[Slot];
+	NumActiveRings += Ring.bActive ? 0 : 1;
+	Ring.bActive = true;
+	Ring.Age = 0.0f;
+	Ring.Duration = FMath::Max(Seconds, 0.05f);
+	Ring.Brightness = UHCJAssetSettings::Get().RingBrightness;
+	UMaterialInstanceDynamic* Material = RingMaterials[Slot];
+	Material->SetVectorParameterValue(TEXT("Color"), FLinearColor(Color.R, Color.G, Color.B, 1.0f));
+	Material->SetScalarParameterValue(TEXT("Brightness"), Ring.Brightness);
+	Material->SetScalarParameterValue(TEXT("Age"), 0.0f);
+	Material->SetScalarParameterValue(TEXT("Seed"), Random.FRandRange(0.0f, 1.0f));
+	UStaticMeshComponent* Quad = RingQuads[Slot];
+	Quad->SetWorldLocation(Location);
+	Quad->SetWorldScale3D(FVector(Size / 100.0f, Size / 100.0f, 1.0f));
+	// The quad lies in the plane: its own Z is the normal.
+	Quad->SetWorldRotation(FRotationMatrix::MakeFromZ(Normal.GetSafeNormal(UE_SMALL_NUMBER, FVector::UpVector)).Rotator());
+	Quad->SetVisibility(true);
+}
+
+void UHCJEffectsDirector::StartDebrisTrail(int32 Slot, float Seconds)
+{
+	if (Slot == INDEX_NONE || Slot >= Debris.GetCapacity() || !Debris.GetPieces()[Slot].bActive)
+	{
+		return;
+	}
+	for (int32 Index = 0; Index < Trails.Num(); ++Index)
+	{
+		FDebrisTrail& Trail = Trails[Index];
+		if (Trail.bActive || TrailComponents[Index] == nullptr)
+		{
+			continue;
+		}
+		// No free one: the piece simply does not burn (the cap).
+		Trail.bActive = true;
+		Trail.Slot = Slot;
+		Trail.Left = Seconds;
+		Trail.LastAge = 0.0f;
+		++NumActiveTrails;
+		TrailComponents[Index]->SetWorldLocation(Debris.GetPieces()[Slot].Location);
+		TrailComponents[Index]->Activate(/*bReset*/ true);
+		return;
 	}
 }
 
@@ -465,6 +692,298 @@ void UHCJEffectsDirector::PlayShipExplosion(const FVector& Location, const FVect
 	}
 	AddShake(Location, 1.0f);
 	UE_LOG(LogHCJ, Verbose, TEXT("Effects: ship explosion at %s, %d debris pieces and %d flares alive"), *Location.ToCompactString(), Debris.NumActive(), GetNumFlares());
+}
+
+void UHCJEffectsDirector::PlayShipDeath(const FVector& Location, const FVector& Velocity, const FLinearColor& Color, const FVector& Forward, const FVector& Up, float HullLength, bool bOwnShip)
+{
+	const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
+	if (!EnsureReady() || Blasts.Num() == 0 || !UHCJAssetSettings::IsNearLocalView(this, Location, Settings.EffectMaxDistance * 2.0f))
+	{
+		return;
+	}
+	// A free slot, else the blast that is furthest along; and how many are in their first second.
+	int32 Slot = 0;
+	float BestTime = -1.0f;
+	int32 NumRunning = 0;
+	for (int32 Index = 0; Index < Blasts.Num(); ++Index)
+	{
+		const FShipBlast& Other = Blasts[Index];
+		if (!Other.bActive)
+		{
+			if (BestTime < TNumericLimits<float>::Max())
+			{
+				BestTime = TNumericLimits<float>::Max();
+				Slot = Index;
+			}
+			continue;
+		}
+		NumRunning += Other.Time - Other.FailSeconds < 1.0f ? 1 : 0;
+		if (Other.Time > BestTime)
+		{
+			BestTime = Other.Time;
+			Slot = Index;
+		}
+	}
+	FVector ViewLocation = Location;
+	FRotator ViewRotation = FRotator::ZeroRotator;
+	GetLocalView(ViewLocation, ViewRotation);
+
+	FShipBlast& Blast = Blasts[Slot];
+	NumActiveBlasts += Blast.bActive ? 0 : 1;
+	Blast = FShipBlast();
+	Blast.bActive = true;
+	Blast.Location = Location;
+	// What is left of the ship drifts on like its debris.
+	Blast.Velocity = Velocity * 0.6;
+	Blast.Forward = Forward.GetSafeNormal(UE_SMALL_NUMBER, FVector::ForwardVector);
+	Blast.Up = Up.GetSafeNormal(UE_SMALL_NUMBER, FVector::UpVector);
+	Blast.Color = Color;
+	Blast.HullLength = FMath::Max(HullLength, 100.0f);
+	Blast.FailSeconds = GetHullFailSeconds();
+	Blast.bOwn = bOwnShip;
+	Blast.Detail = static_cast<uint8>(HCJEffects::PickBlastDetail(static_cast<float>(FVector::Dist(ViewLocation, Location)), bOwnShip, NumRunning,
+		Settings.BlastFullDetailDistance, Settings.BlastMediumDetailDistance));
+	++NumBlastsPlayed;
+	UE_LOG(LogHCJ, Verbose, TEXT("Effects: ship death at %s, %.0f uu from the view, detail %d (%d other blasts running)%s"), *Location.ToCompactString(),
+		FVector::Dist(ViewLocation, Location), int32(Blast.Detail), NumRunning, bOwnShip ? TEXT(", the own ship") : TEXT(""));
+	// The first pop shows in the frame the ship is lost.
+	TickBlasts(0.0f);
+}
+
+void UHCJEffectsDirector::RunBlastStage(FShipBlast& Blast)
+{
+	const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
+	const bool bFull = Blast.Detail == HCJEffects::BlastFull;
+	const bool bLow = Blast.Detail == HCJEffects::BlastLow;
+	const FLinearColor Fire = FMath::Lerp(FireColor, Blast.Color, 0.2f);
+	const int32 Stage = Blast.Stage;
+
+	if (Stage < HCJEffects::BlastMainStage)
+	{
+		// The hull fails: a pop somewhere along it - a star, sparks, a crack.
+		if (bLow || Blast.FailSeconds <= 0.0f)
+		{
+			return;
+		}
+		static const float Along[3] = { -0.3f, 0.28f, -0.02f };
+		const FVector At = Blast.Location + Blast.Forward * (Blast.HullLength * Along[Stage]) + Random.VRand() * 35.0;
+		PlayImpactStar(At, 0.9f, FLinearColor(1.0f, 0.62f, 0.25f));
+		UHCJAssetSettings::SpawnEffect(this, Settings.ImpactShipEffect, TEXT("hull pop"), At, Blast.Forward.Rotation(), Settings.ImpactScale * 2.5f);
+		if (SparkKind != INDEX_NONE)
+		{
+			SpawnDebris(At, Blast.Velocity, bFull ? 4 : 2, SparkKind, SparkKind, 20.0f, Settings.DebrisSpeed * 1.3f, FVector(4.0), FVector(6.0), true, 0.16f);
+		}
+		UHCJAssetSettings::PlaySoundAt(this, Settings.ImpactShipSounds, TEXT("hull pop sound"), At, Settings.ImpactVolume * 1.1f, 0.12f, EHCJSoundGroup::Impact, 0.7f);
+		AddShake(At, Blast.bOwn ? 0.55f : 0.25f);
+		return;
+	}
+
+	if (Stage == HCJEffects::BlastMainStage)
+	{
+		// The blast: the core flash, the fireball, the shockwave, everything that flies.
+		const UHCJGameplaySettings& Gameplay = UHCJGameplaySettings::Get();
+		PushDebris(Blast.Location, Gameplay.ShipShockwaveRadius, Gameplay.ShipShockwaveSpeed);
+		SpawnFlare(Blast.Location, Settings.ShipFlareSize, FMath::Lerp(FLinearColor(1.0f, 0.55f, 0.2f), Blast.Color, 0.35f));
+		// The first puff is the heart of the fireball and, when that has burnt out, the smoke that stays.
+		SpawnPuff(Blast.Location, Blast.Velocity, Settings.ShipFireballSize * (bLow ? 0.8f : 1.0f), bLow ? Settings.ShipFireballSeconds : Settings.ShipSmokeSeconds,
+			Settings.ShipFireballSeconds * 0.45f, Settings.FireballBrightness, bLow ? 0.6f : 1.0f, Fire);
+		if (!bLow)
+		{
+			// In the plane of the wreck, tipped a little so that no two look alike - and tipped towards a view that is
+			// close to that plane (the camera behind the own ship), which would otherwise see a line and be swept by it.
+			FVector Normal = Blast.Up + Random.VRand() * 0.35;
+			FVector ViewLocation = Blast.Location;
+			FRotator ViewRotation = FRotator::ZeroRotator;
+			if (GetLocalView(ViewLocation, ViewRotation))
+			{
+				const FVector ToView = (ViewLocation - Blast.Location).GetSafeNormal();
+				const double Facing = FVector::DotProduct(Normal.GetSafeNormal(), ToView);
+				if (FMath::Abs(Facing) < 0.5)
+				{
+					Normal = Normal.GetSafeNormal() + ToView * (Facing >= 0.0 ? 0.6 : -0.6);
+				}
+			}
+			SpawnRing(Blast.Location, Normal, Settings.ShipRingSize, Settings.ShipRingSeconds, FMath::Lerp(FLinearColor(1.0f, 0.75f, 0.5f), Blast.Color, 0.4f));
+		}
+		UHCJAssetSettings::SpawnEffect(this, Settings.ExplosionEffect, TEXT("ship explosion"), Blast.Location, Blast.Forward.Rotation(), Settings.ExplosionScale);
+		if (bFull)
+		{
+			// Chunks: two bursts of the rock impact around the blast.
+			for (int32 Burst = 0; Burst < 2; ++Burst)
+			{
+				UHCJAssetSettings::SpawnEffect(this, Settings.ImpactRockEffect, TEXT("ship debris"), Blast.Location + Random.VRand() * 170.0, FRotator::ZeroRotator, Settings.ImpactScale * 3.0f);
+			}
+		}
+		if (PlateKind != INDEX_NONE)
+		{
+			if (bFull)
+			{
+				// The largest pieces tumble away slowly, burning: fire and smoke behind them.
+				for (int32 Chunk = 0; Chunk < 3; ++Chunk)
+				{
+					const int32 Slot = SpawnDebris(Blast.Location, Blast.Velocity, 1, PlateKind, PlateKind, 70.0f, Settings.DebrisSpeed * 0.6f, FVector(120.0, 70.0, 16.0), FVector(190.0, 110.0, 30.0), false);
+					StartDebrisTrail(Slot, Settings.DebrisTrailSeconds);
+				}
+			}
+			// Hull plates: thin, half a metre to a metre and a half across.
+			const int32 NumPlates = bFull ? Settings.ShipDebrisPieces : bLow ? FMath::Min(Settings.ShipDebrisPieces, 4) : Settings.ShipDebrisPieces / 2;
+			SpawnDebris(Blast.Location, Blast.Velocity, NumPlates, PlateKind, PlateKind, 90.0f, Settings.DebrisSpeed, FVector(45.0, 28.0, 5.0), FVector(150.0, 90.0, 14.0), false);
+		}
+		if (SparkKind != INDEX_NONE && !bLow)
+		{
+			// Sparks: fast, short-lived, drawn out along their flight.
+			SpawnDebris(Blast.Location, Blast.Velocity, bFull ? Settings.ShipDebrisSparks : Settings.ShipDebrisSparks / 2, SparkKind, SparkKind, 50.0f, Settings.DebrisSpeed * 2.6f,
+				FVector(4.0), FVector(7.5), true, 0.3f);
+		}
+		if (EmberKind != INDEX_NONE)
+		{
+			// Glowing bits, smaller than the plates and faster.
+			SpawnDebris(Blast.Location, Blast.Velocity, bFull ? Settings.ShipDebrisEmbers : bLow ? FMath::Min(Settings.ShipDebrisEmbers, 3) : Settings.ShipDebrisEmbers / 2, EmberKind, EmberKind, 60.0f,
+				Settings.DebrisSpeed * 1.5f, FVector(10.0, 10.0, 10.0), FVector(26.0, 26.0, 26.0), true);
+		}
+		AddShake(Blast.Location, Blast.bOwn ? Settings.OwnShipShake : 1.0f);
+		UHCJAssetSettings::PlaySound(this, Settings.ExplosionSound, TEXT("ship explosion sound"), Blast.Location, Settings.ExplosionVolume);
+		UHCJAssetSettings::PlaySoundAt(this, Settings.ExplosionSounds, TEXT("ship explosion sound"), Blast.Location, Settings.ExplosionVolume, 0.1f, EHCJSoundGroup::Explosion);
+		if (Blast.bOwn)
+		{
+			// The own ship: a low boom under it.
+			UHCJAssetSettings::PlaySoundAt(this, Settings.TorpedoExplosionSounds, TEXT("own ship blast sound"), Blast.Location, Settings.ExplosionVolume, 0.04f, EHCJSoundGroup::Explosion, 0.6f);
+		}
+		UE_LOG(LogHCJ, Verbose, TEXT("Effects: ship blast at %s (detail %d), %d debris pieces, %d flares, %d puffs, %d rings, %d trails alive"), *Blast.Location.ToCompactString(), int32(Blast.Detail),
+			Debris.NumActive(), GetNumFlares(), NumActivePuffs, NumActiveRings, NumActiveTrails);
+		return;
+	}
+
+	{
+		// The lobes of the fireball: three at full detail, the first one at medium.
+		const int32 Lobe = Stage - HCJEffects::BlastMainStage;
+		if (bLow || (!bFull && Lobe > 1))
+		{
+			return;
+		}
+		const FVector Direction = Random.VRand();
+		const FVector At = Blast.Location + Direction * (Settings.ShipFireballSize * Random.FRandRange(0.15f, 0.25f));
+		const float Seconds = Settings.ShipFireballSeconds * Random.FRandRange(0.85f, 1.25f);
+		SpawnPuff(At, Blast.Velocity + Direction * 260.0, Settings.ShipFireballSize * Random.FRandRange(0.5f, 0.7f), Seconds, Settings.ShipFireballSeconds * Random.FRandRange(0.3f, 0.4f),
+			Settings.FireballBrightness * 0.9f, 0.7f, Fire);
+		if (Lobe == 2)
+		{
+			// A second, smaller flash.
+			SpawnFlare(At, Settings.ShipFlareSize * 0.4f, FMath::Lerp(FLinearColor(1.0f, 0.6f, 0.25f), Blast.Color, 0.25f));
+		}
+		if (Lobe == 3 && EmberKind != INDEX_NONE)
+		{
+			SpawnDebris(At, Blast.Velocity, 4, EmberKind, EmberKind, 60.0f, Settings.DebrisSpeed, FVector(8.0, 8.0, 8.0), FVector(20.0, 20.0, 20.0), true);
+		}
+	}
+}
+
+void UHCJEffectsDirector::TickBlasts(float DeltaTime)
+{
+	NumActiveBlasts = 0;
+	for (FShipBlast& Blast : Blasts)
+	{
+		if (!Blast.bActive)
+		{
+			continue;
+		}
+		Blast.Time += DeltaTime;
+		if (Blast.Stage > HCJEffects::BlastMainStage)
+		{
+			Blast.Location += Blast.Velocity * DeltaTime;
+			Blast.Velocity *= FMath::Clamp(1.0f - DebrisDrag * DeltaTime, 0.0f, 1.0f);
+		}
+		while (Blast.Stage < HCJEffects::NumBlastStages && Blast.Time >= HCJEffects::BlastStageTime(Blast.Stage, Blast.FailSeconds))
+		{
+			RunBlastStage(Blast);
+			++Blast.Stage;
+		}
+		// The slot stays taken for the first second after the blast although its last stage ran at 0.27 s: that second
+		// is what PlayShipDeath counts when it decides how much detail the next blast gets.
+		Blast.bActive = Blast.Stage < HCJEffects::NumBlastStages || Blast.Time - Blast.FailSeconds < 1.0f;
+		NumActiveBlasts += Blast.bActive ? 1 : 0;
+	}
+}
+
+void UHCJEffectsDirector::TickPuffsAndRings(float DeltaTime, bool bHasView, const FVector& ViewLocation, const FRotator& ViewRotation)
+{
+	const FVector ViewRight = FRotationMatrix(ViewRotation).GetUnitAxis(EAxis::Y);
+	const float Keep = FMath::Clamp(1.0f - DebrisDrag * DeltaTime, 0.0f, 1.0f);
+	for (int32 Index = 0; Index < Puffs.Num() && NumActivePuffs > 0; ++Index)
+	{
+		FFlare& Puff = Puffs[Index];
+		if (!Puff.bActive)
+		{
+			continue;
+		}
+		Puff.Age += DeltaTime;
+		UStaticMeshComponent* Quad = PuffQuads[Index];
+		if (Puff.Age >= Puff.Duration)
+		{
+			Puff.bActive = false;
+			--NumActivePuffs;
+			Quad->SetVisibility(false);
+			continue;
+		}
+		PuffMaterials[Index]->SetScalarParameterValue(TEXT("Age"), Puff.Age / Puff.Duration);
+		const FVector Location = Quad->GetComponentLocation() + Puff.Velocity * DeltaTime;
+		Puff.Velocity *= Keep;
+		const FVector ToView = ViewLocation - Location;
+		if (bHasView && ToView.SizeSquared() > 1.0)
+		{
+			Quad->SetWorldLocationAndRotation(Location, FRotationMatrix::MakeFromZX(ToView, ViewRight).Rotator());
+		}
+		else
+		{
+			Quad->SetWorldLocation(Location);
+		}
+	}
+	for (int32 Index = 0; Index < Rings.Num() && NumActiveRings > 0; ++Index)
+	{
+		FFlare& Ring = Rings[Index];
+		if (!Ring.bActive)
+		{
+			continue;
+		}
+		Ring.Age += DeltaTime;
+		if (Ring.Age >= Ring.Duration)
+		{
+			Ring.bActive = false;
+			--NumActiveRings;
+			RingQuads[Index]->SetVisibility(false);
+			continue;
+		}
+		RingMaterials[Index]->SetScalarParameterValue(TEXT("Age"), Ring.Age / Ring.Duration);
+	}
+}
+
+void UHCJEffectsDirector::TickTrails(float DeltaTime)
+{
+	for (int32 Index = 0; Index < Trails.Num() && NumActiveTrails > 0; ++Index)
+	{
+		FDebrisTrail& Trail = Trails[Index];
+		if (!Trail.bActive)
+		{
+			continue;
+		}
+		Trail.Left -= DeltaTime;
+		const FHCJDebrisPiece* Piece = Trail.Slot < Debris.GetCapacity() ? &Debris.GetPieces()[Trail.Slot] : nullptr;
+		UNiagaraComponent* Component = TrailComponents[Index];
+		// Burnt out, the piece is gone, or its slot went to a new piece (which is younger).
+		if (Trail.Left <= 0.0f || Piece == nullptr || !Piece->bActive || Piece->Kind != PlateKind || Piece->Age + 0.001f < Trail.LastAge || Component == nullptr)
+		{
+			Trail.bActive = false;
+			--NumActiveTrails;
+			if (Component != nullptr)
+			{
+				// What it has emitted fades by itself.
+				Component->Deactivate();
+			}
+			continue;
+		}
+		Trail.LastAge = Piece->Age;
+		Component->SetWorldLocationAndRotation(Piece->Location, Piece->Velocity.SizeSquared() > 1.0 ? Piece->Velocity.Rotation() : FRotator::ZeroRotator);
+	}
 }
 
 void UHCJEffectsDirector::PlayWarpFlash(const FVector& Location, bool bOwnShip)
@@ -591,9 +1110,23 @@ void UHCJEffectsDirector::Tick(float DeltaTime)
 		StarMaterials[Index]->SetScalarParameterValue(TEXT("Age"), Star.Age / Star.Duration);
 	}
 
+	// Ships going up, their fireballs and rings.
+	if (NumActiveBlasts > 0)
+	{
+		TickBlasts(DeltaTime);
+	}
+	if (NumActivePuffs > 0 || NumActiveRings > 0)
+	{
+		TickPuffsAndRings(DeltaTime, bHasView, ViewLocation, ViewRotation);
+	}
+
 	// Debris.
 	if (Debris.NumActive() == 0)
 	{
+		if (NumActiveTrails > 0)
+		{
+			TickTrails(DeltaTime);
+		}
 		return;
 	}
 	++FrameParity;
@@ -609,7 +1142,8 @@ void UHCJEffectsDirector::Tick(float DeltaTime)
 			continue;
 		}
 		// Every other frame per piece: does the next two steps' worth of flight run into a rock? Then it bounces off.
-		if (((Slot + FrameParity) & 1) == 0 && Piece.Velocity.SizeSquared() > FMath::Square(60.0))
+		// (Not the sparks: they are gone in half a second.)
+		if (((Slot + FrameParity) & 1) == 0 && Piece.Kind != SparkKind && Piece.Velocity.SizeSquared() > FMath::Square(60.0))
 		{
 			FHitResult Hit;
 			if (World->LineTraceSingleByObjectType(Hit, Piece.Location, Piece.Location + Piece.Velocity * (2.0f * DeltaTime), Rocks, TraceParams) && !Hit.bStartPenetrating)
@@ -626,6 +1160,10 @@ void UHCJEffectsDirector::Tick(float DeltaTime)
 		}
 	}
 	Debris.Step(DeltaTime, DebrisDrag);
+	if (NumActiveTrails > 0)
+	{
+		TickTrails(DeltaTime);
+	}
 
 	bool bDirty[8] = {};
 	for (int32 Slot = 0; Slot < Debris.GetCapacity(); ++Slot)
@@ -643,10 +1181,27 @@ void UHCJEffectsDirector::Tick(float DeltaTime)
 			continue;
 		}
 		const float Size = FHCJDebrisPool::SizeFactor(Piece.Age, Piece.Life);
+		if (Kind == SparkKind)
+		{
+			// A spark: a streak from where it was a moment ago to where it is, thinning out.
+			const double Speed = Piece.Velocity.Size();
+			const FVector Direction = Speed > 1.0 ? Piece.Velocity / Speed : FVector::ForwardVector;
+			const double Length = FMath::Clamp(Speed * SparkStreakSeconds, 14.0, 260.0);
+			const double Thickness = Piece.Scale.X * Size;
+			DebrisMeshes[Kind]->UpdateInstanceTransform(Slot, FTransform(FRotationMatrix::MakeFromX(Direction).ToQuat(), Piece.Location - Direction * (0.5 * Length),
+				FVector(Length / 100.0, Thickness / 100.0, Thickness / 100.0)), /*bWorldSpace*/ true, /*bMarkRenderStateDirty*/ false, /*bTeleport*/ true);
+			bDirty[Kind] = true;
+			continue;
+		}
 		// Hull plates and embers are sized in uu (the cube is 100 across), rock chunks are already relative to their mesh.
 		const FVector Scale = Kind >= NumRockKinds ? Piece.Scale * (Size / 100.0f) : Piece.Scale * Size;
 		DebrisMeshes[Kind]->UpdateInstanceTransform(Slot, FTransform(FQuat(Piece.Axis, FMath::DegreesToRadians(Piece.Angle)), Piece.Location, Scale),
 			/*bWorldSpace*/ true, /*bMarkRenderStateDirty*/ false, /*bTeleport*/ true);
+		if (Kind == PlateKind && bPlatesHaveHeat)
+		{
+			// The torn edges glow while the plate is hot.
+			DebrisMeshes[Kind]->SetCustomDataValue(Slot, 0, HCJEffects::PlateHeat(Piece.Age), /*bMarkRenderStateDirty*/ false);
+		}
 		if (Kind < UE_ARRAY_COUNT(bDirty))
 		{
 			bDirty[Kind] = true;

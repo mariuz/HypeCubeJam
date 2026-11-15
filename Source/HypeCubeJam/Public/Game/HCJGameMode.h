@@ -111,15 +111,50 @@ public:
 
 	/**
 	 * The host pressed Play: applies the menu's options (bots that fill the match, dimension, seed with 0 = random,
-	 * bot difficulty 0..2), makes Host a combatant again and starts a fresh match with a new universe.
+	 * bot difficulty 0..3), makes Host a combatant again and starts a fresh match with a new universe.
 	 */
 	void StartMatchFromMenu(AHCJPlayerController* Host, int32 NumBots, int32 Dimension, int32 Seed, int32 Difficulty);
 	/** The host went back to the title menu: its ship is removed without a score and it stops counting as a combatant; the bots play on. */
 	void ReturnToMenu(AHCJPlayerController* Host);
 	/** Development: ends the running match now (intermission, then the next match). */
 	void DebugEndMatch() { EndMatch(); }
-	/** Bot skill of this match: 0 easy, 1 normal, 2 hard (config BotDifficulty, URL ?Difficulty=, or the menu). */
+	/** Bot skill of this match: 0 easy, 1 normal, 2 hard, 3 ace (config BotDifficulty, URL ?Difficulty=, or the menu). */
 	int32 GetBotDifficulty() const { return BotDifficulty; }
+	/**
+	 * The host changed the level in the in-match menu: it applies to the running match at once (bots read their skill
+	 * row every Think; the share of bots that fly "smart" follows as they get new ships).
+	 */
+	void SetBotDifficulty(int32 Difficulty);
+
+	// ---- fairness towards human players (docs/DEVLOG_NOTES.md, item 29; the "Fair:" log lines) ----
+
+	/**
+	 * -HCJNoFair: bots treat a human ship like any other (no attack cap, no rear rule, no grace, no hunters cap, full
+	 * damage, every torpedo), for comparisons. Not quite the game before the rules: the spawn changes of the same item
+	 * apply to every ship with or without this switch (3 s of spawn shield instead of 2, no spawn within 80 m of an
+	 * enemy, a new ship faces the nearest one), and so does everything the HUD tells the player.
+	 */
+	static bool IsNoFair();
+	/** What a bot's damage to a human ship is multiplied by at this difficulty (1 with -HCJNoFair). */
+	float GetBotDamageToHumanScale() const;
+	/**
+	 * A hit on a human ship (every damage step, also each step of a phaser beam). Applied is what the health component
+	 * absorbed, Unscaled the same before the difficulty's damage scale, BearingDeg the angle between the victim's nose and
+	 * the direction to the attacker (-1 unknown), bAft whether it landed on the aft facing. Only hits by bots are added up.
+	 */
+	void NotifyFairHit(float Applied, float Unscaled, float BearingDeg, bool bAft, bool bFatal, bool bAttackerIsBot);
+	/** NumAttackers bots are in Attack on one human ship right now (the peak of a match is reported). */
+	void NotifyHumanAttackers(int32 NumAttackers) { MatchStats.FairPeakAttackers = FMath::Max(MatchStats.FairPeakAttackers, NumAttackers); }
+	/** A bot did not take / dropped a human target because of the attack cap, held its fire in a human's rear arc, left a human alone that had just arrived (once per bot Think). */
+	void NotifyFairHeldCap() { ++MatchStats.FairHeldCap; }
+	void NotifyFairHeldRear() { ++MatchStats.FairHeldRear; }
+	void NotifyFairHeldGrace() { ++MatchStats.FairHeldGrace; }
+	/** ... or because its attacker had just gone (the breather between fights). */
+	void NotifyFairHeldRespite() { ++MatchStats.FairHeldRespite; }
+	/** ... or a bot that travels did not go to a person's sector that has its share of bots (once per choice of a way). */
+	void NotifyFairHeldHunters() { ++MatchStats.FairHeldHunters; }
+	/** Number of bots that are in Attack on Target right now. */
+	int32 CountBotsAttacking(const AHCJShipCharacter* Target) const;
 
 	// ---- telemetry hooks (server): per-match counters reported by the periodic "Status" log line ----
 
@@ -302,8 +337,8 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Bots")
 	TSubclassOf<AHCJBotController> BotControllerClass;
 
-	/** 0 easy (a first-time player can win), 1 normal, 2 hard. */
-	UPROPERTY(Config, EditDefaultsOnly, Category = "HCJ|Bots", meta = (ClampMin = "0", ClampMax = "2"))
+	/** 0 easy (a first-time player can win), 1 normal, 2 hard, 3 ace (hard without the fairness rules towards people). */
+	UPROPERTY(Config, EditDefaultsOnly, Category = "HCJ|Bots", meta = (ClampMin = "0", ClampMax = "3"))
 	int32 BotDifficulty = 0;
 
 	/** Hypercube dimension when ?Dim is absent; clamped to 2..6. */
@@ -471,12 +506,38 @@ protected:
 		float MaxTickSeconds = 0.0f;
 		int32 SlowTicks = 0;
 		float StartTime = 0.0f;
+		/**
+		 * Fairness towards humans, summed over all human ships (the "Fair: event=status" line): damage bots did to them
+		 * (as applied; before the difficulty's damage scale; from their rear arc; on their aft facing), their deaths (all
+		 * causes; by a bot; by a bot in their rear arc), the most bots in Attack on one of them, and how often a bot was
+		 * held back by the attack cap / the rear rule / the arrival grace.
+		 */
+		float FairDamage = 0.0f;
+		float FairDamageUnscaled = 0.0f;
+		float FairDamageRear = 0.0f;
+		float FairDamageAft = 0.0f;
+		int32 FairDeaths = 0;
+		int32 FairBotDeaths = 0;
+		int32 FairRearDeaths = 0;
+		int32 FairPeakAttackers = 0;
+		int32 FairHeldCap = 0;
+		int32 FairHeldRear = 0;
+		int32 FairHeldGrace = 0;
+		int32 FairHeldRespite = 0;
+		int32 FairHeldHunters = 0;
 	};
 	FMatchStats MatchStats;
 	float NextStatusLogTime = 0.0f;
 
 	/** One structured "Playthrough: event=stats ..." line with every counter of the running match. */
 	void LogPlaythroughStats() const;
+	/** "Fair: event=status ..." - the fairness counters of the running match. */
+	void LogFairStatus() const;
+	/** "Fair: event=rules ..." - the fairness numbers in force (match start, change of the level). */
+	void LogFairRules() const;
+	/** What ChooseSpawn found for the point it chose (the "Fair: event=spawn" line of a human). */
+	float LastSpawnNearestEnemy = -1.0f;
+	int32 LastSpawnEnemiesInSector = 0;
 	/** "Playthrough: event=match_start ..." for the match that just began. */
 	void LogPlaythroughMatchStart() const;
 	/** Once a second: ships that do not move, are alive outside the sector or have a broken position. */

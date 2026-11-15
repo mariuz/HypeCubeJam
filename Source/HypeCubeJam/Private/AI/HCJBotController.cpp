@@ -25,6 +25,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/GameStateBase.h"
+#include "GameFramework/PlayerController.h"
 #include "HAL/PlatformTime.h"
 
 namespace
@@ -166,6 +167,12 @@ void AHCJBotController::OnPossess(APawn* InPawn)
 	NextWarpChaseTime = 0.0f;
 	ClosePassUntil = 0.0f;
 	NextClosePassTime = 0.0f;
+	RearArcSince = -1.0f;
+	bRearHold = false;
+	ResightTime = -1000.0f;
+	bHeldByCap = false;
+	bHeldByGrace = false;
+	bHeldByRespite = false;
 	NextStrafeFlipTime = Now + BotRandom.FRandRange(1.5f, 4.0f);
 	StateEnterTime = Now;
 	LastHostileSeenTime = Now;
@@ -306,6 +313,11 @@ void AHCJBotController::SetBotState(EHCJBotState NewState)
 	const float Now = World ? World->GetTimeSeconds() : 0.0f;
 	AHCJShipCharacter* Ship = Cast<AHCJShipCharacter>(GetPawn());
 
+	// (A new state is a new target or none: the rear-arc clock and the "seen again" time start over.)
+	RearArcSince = -1.0f;
+	bRearHold = false;
+	ResightTime = -1000.0f;
+
 	if (NewState != EHCJBotState::Attack)
 	{
 		TargetShip.Reset();
@@ -356,7 +368,15 @@ void AHCJBotController::Think(AHCJShipCharacter& Ship, const AHCJUniverse& Unive
 	if (const AHCJGameMode* GameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>())
 	{
 		Skill = FHCJBotSkill::Get(GameMode->GetBotDifficulty());
+		if (AHCJGameMode::IsNoFair())
+		{
+			// The bots before the fairness rules: a human ship is a ship like any other.
+			Skill.ClearFairness();
+		}
 	}
+	bHeldByCap = false;
+	bHeldByGrace = false;
+	bHeldByRespite = false;
 	if (!bSmartRolled)
 	{
 		// Once per ship: whether this one is flown with the tactics of its difficulty or plainly.
@@ -464,10 +484,42 @@ void AHCJBotController::Think(AHCJShipCharacter& Ship, const AHCJUniverse& Unive
 			TargetDistance = FVector::Dist(ShipLocation, Better->GetActorLocation());
 			LastTargetVisibleTime = Now;
 			RockShotUntil = 0.0f;
+			RearArcSince = -1.0f;
+			bRearHold = false;
+			ResightTime = -1000.0f;
+		}
+
+		const bool bHumanTarget = IsHumanShip(*Target);
+		if (bHumanTarget)
+		{
+			// Fairness: how many bots are on this person (the peak is reported), and the attack cap - a bot that is over
+			// it and was not shot by that person lets go: first for a bot that person shot, then the junior one.
+			const int32 Seniors = CountBotsAttacking(*Target, true);
+			if (!bRetreating && !IsDisengaging())
+			{
+				// (The breather that person gets once nobody attacks it any more runs from the last of these.)
+				Target->NoteBotAttack(Now);
+				if (AHCJGameMode* GameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>())
+				{
+					GameMode->NotifyHumanAttackers(1 + CountBotsAttacking(*Target, false));
+				}
+			}
+			if (Skill.MaxAttackersOnHuman > 0 && Seniors >= Skill.MaxAttackersOnHuman && Ship.GetRecentAttackerShip(HCJBalance::ProvokedSeconds) != Target)
+			{
+				bHeldByCap = true;
+				UE_LOG(LogHCJ, Verbose, TEXT("%s lets go of %s: %d bots are on it already (cap %d)"), *GetNameSafe(GetPawn()), *Target->GetName(), Seniors, Skill.MaxAttackersOnHuman);
+				SetBotState(EHCJBotState::Wander);
+				break;
+			}
 		}
 
 		if (HasLineOfSight(Ship, *Target))
 		{
+			if (bHumanTarget && Skill.RearFireDelay > 0.0f && Now - LastTargetVisibleTime > 1.0f)
+			{
+				// A person who got a rock between us shook this bot off: it needs its reaction time again.
+				ResightTime = Now;
+			}
 			LastTargetVisibleTime = Now;
 		}
 		else if (Now - LastTargetVisibleTime > LoseTargetSeconds + (Now < RockShotUntil ? 2.5f : 0.0f))
@@ -477,7 +529,10 @@ void AHCJBotController::Think(AHCJShipCharacter& Ship, const AHCJUniverse& Unive
 		}
 
 		// New aim error: a random offset at the target whose angular size is at most AimErrorDeg.
-		const float MaxOffset = TargetDistance * FMath::Tan(FMath::DegreesToRadians(FMath::Clamp(Skill.AimErrorDeg, 0.0f, 45.0f)));
+		// (From behind a person the aim is worse still.)
+		UpdateRearHold(Ship, *Target, Now);
+		const float AimError = Skill.AimErrorDeg * (RearArcSince >= 0.0f ? Skill.RearAimErrorScale : 1.0f);
+		const float MaxOffset = TargetDistance * FMath::Tan(FMath::DegreesToRadians(FMath::Clamp(AimError, 0.0f, 45.0f)));
 		AimErrorOffset = BotRandom.VRand() * (MaxOffset * BotRandom.FRand());
 
 		ThinkTorpedo(Ship, *Target, TargetDistance, LastTargetVisibleTime >= Now);
@@ -607,6 +662,95 @@ void AHCJBotController::Think(AHCJShipCharacter& Ship, const AHCJUniverse& Unive
 	{
 		ThinkSystems(Ship, Universe);
 	}
+
+	// Fairness counters: what held this bot back during this Think, once each.
+	const bool bHeldByRear = bRearHold && BotState == EHCJBotState::Attack;
+	if (bHeldByCap || bHeldByGrace || bHeldByRespite || bHeldByRear)
+	{
+		if (AHCJGameMode* GameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>())
+		{
+			if (bHeldByCap) { GameMode->NotifyFairHeldCap(); }
+			if (bHeldByGrace) { GameMode->NotifyFairHeldGrace(); }
+			if (bHeldByRespite) { GameMode->NotifyFairHeldRespite(); }
+			if (bHeldByRear) { GameMode->NotifyFairHeldRear(); }
+		}
+	}
+}
+
+bool AHCJBotController::IsHumanShip(const AHCJShipCharacter& Ship)
+{
+	return Cast<APlayerController>(Ship.GetController()) != nullptr;
+}
+
+int32 AHCJBotController::CountBotsAttacking(const AHCJShipCharacter& Other, bool bAheadOnly) const
+{
+	int32 Count = 0;
+	for (TActorIterator<AHCJBotController> It(GetWorld()); It; ++It)
+	{
+		const AHCJBotController* Bot = *It;
+		if (Bot == this || Bot->BotState != EHCJBotState::Attack || Bot->TargetShip.Get() != &Other || Bot->GetShip() == nullptr || Bot->bRetreating || Bot->IsDisengaging())
+		{
+			continue;
+		}
+		if (bAheadOnly)
+		{
+			// Who comes before this bot when the cap is full: a bot that person shot (it may always answer, so it is the
+			// others that make room for it), then whoever took the target earlier.
+			const bool bProvoked = Bot->GetShip()->GetRecentAttackerShip(HCJBalance::ProvokedSeconds) == &Other;
+			const bool bSenior = Bot->TargetAcquiredTime < TargetAcquiredTime || (Bot->TargetAcquiredTime == TargetAcquiredTime && Bot->GetUniqueID() < GetUniqueID());
+			if (!bProvoked && !bSenior)
+			{
+				continue;
+			}
+		}
+		++Count;
+	}
+	return Count;
+}
+
+bool AHCJBotController::IsOffLimits(const AHCJShipCharacter& Ship, const AHCJShipCharacter& Other) const
+{
+	if (!IsHumanShip(Other) || &Other == TargetShip.Get() || Ship.GetRecentAttackerShip(HCJBalance::ProvokedSeconds) == &Other)
+	{
+		return false;
+	}
+	if (Skill.ArrivalGrace > 0.0f && (Other.IsSpawnShielded() || GetWorld()->GetTimeSeconds() - Other.GetSectorArrivalTime() < Skill.ArrivalGrace))
+	{
+		bHeldByGrace = true;
+		return true;
+	}
+	const int32 Attackers = (Skill.MaxAttackersOnHuman > 0 || Skill.RespiteSeconds > 0.0f) ? CountBotsAttacking(Other, false) : 0;
+	if (Skill.MaxAttackersOnHuman > 0 && Attackers >= Skill.MaxAttackersOnHuman)
+	{
+		bHeldByCap = true;
+		return true;
+	}
+	if (Skill.RespiteSeconds > 0.0f && Attackers == 0 && GetWorld()->GetTimeSeconds() - Other.GetLastBotAttackTime() < Skill.RespiteSeconds)
+	{
+		// Its attacker has just gone: a breather before the next one.
+		bHeldByRespite = true;
+		return true;
+	}
+	return false;
+}
+
+void AHCJBotController::UpdateRearHold(const AHCJShipCharacter& Ship, const AHCJShipCharacter& Target, float Now)
+{
+	// "Behind" is measured from the nose of the person's ship: that is where its pilot looks.
+	const FVector ToUs = (Ship.GetActorLocation() - Target.GetActorLocation()).GetSafeNormal();
+	const bool bInRearArc = IsHumanShip(Target) && FVector::DotProduct(Target.GetActorForwardVector(), ToUs) < HCJBalance::RearArcDot;
+	if (!bInRearArc)
+	{
+		RearArcSince = -1.0f;
+		bRearHold = false;
+		return;
+	}
+	if (RearArcSince < 0.0f)
+	{
+		RearArcSince = Now;
+	}
+	// Whoever that person shot may answer from wherever it is.
+	bRearHold = Now - RearArcSince < Skill.RearFireDelay && Ship.GetRecentAttackerShip(HCJBalance::ProvokedSeconds) != &Target;
 }
 
 bool AHCJBotController::IsWayClear(const AHCJShipCharacter& Ship, const FVector& Point, float MaxDistance) const
@@ -766,7 +910,7 @@ void AHCJBotController::ThinkSystems(AHCJShipCharacter& Ship, const AHCJUniverse
 	}
 
 	// ---- tractor beam: on a target in reach that runs or is nearly done ----
-	if (BotState == EHCJBotState::Attack && Now >= TractorUntilTime && !bRetreating && !IsDisengaging() && !Ship.IsCloaked() && Ship.GetPhaserCharge() > 0.5f && !Ship.IsPhaserLocked())
+	if (BotState == EHCJBotState::Attack && Now >= TractorUntilTime && !bRetreating && !IsDisengaging() && !bRearHold && !Ship.IsCloaked() && Ship.GetPhaserCharge() > 0.5f && !Ship.IsPhaserLocked())
 	{
 		AHCJShipCharacter* Target = TargetShip.Get();
 		if (Target != nullptr && !Target->IsDead() && Target->GetTractorHolder() == nullptr && Now - LastTargetVisibleTime < 0.5f)
@@ -828,7 +972,8 @@ void AHCJBotController::TickSystems(AHCJShipCharacter& Ship)
 	if (Ship.IsCloaked())
 	{
 		const AHCJShipCharacter* Target = TargetShip.Get();
-		const bool bAmbush = GetBotStyle(Ship, bSmart).bAmbush;
+		// (No ambush from cloak on a person below Hard: the cloak then comes down at the ordinary distance.)
+		const bool bAmbush = GetBotStyle(Ship, bSmart).bAmbush && (Skill.bFlankHumans || Target == nullptr || !IsHumanShip(*Target));
 		const bool bClose = BotState == EHCJBotState::Attack && Target != nullptr
 			&& FVector::DistSquared(Target->GetActorLocation(), ShipLocation) < FMath::Square(bAmbush ? 2600.0 : static_cast<double>(PreferredRange) * 1.3);
 		const bool bAway = bRetreating || IsDisengaging();
@@ -882,7 +1027,7 @@ AHCJShipCharacter* AHCJBotController::FindNearestHostile(const AHCJShipCharacter
 		{
 			continue;
 		}
-		if (DistSq <= BestDistSq && Universe.GetSectorAtLocation(OtherLocation) == Sector)
+		if (DistSq <= BestDistSq && Universe.GetSectorAtLocation(OtherLocation) == Sector && !IsOffLimits(Ship, *Other))
 		{
 			BestDistSq = DistSq;
 			Best = Other;
@@ -958,6 +1103,9 @@ int32 AHCJBotController::ChooseTravelDim(int32 FromSector, const AHCJUniverse& U
 	// Hunt: the closest sector (in portal hops) that holds a human's live ship.
 	int32 BestSector = INDEX_NONE;
 	int32 BestDistance = MAX_int32;
+	// Fairness: sectors of people that have their share of bots (MaxHuntersPerHuman).
+	TArray<int32, TInlineAllocator<8>> FullSectors;
+	bool bHeldByHunters = false;
 
 	const UWorld* World = GetWorld();
 	if (const AGameStateBase* GameState = World ? World->GetGameState() : nullptr)
@@ -974,6 +1122,32 @@ int32 AHCJBotController::ChooseTravelDim(int32 FromSector, const AHCJUniverse& U
 			if (HumanSector == FromSector || !Graph.IsValidSector(HumanSector))
 			{
 				continue;
+			}
+			if (Skill.MaxHuntersPerHuman > 0)
+			{
+				// Fairness: enough bots are in that person's sector already, or on their way into it - this one goes
+				// somewhere else (and does not roam into it either, below).
+				int32 Hunters = 0;
+				for (TActorIterator<AHCJShipCharacter> It(GetWorld()); It; ++It)
+				{
+					Hunters += (!It->IsDead() && !IsHumanShip(**It) && It->GetCurrentSector() == HumanSector) ? 1 : 0;
+				}
+				for (TActorIterator<AHCJBotController> It(GetWorld()); It; ++It)
+				{
+					const AHCJBotController* Bot = *It;
+					if (Bot == this || Bot->BotState != EHCJBotState::Travel || Bot->GetShip() == nullptr || Bot->TravelFromSector == HumanSector)
+					{
+						continue;
+					}
+					const int32 Goal = Bot->TravelDim == HCJ::WormholeHop ? Universe.GetWormholeDest(Bot->TravelFromSector) : Graph.GetNeighbor(Bot->TravelFromSector, Bot->TravelDim);
+					Hunters += Goal == HumanSector ? 1 : 0;
+				}
+				if (Hunters >= Skill.MaxHuntersPerHuman)
+				{
+					FullSectors.AddUnique(HumanSector);
+					bHeldByHunters = true;
+					continue;
+				}
 			}
 
 			const int32 Distance = Universe.GetRoutes().Distance(FromSector, HumanSector);
@@ -1004,6 +1178,23 @@ int32 AHCJBotController::ChooseTravelDim(int32 FromSector, const AHCJUniverse& U
 	if (OpenDims.Num() > 1)
 	{
 		OpenDims.Remove(LastArrivalDim);
+	}
+	// Not into a person's sector that is full, as long as there is another way out. (No such sector without a person
+	// in the match, so the draw below is the one of before among bots.)
+	for (int32 Index = OpenDims.Num() - 1; Index >= 0 && FullSectors.Num() > 0 && OpenDims.Num() > 1; --Index)
+	{
+		const int32 Goal = OpenDims[Index] == HCJ::WormholeHop ? Universe.GetWormholeDest(FromSector) : Graph.GetNeighbor(FromSector, OpenDims[Index]);
+		if (FullSectors.Contains(Goal))
+		{
+			OpenDims.RemoveAt(Index);
+		}
+	}
+	if (bHeldByHunters)
+	{
+		if (AHCJGameMode* GameMode = World != nullptr ? World->GetAuthGameMode<AHCJGameMode>() : nullptr)
+		{
+			GameMode->NotifyFairHeldHunters();
+		}
 	}
 	if (OpenDims.Num() == 0)
 	{
@@ -1168,12 +1359,15 @@ void AHCJBotController::TickAttack(float DeltaTime, AHCJShipCharacter& Ship, con
 	// (What the trigger fires right now: with the phaser bank emptied that is the blaster, as the weapon panel shows a player.)
 	const FHCJWeaponDef& Weapon = Ship.GetFireWeaponDef();
 	// Difficulty: nothing before the reaction delay is over, then bursts with pauses, from no farther than the level allows.
-	const bool bReacted = Now - TargetAcquiredTime >= Skill.ReactionDelay;
+	// (A person that was out of sight for a moment gets that delay again; a bot in a person's rear arc holds its fire first.)
+	const bool bHumanTarget = IsHumanShip(*Target);
+	UpdateRearHold(Ship, *Target, Now);
+	const bool bReacted = Now - FMath::Max(TargetAcquiredTime, ResightTime) >= Skill.ReactionDelay;
 	const bool bInBurst = Skill.BurstPause <= 0.0f || FMath::Fmod(Now + BurstPhase, Skill.BurstSeconds + Skill.BurstPause) < Skill.BurstSeconds;
 	const float FireRange = FMath::Min(EngageRange * Skill.EngageRangeFactor, Weapon.BotMaxRange);
 	// (SteerTowards: a bot that can hit its target from here does not follow it under the guns of a station.)
 	bStationHoldEdge = bTargetVisible && Distance <= FireRange;
-	bool bFire = bTargetVisible && bReacted && bInBurst && !bRetreating
+	bool bFire = bTargetVisible && bReacted && bInBurst && !bRetreating && !bRearHold
 		&& Distance <= FireRange && GetAimErrorDegrees(Ship, AimPoint) <= FireConeDeg;
 	if (bFire && Weapon.bBeam)
 	{
@@ -1205,7 +1399,8 @@ void AHCJBotController::TickAttack(float DeltaTime, AHCJShipCharacter& Ship, con
 	const FHCJBotStyle& Style = GetBotStyle(Ship, bSmart);
 
 	// A scout under cloak goes for the tail of its target (TickSystems drops the cloak there).
-	if (Style.bAmbush && Ship.IsCloaked() && !bRetreating)
+	// (Not the tail of a person below Hard.)
+	if (Style.bAmbush && Ship.IsCloaked() && !bRetreating && (Skill.bFlankHumans || !bHumanTarget))
 	{
 		const FVector Behind = TargetLocation - Target->GetActorForwardVector() * 2000.0;
 		Ship.SetBoosting(FVector::DistSquared(ShipLocation, Behind) > FMath::Square(3500.0));
@@ -1230,7 +1425,7 @@ void AHCJBotController::TickAttack(float DeltaTime, AHCJShipCharacter& Ship, con
 	const float Weave = FMath::Sin(Now * 0.7f + static_cast<float>(GetUniqueID() % 16));
 	// A light, agile ship against a hull that turns slower: now and then a boosted pass close around it - the heavy
 	// ship cannot keep its nose (and its fore shield) on something that crosses it that fast.
-	const bool bOutTurns = Style.bKnife && Target->GetTypeDef().BotTurnScale < Ship.GetTypeDef().BotTurnScale - 0.05f;
+	const bool bOutTurns = Style.bKnife && (Skill.bFlankHumans || !bHumanTarget) && Target->GetTypeDef().BotTurnScale < Ship.GetTypeDef().BotTurnScale - 0.05f;
 	if (bOutTurns && Now >= NextClosePassTime && Distance < 1.6f * PreferredRange && bTargetVisible && !bRetreating)
 	{
 		ClosePassUntil = Now + 1.8f;
@@ -1240,7 +1435,15 @@ void AHCJBotController::TickAttack(float DeltaTime, AHCJShipCharacter& Ship, con
 	const bool bClosePass = bOutTurns && Now < ClosePassUntil;
 
 	const float StrafeStrength = bClosePass ? 1.0f : FMath::Min(HCJBotStrafeStrength * Skill.StrafeStrength / 0.8f * Style.Strafe, 1.0f);
-	const FVector Strafe = (Right * StrafeSign + Up * (0.5f * Weave)).GetSafeNormal() * StrafeStrength;
+	FVector Strafe = (Right * StrafeSign + Up * (0.5f * Weave)).GetSafeNormal() * StrafeStrength;
+	if (bHumanTarget && !bClosePass && Skill.FrontBias > 0.0f)
+	{
+		// Fairness: round to the front of a person's ship, where its pilot looks. The pull is the part of that ship's
+		// forward direction that lies across our line to it: nothing dead ahead of it or dead astern, all of it on its flank.
+		const FVector TargetForward = Target->GetActorForwardVector();
+		const FVector FrontTangent = TargetForward - TargetDirection * FVector::DotProduct(TargetForward, TargetDirection);
+		Strafe = (Strafe + FrontTangent * Skill.FrontBias).GetClampedToMaxSize(1.0f);
+	}
 
 	// (A ship that stands off may use more of its weapon's reach.)
 	const float WantedRange = bClosePass ? 1500.0f : FMath::Min(PreferredRange * Style.Range, (Style.Range > 1.0f ? 0.8f : 0.6f) * Weapon.BotMaxRange);
@@ -1634,7 +1837,8 @@ void AHCJBotController::ThinkTorpedo(AHCJShipCharacter& Ship, AHCJShipCharacter&
 
 	const FHCJTorpedoBotSkill TorpedoSkill = HCJTorpedo::GetBotSkill(GameMode->GetBotDifficulty());
 	FHCJTorpedoBotInput Input;
-	Input.bReady = Ship.IsTorpedoReady() && !bRetreating && Now - LastTorpedoTime > TorpedoSkill.MinSecondsBetween && Now - TargetAcquiredTime >= Skill.ReactionDelay;
+	Input.bReady = Ship.IsTorpedoReady() && !bRetreating && !bRearHold && Now - LastTorpedoTime > TorpedoSkill.MinSecondsBetween
+		&& Now - FMath::Max(TargetAcquiredTime, ResightTime) >= Skill.ReactionDelay;
 	// Roughly ahead is enough: the torpedo steers a little by itself.
 	Input.bLockedAndAimed = bTargetVisible && !Target.IsSpawnShielded() && GetAimErrorDegrees(Ship, Target.GetActorLocation()) <= 10.0f;
 	Input.Distance = TargetDistance;
@@ -1657,6 +1861,13 @@ void AHCJBotController::ThinkTorpedo(AHCJShipCharacter& Ship, AHCJShipCharacter&
 		&& BotRandom.FRand() < Skill.ComboChance * Style.Torpedo)
 	{
 		bShoot = true;
+	}
+	if (bShoot && Skill.TorpedoOnHumanChance < 1.0f && IsHumanShip(Target) && BotRandom.FRand() >= Skill.TorpedoOnHumanChance)
+	{
+		// Fairness: this one is not fired at a person. (The reload clock runs as if it had been, so that the next
+		// decision is not just a moment away.)
+		bShoot = false;
+		LastTorpedoTime = Now;
 	}
 	if (bShoot)
 	{
@@ -1878,7 +2089,8 @@ AHCJShipCharacter* AHCJBotController::PickTarget(const AHCJShipCharacter& Ship, 
 		const FVector OtherLocation = Other->GetActorLocation();
 		const double DistSq = FVector::DistSquared(ShipLocation, OtherLocation);
 		if (DistSq > FMath::Square(static_cast<double>(MaxRange)) || Universe.GetSectorAtLocation(OtherLocation) != Sector
-			|| (Other->IsCloakHidden() && DistSq > FMath::Square(static_cast<double>(UHCJGameplaySettings::Get().CloakDetectRange))))
+			|| (Other->IsCloakHidden() && DistSq > FMath::Square(static_cast<double>(UHCJGameplaySettings::Get().CloakDetectRange)))
+			|| IsOffLimits(Ship, *Other))
 		{
 			continue;
 		}
@@ -1920,10 +2132,10 @@ AHCJShipCharacter* AHCJBotController::PickTarget(const AHCJShipCharacter& Ship, 
 				}
 			}
 		}
-		// Its tail is towards us: it is busy with somebody else.
-		if (FVector::DotProduct(Other->GetActorForwardVector(), ToUs.GetSafeNormal()) < -0.3)
+		// Its tail is towards us: it is busy with somebody else. (A person's back is no invitation: FHCJBotSkill::HumanTailScore.)
+		if (FVector::DotProduct(Other->GetActorForwardVector(), ToUs.GetSafeNormal()) < HCJBalance::RearArcDot)
 		{
-			Score += 1.5f;
+			Score += IsHumanShip(*Other) ? Skill.HumanTailScore : 1.5f;
 		}
 		if (const int32* Others = Crowd.Find(Other))
 		{

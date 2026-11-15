@@ -137,6 +137,18 @@ bool FHCJTargetingTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("point blank"), HCJUi::IsOnLead(40.0f, 50.0f, 95.0f));
 	TestFalse(TEXT("the same error is a miss farther away"), HCJUi::IsOnLead(1.0f, 12000.0f, 95.0f));
 
+	// "It has its nose on us": close and inside the cone only.
+	TestTrue(TEXT("nose on us"), HCJUi::IsAimingAt(FVector::ForwardVector, FVector(3000.0, 0.0, 0.0)));
+	TestTrue(TEXT("ten degrees off still counts"), HCJUi::IsAimingAt(FVector::ForwardVector, FVector(3000.0, 3000.0 * FMath::Tan(FMath::DegreesToRadians(10.0)), 0.0)));
+	TestFalse(TEXT("fifteen degrees off does not"), HCJUi::IsAimingAt(FVector::ForwardVector, FVector(3000.0, 3000.0 * FMath::Tan(FMath::DegreesToRadians(15.0)), 0.0)));
+	TestFalse(TEXT("flying away from us"), HCJUi::IsAimingAt(FVector::ForwardVector, FVector(-3000.0, 0.0, 0.0)));
+	TestFalse(TEXT("too far to matter"), HCJUi::IsAimingAt(FVector::ForwardVector, FVector(HCJUi::AimWarnDistance + 100.0, 0.0, 0.0)));
+	TestFalse(TEXT("at the same place"), HCJUi::IsAimingAt(FVector::ForwardVector, FVector::ZeroVector));
+	// The side a hit came from, for the death recap.
+	TestTrue(TEXT("head-on"), HCJUi::ClassifyHitSide(0.0f) == EHCJHitSide::Ahead && HCJUi::ClassifyHitSide(55.0f) == EHCJHitSide::Ahead);
+	TestTrue(TEXT("from the side"), HCJUi::ClassifyHitSide(65.0f) == EHCJHitSide::Side && HCJUi::ClassifyHitSide(105.0f) == EHCJHitSide::Side);
+	TestTrue(TEXT("from behind"), HCJUi::ClassifyHitSide(110.0f) == EHCJHitSide::Behind && HCJUi::ClassifyHitSide(180.0f) == EHCJHitSide::Behind);
+
 	// Radar: forward is up, right is right, the rim clamps, height is separate.
 	float Height = 0.0f;
 	FVector2D Point = HCJUi::ProjectRadar(5000.0f, 0.0f, 0.0f, 10000.0f, Height);
@@ -146,6 +158,125 @@ bool FHCJTargetingTest::RunTest(const FString& Parameters)
 	Point = HCJUi::ProjectRadar(-30000.0f, 40000.0f, -50000.0f, 10000.0f, Height);
 	TestTrue(TEXT("far away sits on the rim in the right direction"), FMath::IsNearlyEqual(Point.Size(), 1.0, 0.001) && Point.X > 0.0 && Point.Y > 0.0);
 	TestEqual(TEXT("height is clamped"), Height, -1.0f, 0.001f);
+	return true;
+}
+
+/**
+ * Hypercube map: every sector inside the square and apart from every other one, a portal of one dimension always in
+ * the same direction, depth in [0, 1]; the labels of the own sector and of everything one jump away find room without
+ * lying on each other or on a mark - for every own sector of a 3-D, 4-D and 5-D universe with every portal open, at
+ * the sizes of 1280x720 and 1920x1080.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHCJHypercubeMapTest, "HypeCubeJam.UI.HypercubeMap", HCJUiTestFlags)
+
+bool FHCJHypercubeMapTest::RunTest(const FString& Parameters)
+{
+	for (int32 Dimension = 1; Dimension <= 6; ++Dimension)
+	{
+		const int32 NumSectors = 1 << Dimension;
+		double MaxX = 0.0;
+		double MaxY = 0.0;
+		double MinDepth = 2.0;
+		double MaxDepth = -1.0;
+		double MinDistance = 10.0;
+		for (int32 Sector = 0; Sector < NumSectors; ++Sector)
+		{
+			const FVector Point = HCJUi::ProjectMapSector(Sector, Dimension);
+			TestTrue(TEXT("pure function"), Point.Equals(HCJUi::ProjectMapSector(Sector, Dimension), 0.0));
+			MaxX = FMath::Max(MaxX, FMath::Abs(Point.X));
+			MaxY = FMath::Max(MaxY, FMath::Abs(Point.Y));
+			MinDepth = FMath::Min(MinDepth, Point.Z);
+			MaxDepth = FMath::Max(MaxDepth, Point.Z);
+			for (int32 Other = 0; Other < Sector; ++Other)
+			{
+				MinDistance = FMath::Min(MinDistance, FVector2D::Distance(FVector2D(Point), FVector2D(HCJUi::ProjectMapSector(Other, Dimension))));
+			}
+			// With the sway nothing leaves the panel (the marks have a margin of a seventh of the half width). From two
+			// dimensions on: a single line of two sectors (no universe has it) is fitted to its own small height.
+			const FVector Swayed = HCJUi::ProjectMapSector(Sector, Dimension, FMath::DegreesToRadians(6.0f));
+			TestTrue(*FString::Printf(TEXT("%d-D: swayed mark of sector %d stays near the square (%.3f, %.3f)"), Dimension, Sector, Swayed.X, Swayed.Y),
+				Dimension < 2 || (FMath::Abs(Swayed.X) < 1.12 && FMath::Abs(Swayed.Y) < 1.12));
+		}
+		TestEqual(*FString::Printf(TEXT("%d-D fills the width"), Dimension), MaxX, 1.0, 1.0e-6);
+		TestTrue(*FString::Printf(TEXT("%d-D stays inside the height"), Dimension), MaxY <= 1.0 + 1.0e-6 && (Dimension < 2 || MaxY > 0.999));
+		TestTrue(*FString::Printf(TEXT("%d-D depth in [0, 1]"), Dimension), MinDepth >= 0.0 && MaxDepth <= 1.0 && (Dimension < 3 || (MinDepth < 0.001 && MaxDepth > 0.999)));
+		// Apart: a fifth of the half width for 8 and 16 sectors, a tenth for 32 (at 1280x720 that is 16 and 9 pixels).
+		const double Wanted = Dimension <= 4 ? 0.2 : Dimension == 5 ? 0.1 : 0.02;
+		TestTrue(*FString::Printf(TEXT("%d-D: sectors apart (nearest two %.3f, wanted %.3f)"), Dimension, MinDistance, Wanted), MinDistance >= Wanted);
+
+		// One dimension, one direction: the step of a bit is the same wherever the bits above the cube are concerned.
+		for (int32 Dim = 3; Dim < Dimension; ++Dim)
+		{
+			const FVector Step = HCJUi::ProjectMapSector(1 << Dim, Dimension) - HCJUi::ProjectMapSector(0, Dimension);
+			for (int32 Sector = 0; Sector < NumSectors; ++Sector)
+			{
+				if ((Sector & (1 << Dim)) == 0)
+				{
+					const FVector Other = HCJUi::ProjectMapSector(Sector | (1 << Dim), Dimension) - HCJUi::ProjectMapSector(Sector, Dimension);
+					TestTrue(TEXT("portals of one dimension are parallel"), FVector2D(Other).Equals(FVector2D(Step), 1.0e-6));
+				}
+			}
+		}
+	}
+	TestTrue(TEXT("no dimension, no sector: the middle"), HCJUi::ProjectMapSector(0, 0).Equals(FVector(0.0, 0.0, 0.5)) && HCJUi::ProjectMapSector(-1, 4).Equals(FVector(0.0, 0.0, 0.5)));
+
+	// Labels. Sizes as the HUD has them: map 200 / 260 px wide at 1280x720 (300 / 390 at 1920x1080), a digit about 6 (7.5) px.
+	struct FScreen
+	{
+		const TCHAR* Name;
+		float Unit;
+		float UIScale;
+		float Digit;
+		float LineHeight;
+	};
+	const FScreen Screens[] = { { TEXT("1280x720"), 0.75f, 2.0f / 3.0f, 6.0f, 11.0f }, { TEXT("1920x1080"), 1.0f, 1.0f, 7.5f, 14.0f } };
+	for (const FScreen& Screen : Screens)
+	{
+		for (int32 Dimension = 3; Dimension <= 5; ++Dimension)
+		{
+			const int32 NumSectors = 1 << Dimension;
+			const float Width = (Dimension >= 5 ? 390.0f : 300.0f) * Screen.UIScale;
+			const float AreaHeight = Width * 0.9f;
+			const FVector2D Center(Width * 0.5f, AreaHeight * 0.5f);
+			const FVector2D Radius(Width * 0.5f - 24.0f * Screen.Unit, AreaHeight * 0.5f - 22.0f * Screen.Unit);
+			TArray<FVector2D> Dots;
+			for (int32 Sector = 0; Sector < NumSectors; ++Sector)
+			{
+				const FVector Point = HCJUi::ProjectMapSector(Sector, Dimension);
+				Dots.Add(FVector2D(Center.X + Point.X * Radius.X, Center.Y + Point.Y * Radius.Y));
+			}
+			const FBox2D Bounds(FVector2D(2.0f * Screen.UIScale, 0.0), FVector2D(Width - 2.0f * Screen.UIScale, AreaHeight));
+			int32 NumBad = 0;
+			float Worst = 0.0f;
+			for (int32 Own = 0; Own < NumSectors; ++Own)
+			{
+				TArray<FHCJMapLabel> Labels;
+				FHCJMapLabel& You = Labels.AddDefaulted_GetRef();
+				You.Anchor = Dots[Own];
+				You.AnchorRadius = 12.5f * Screen.Unit;
+				You.Size = FVector2D(4.0f * Screen.Digit, Screen.LineHeight);
+				for (int32 Dim = 0; Dim < Dimension; ++Dim)
+				{
+					FHCJMapLabel& Label = Labels.AddDefaulted_GetRef();
+					Label.Anchor = Dots[Own ^ (1 << Dim)];
+					Label.AnchorRadius = 10.5f * Screen.Unit;
+					Label.Size = FVector2D(Dimension * Screen.Digit + 4.0f * Screen.Unit, Screen.LineHeight);
+				}
+				const float Left = HCJUi::PlaceMapLabels(Labels, Bounds, Dots, 3.0f * Screen.Unit, Dots[Own]);
+				for (const FHCJMapLabel& Label : Labels)
+				{
+					const FBox2D Box(Label.Center - Label.Size * 0.5, Label.Center + Label.Size * 0.5);
+					TestTrue(TEXT("label inside the map"), Box.Min.X >= Bounds.Min.X - 0.01 && Box.Max.X <= Bounds.Max.X + 0.01 && Box.Min.Y >= Bounds.Min.Y - 0.01 && Box.Max.Y <= Bounds.Max.Y + 0.01);
+				}
+				NumBad += Left > 0.5f ? 1 : 0;
+				Worst = FMath::Max(Worst, Left);
+			}
+			// 8 and 16 sectors: never. 32 sectors with all five portals open: a corner of a label may touch (a tenth of a label at most).
+			const float Allowed = Dimension <= 4 ? 0.5f : 0.1f * (Dimension * Screen.Digit) * Screen.LineHeight;
+			TestTrue(*FString::Printf(TEXT("%s, %d-D: labels clear of each other and of the marks (%d of %d own sectors overlap, worst %.1f square px, allowed %.1f)"),
+				Screen.Name, Dimension, NumBad, NumSectors, Worst, Allowed), Worst <= Allowed);
+		}
+	}
 	return true;
 }
 

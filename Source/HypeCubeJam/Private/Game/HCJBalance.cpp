@@ -3,7 +3,8 @@
 FHCJBotSkill FHCJBotSkill::Get(int32 Difficulty)
 {
 	FHCJBotSkill Skill;
-	switch (FMath::Clamp(Difficulty, 0, 2))
+	const int32 Level = FMath::Clamp(Difficulty, 0, HCJBalance::NumBotDifficulties - 1);
+	switch (Level)
 	{
 	case 0:
 		// Easy: slow to react, wide of the mark, short bursts, gives up a losing fight early.
@@ -24,6 +25,18 @@ FHCJBotSkill FHCJBotSkill::Get(int32 Difficulty)
 		Skill.BreakFreeChance = 0.4f;
 		Skill.Tactics = 0.25f;
 		Skill.ComboChance = 0.08f;
+		// Towards a person: one bot at a time, from the front, with a long warning, and its hits do less.
+		Skill.MaxAttackersOnHuman = 1;
+		Skill.MaxHuntersPerHuman = 3;
+		Skill.RearFireDelay = 2.5f;
+		Skill.RearAimErrorScale = 2.0f;
+		Skill.FrontBias = 1.0f;
+		Skill.HumanTailScore = -2.0f;
+		Skill.bFlankHumans = false;
+		Skill.ArrivalGrace = 4.0f;
+		Skill.RespiteSeconds = 6.0f;
+		Skill.DamageToHumanScale = 0.5f;
+		Skill.TorpedoOnHumanChance = 0.35f;
 		break;
 	case 1:
 		Skill.AimErrorDeg = 3.5f;
@@ -43,9 +56,23 @@ FHCJBotSkill FHCJBotSkill::Get(int32 Difficulty)
 		Skill.BreakFreeChance = 0.8f;
 		Skill.Tactics = 0.7f;
 		Skill.ComboChance = 0.35f;
+		Skill.MaxAttackersOnHuman = 2;
+		Skill.MaxHuntersPerHuman = 4;
+		Skill.RearFireDelay = 1.2f;
+		Skill.RearAimErrorScale = 1.5f;
+		Skill.FrontBias = 0.6f;
+		Skill.HumanTailScore = -1.0f;
+		Skill.bFlankHumans = false;
+		// (Tuned like Easy's, half-way to Hard: with 2 s / 3 s / 0.8 / 0.7 the autopilots still died every 15-20 s,
+		// half of the time within 12 s of the spawn.)
+		Skill.ArrivalGrace = 3.5f;
+		Skill.RespiteSeconds = 5.0f;
+		Skill.DamageToHumanScale = 0.55f;
+		Skill.TorpedoOnHumanChance = 0.45f;
 		break;
 	default:
-		// Hard: what the bots were before difficulty levels, a little sharper.
+		// Hard and Ace: what the bots were before difficulty levels, a little sharper. Hard keeps a few rules towards a
+		// person (below); Ace has none - every bot hunts the player, from any side.
 		Skill.AimErrorDeg = 1.5f;
 		Skill.ReactionDelay = 0.2f;
 		Skill.TurnRateDeg = 185.0f;
@@ -63,9 +90,77 @@ FHCJBotSkill FHCJBotSkill::Get(int32 Difficulty)
 		Skill.BreakFreeChance = 1.0f;
 		Skill.Tactics = 1.0f;
 		Skill.ComboChance = 0.7f;
+		if (Level == 2)
+		{
+			Skill.MaxAttackersOnHuman = 3;
+			Skill.MaxHuntersPerHuman = 6;
+			Skill.RearFireDelay = 0.5f;
+			Skill.RearAimErrorScale = 1.0f;
+			Skill.FrontBias = 0.3f;
+			Skill.HumanTailScore = 0.0f;
+			Skill.bFlankHumans = true;
+			Skill.ArrivalGrace = 1.0f;
+			Skill.RespiteSeconds = 0.0f;
+			Skill.DamageToHumanScale = 1.0f;
+			Skill.TorpedoOnHumanChance = 1.0f;
+		}
 		break;
 	}
 	return Skill;
+}
+
+void FHCJBotSkill::ClearFairness()
+{
+	const FHCJBotSkill Off;
+	MaxAttackersOnHuman = Off.MaxAttackersOnHuman;
+	MaxHuntersPerHuman = Off.MaxHuntersPerHuman;
+	RearFireDelay = Off.RearFireDelay;
+	RearAimErrorScale = Off.RearAimErrorScale;
+	FrontBias = Off.FrontBias;
+	HumanTailScore = Off.HumanTailScore;
+	bFlankHumans = Off.bFlankHumans;
+	ArrivalGrace = Off.ArrivalGrace;
+	RespiteSeconds = Off.RespiteSeconds;
+	DamageToHumanScale = Off.DamageToHumanScale;
+	TorpedoOnHumanChance = Off.TorpedoOnHumanChance;
+}
+
+const TCHAR* HCJBalance::GetDifficultyName(int32 Difficulty)
+{
+	switch (FMath::Clamp(Difficulty, 0, NumBotDifficulties - 1))
+	{
+	case 0: return TEXT("Easy");
+	case 1: return TEXT("Normal");
+	case 2: return TEXT("Hard");
+	default: return TEXT("Ace");
+	}
+}
+
+const TCHAR* HCJBalance::GetDifficultyDescription(int32 Difficulty)
+{
+	switch (FMath::Clamp(Difficulty, 0, NumBotDifficulties - 1))
+	{
+	case 0: return TEXT("One bot at a time. Slow, wide aim, and they come at you from the front.");
+	case 1: return TEXT("Two on you at most. A moment's warning before any fire from behind.");
+	case 2: return TEXT("Three on you. Sharp aim, torpedo combos, scouts ambush from cloak.");
+	default: return TEXT("No rules: every bot hunts you, from any side, with everything it has.");
+	}
+}
+
+float HCJBalance::BearingDegrees(const FVector& Forward, const FVector& ToOther)
+{
+	const FVector Direction = ToOther.GetSafeNormal();
+	const FVector Nose = Forward.GetSafeNormal();
+	if (Direction.IsNearlyZero() || Nose.IsNearlyZero())
+	{
+		return -1.0f;
+	}
+	return static_cast<float>(FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(FVector::DotProduct(Nose, Direction), -1.0, 1.0))));
+}
+
+bool HCJBalance::IsRearBearing(float BearingDeg)
+{
+	return BearingDeg >= 0.0f && FMath::Cos(FMath::DegreesToRadians(BearingDeg)) < RearArcDot;
 }
 
 const TCHAR* HCJBalance::GetTacticName(EHCJBotTactic Tactic)

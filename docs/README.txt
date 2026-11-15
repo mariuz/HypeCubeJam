@@ -8,9 +8,11 @@ Start:  HypeCubeJam.exe            plays a 10 s intro (any key, mouse button or 
                                     filling in, and the next player's QUICK PLAY finds it. The screen says
                                     what it is doing; Esc cancels. Without the online service it starts a
                                     local match against bots.
+                                    DIFFICULTY is the first row of the menu: Easy, Normal, Hard or Ace, with a
+                                    line under it that says what the level does (see "Difficulty" below).
                                     PLAY hosts a match with bots (one click).
                                     HANGAR: choose your ship - type, hull and paint (see "Ship types").
-                                    The menu also has: number of bots, hypercube size (3D-5D), bot difficulty,
+                                    The menu also has: number of bots, hypercube size (3D-5D),
                                     seed, pilot name, JOIN by address, CONTROLS (all keys), SETTINGS (mouse
                                     sensitivity, volumes, hints, camera shake, enemy highlight, cinematic look,
                                     music), QUIT.
@@ -55,11 +57,18 @@ switch it off for a plainer, slightly faster picture. The pebbles and the far bo
 On screen: every enemy in the sector has a heavy red bracket with name, distance and hull (dimmer when behind a rock);
 red arrows at the screen edge point to enemies out of view. The enemy nearest your crosshair is the target
 (orange diamond): put the crosshair on its yellow lead circle - it turns green and says FIRE when you are on it.
-Homing missiles go for the target. A red arc shows where damage comes from. Bottom left: your ship inside the
+Homing missiles go for the target. A red arc shows where damage comes from; a hit from behind draws a wider, heavier
+arc and says HIT FROM BEHIND. An enemy close by that points its nose at you gets a pulsing arrow with a "!" and a
+yellow ring on the radar; when it is behind you the screen says ENEMY BEHIND with its name and distance and a warning
+sounds - turn, boost away or cloak. After a death the respawn screen says who did it, with what, and from which
+side ("from behind", "from the side", "head-on"). Bottom left: your ship inside the
 four arcs of its shield, hull and boost bars, above them the radar (you in the middle, forward is up; red = enemies, squares = portals) with the number of
 enemies in the sector, or the way to the nearest enemy when the sector is empty. Bottom right: weapon, ammunition
 and running power-ups. Top left: sector, your kills against the frag limit and who leads. Top right: the map of
-the hypercube (legend below it) and the kill feed. Labels over portals and wormholes say where they lead; a banner
+the hypercube and the kill feed. On the map the white ring marked YOU is your sector; the thick lines lead to the
+sectors one portal away, each with the number its portal shows in the world ("PORTAL > 0101"); a red badge is the
+number of enemies in a sector, a pulsing red ring the nearest fight, yellow brackets and a yellow line the way to the
+enemies the HUD is sending you to. A white frame is a station, an orange ring a black hole, violet dashes a wormhole. Labels over portals and wormholes say where they lead; a banner
 names each sector you enter and what is in it.
 
 Shields: four facings - fore, aft, port, starboard - the arcs around the little ship at the bottom left. A hit
@@ -79,7 +88,8 @@ empty the same button fires the blaster until the bank is back at the mark. B sw
 a pickup weapon takes the place of the phaser and gives it back when it is empty or dropped (G).
 Rocks: phasers and torpedoes break asteroids - big ones into two or three pieces, small ones for good (bolts do
 nothing to rock). The field is whole again when the next match starts.
-Explosions push the ships around them; SETTINGS has a switch for the camera shake.
+Explosions push the ships around them; SETTINGS has a switch for the camera shake. When your own ship is destroyed
+the view pulls back and stays on the wreck until the new ship is ready (left mouse or R skips the wait after 1.5 s).
 
 Ship types (HANGAR in the title menu, and under Esc for your next ship): five types, each with eight hulls and ten
 paints. The hull turns next to the page; bars show speed, agility, hull, shields, firepower and systems.
@@ -105,7 +115,17 @@ blue-white beam holds it - it is pulled towards you and can only fly at about ha
 beam feeds on the phaser bank (about 3 s from a full bank, 5 s on a cruiser). It lets go when the target boosts for
 about a second, when you take a hard hit, when rock gets in between or the target leaves the beam's reach. Caught in
 one yourself (CAUGHT IN TRACTOR BEAM): hold Shift, or shoot the ship that holds you.
-A fresh ship has a 2 s spawn shield (lights shimmer white) until it fires. Bot difficulty (easy / normal / hard) is set in the menu; easy is the default.
+A fresh ship has a 3 s spawn shield (lights shimmer white) until it fires, and it appears facing the nearest ship of its sector.
+Difficulty (first row of the menu; Easy is the default). The bots treat a human pilot by rules that depend on the level:
+  Easy    One bot at a time. Slow, wide aim, and they come at you from the front. A bot that gets behind you holds its
+          fire for 2.5 s first, bots leave you alone for 4 s after you appear in a sector and for 6 s after your
+          attacker is gone, their hits on you do half the damage, and they fire few torpedoes at you.
+  Normal  Two on you at most. A moment's warning (1.2 s) before any fire from behind; left alone for 3.5 s after you
+          appear in a sector and for 5 s after your attacker is gone; 55 % damage, fewer torpedoes.
+  Hard    Three on you. Sharp aim, torpedo combos, scouts ambush from cloak; full damage.
+  Ace     No rules: every bot hunts you, from any side, with everything it has.
+  A bot you shoot may always shoot back, whatever the level. Bots fight each other the same on every level.
+  The host can change the level during a match: Esc > Bot difficulty (applies at once).
 Fly through the portals - rings with a swirl in the colour of the sector they lead to - to reach neighbouring
 sectors; from afar a portal is a glint in that colour. Stay away from black holes.
 Space stations (two wheels on an axle, with a mast and panels) have gun turrets that shoot every ship in range;
@@ -115,6 +135,7 @@ Glowing pads hold pickups: repair, shield cell, overdrive (speed), quad damage, 
 limited-ammo weapons (scatter cannon, rail shot, homing missiles, rapid pulse). Fly over a pad to take it.
 Host options without the menu (append to the exe as one argument):
   "/Engine/Maps/Entry?listen?Seed=1234?Dim=4?Bots=8?Difficulty=0?Pickups=1?Wormholes=4?Stations=1"
+  (Difficulty: 0 easy, 1 normal, 2 hard, 3 ace)
 
 Music: three tracks generated with Google Lyria (Gemini) - title menu, exploring, combat. SETTINGS can switch to the
 older layered stems. Sound effects (and those stems) are from Epic's "Lyra Starter Game". Volumes: SETTINGS in the menu.

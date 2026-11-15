@@ -26,6 +26,7 @@
 #include "Sound/SoundClass.h"
 #include "UObject/ConstructorHelpers.h"
 
+#include "AI/HCJBotController.h"
 #include "Assets/HCJAssetSettings.h"
 #include "Effects/HCJEffectsDirector.h"
 #include "Game/HCJGameMode.h"
@@ -303,6 +304,10 @@ void AHCJShipCharacter::Tick(float DeltaSeconds)
 	ServerTickPhaser(DeltaSeconds);
 	ServerTickWeapon();
 	ServerTickBounds(DeltaSeconds);
+	if (FairBeamLogs.Num() > 0)
+	{
+		FlushFairBeamLogs(false);
+	}
 }
 
 void AHCJShipCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -935,11 +940,19 @@ float AHCJShipCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Dama
 		return 0.0f;
 	}
 
-	const float ActualDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
-	if (ActualDamage <= 0.0f)
+	const float UnscaledDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+	if (UnscaledDamage <= 0.0f)
 	{
 		return 0.0f;
 	}
+
+	// Fairness (docs/DEVLOG_NOTES.md, item 29): what a bot does to a ship flown by a person is scaled by the
+	// difficulty - every weapon, the torpedo's share for the shield and each step of a phaser beam included.
+	AHCJGameMode* FairGameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>();
+	const bool bHumanVictim = Cast<APlayerController>(GetController()) != nullptr;
+	const bool bBotAttacker = EventInstigator != GetController() && Cast<AHCJBotController>(EventInstigator) != nullptr;
+	const float DamageScale = (bHumanVictim && bBotAttacker && FairGameMode != nullptr) ? FairGameMode->GetBotDamageToHumanScale() : 1.0f;
+	const float ActualDamage = UnscaledDamage * DamageScale;
 
 	{
 		const float Now = static_cast<float>(GetWorld()->GetTimeSeconds());
@@ -996,6 +1009,43 @@ float AHCJShipCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Dama
 	}
 	const float FacingBefore = bDirected ? HealthComponent->GetFacingFraction(HealthComponent->GetNumFacings() > 1 ? static_cast<int32>(HitFacing) : 0) : 0.0f;
 
+	// For the "Fair: event=hit" line of a person's ship, taken now: the damage call below may destroy the ship.
+	FString FairAttackerName;
+	float FairBearing = -1.0f;
+	float FairDistance = -1.0f;
+	const auto MakeFairAttackerName = [EventInstigator, DamageCauser]()
+	{
+		const APlayerState* AttackerState = EventInstigator != nullptr ? EventInstigator->PlayerState.Get() : nullptr;
+		FString Name = AttackerState != nullptr ? AttackerState->GetPlayerName()
+			: (DamageCauser != nullptr && Cast<AHCJTurret>(DamageCauser->GetOwner()) != nullptr) ? FString(TEXT("Station")) : FString(TEXT("-"));
+		Name.ReplaceInline(TEXT(" "), TEXT("_"));
+		Name.ReplaceInline(TEXT("="), TEXT("_"));
+		return Name;
+	};
+	if (bHumanVictim)
+	{
+		const AActor* Source = (EventInstigator != nullptr && EventInstigator->GetPawn() != nullptr) ? static_cast<const AActor*>(EventInstigator->GetPawn())
+			: (DamageCauser != nullptr && DamageCauser->GetOwner() != nullptr) ? DamageCauser->GetOwner() : DamageCauser;
+		if (Source != nullptr && Source != this)
+		{
+			FairBearing = HCJBalance::BearingDegrees(GetActorForwardVector(), Source->GetActorLocation() - GetActorLocation());
+			FairDistance = static_cast<float>(FVector::Dist(Source->GetActorLocation(), GetActorLocation()));
+		}
+		// The names are text for the log lines only. A beam comes through here every server tick and writes two lines
+		// a second: its attacker is named once per beam (below), the victim once per ship.
+		if (!bPhaser)
+		{
+			FairAttackerName = MakeFairAttackerName();
+		}
+		if (!bPhaser || FairVictimName.IsEmpty())
+		{
+			// (The ship has no player state any more once it is destroyed.)
+			FairVictimName = GetPlayerState() != nullptr ? GetPlayerState()->GetPlayerName() : GetName();
+			FairVictimName.ReplaceInline(TEXT(" "), TEXT("_"));
+			FairVictimName.ReplaceInline(TEXT("="), TEXT("_"));
+		}
+	}
+
 	// May run Die() synchronously through OnDepleted.
 	FHCJShieldHit ShieldHit;
 	float Applied = 0.0f;
@@ -1025,6 +1075,66 @@ float AHCJShipCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Dama
 	{
 		// Enough of this and the beam lets go (ServerTickSystems).
 		TractorDamageTaken += Applied;
+	}
+
+	if (bHumanVictim)
+	{
+		// Telemetry of the fairness rules: every step is added up by the game mode; the lines are thinned for a beam.
+		const bool bFatal = HealthComponent->IsDepleted();
+		const bool bAft = bDirected && HitFacing == EHCJShieldFacing::Aft;
+		const float AppliedUnscaled = Applied / FMath::Max(DamageScale, 0.01f);
+		const bool bAttackerIsBot = bBotAttacker;
+		if (FairGameMode != nullptr)
+		{
+			FairGameMode->NotifyFairHit(Applied, AppliedUnscaled, FairBearing, bAft, bFatal, bAttackerIsBot);
+		}
+		const TCHAR* FacingName = bDirected ? HCJShield::FacingName(HitFacing) : TEXT("NONE");
+		if (bPhaser)
+		{
+			FFairBeamLog* Entry = FairBeamLogs.FindByPredicate([EventInstigator](const FFairBeamLog& Other) { return Other.Attacker.Get() == EventInstigator; });
+			if (Entry == nullptr)
+			{
+				if (FairBeamLogs.Num() >= 4)
+				{
+					FlushFairBeamLogs(true);
+				}
+				Entry = &FairBeamLogs.AddDefaulted_GetRef();
+				Entry->Attacker = EventInstigator;
+				Entry->AttackerName = MakeFairAttackerName();
+			}
+			Entry->bAttackerIsBot = bAttackerIsBot;
+			Entry->Applied += Applied;
+			Entry->Unscaled += UnscaledDamage;
+			Entry->Bearing = FairBearing;
+			Entry->Distance = FairDistance;
+			Entry->Facing = FacingName;
+			if (bFatal)
+			{
+				LogFairHit(Entry->AttackerName, Entry->bAttackerIsBot, TEXT("phaser"), Entry->Facing, Entry->Bearing, Entry->Distance, Entry->Applied, Entry->Unscaled, DamageScale, true);
+				Entry->Applied = 0.0f;
+				Entry->Unscaled = 0.0f;
+				FlushFairBeamLogs(true);
+			}
+			else
+			{
+				FlushFairBeamLogs(false);
+			}
+		}
+		else
+		{
+			static const TCHAR* WeaponKeys[] = { TEXT("blaster"), TEXT("scatter"), TEXT("rail"), TEXT("missiles"), TEXT("pulse"), TEXT("torpedo"), TEXT("phaser") };
+			const int32 WeaponIndex = CauserProjectile != nullptr ? static_cast<int32>(CauserProjectile->GetWeapon()) : -1;
+			const TCHAR* WeaponName = (WeaponIndex >= 0 && WeaponIndex < UE_ARRAY_COUNT(WeaponKeys)) ? WeaponKeys[WeaponIndex] : TEXT("other");
+			if (CauserProjectile != nullptr && Cast<AHCJTurret>(CauserProjectile->GetOwner()) != nullptr)
+			{
+				WeaponName = TEXT("turret");
+			}
+			LogFairHit(FairAttackerName, bAttackerIsBot, WeaponName, FacingName, FairBearing, FairDistance, Applied, UnscaledDamage, DamageScale, bFatal);
+			if (bFatal)
+			{
+				FlushFairBeamLogs(true);
+			}
+		}
 	}
 
 	if (AHCJPlayerController* Shooter = Cast<AHCJPlayerController>(EventInstigator); Shooter != nullptr && Shooter != VictimController
@@ -1066,6 +1176,39 @@ float AHCJShipCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Dama
 		}
 	}
 	return Applied;
+}
+
+void AHCJShipCharacter::LogFairHit(const FString& AttackerName, bool bAttackerIsBot, const TCHAR* Weapon, const TCHAR* Facing, float Bearing, float Distance, float Applied, float Unscaled,
+	float Scale, bool bFatal) const
+{
+	// dmg: what the shield and the hull took. raw: what the weapon dealt before the difficulty's damage scale (for a
+	// torpedo its damage to an open hull, before the facing stopped its share).
+	UE_LOG(LogHCJ, Log, TEXT("Fair: event=hit t=%.2f victim=%s attacker=%s attacker_bot=%d weapon=%s facing=%s bearing=%.0f dist=%.0f dmg=%.1f hull_after=%.0f fatal=%d rear=%d raw=%.1f scale=%.2f"),
+		GetWorld()->GetTimeSeconds(), *FairVictimName, *AttackerName, bAttackerIsBot ? 1 : 0, Weapon, Facing, Bearing, Distance, Applied,
+		HealthComponent != nullptr ? HealthComponent->GetHealth() : 0.0f, bFatal ? 1 : 0, HCJBalance::IsRearBearing(Bearing) ? 1 : 0, Unscaled, Scale);
+}
+
+void AHCJShipCharacter::FlushFairBeamLogs(bool bAll)
+{
+	const float Now = static_cast<float>(GetWorld()->GetTimeSeconds());
+	const AHCJGameMode* GameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>();
+	const float Scale = GameMode != nullptr ? GameMode->GetBotDamageToHumanScale() : 1.0f;
+	for (int32 Index = FairBeamLogs.Num() - 1; Index >= 0; --Index)
+	{
+		FFairBeamLog& Entry = FairBeamLogs[Index];
+		if (Entry.Applied > 0.0f && (bAll || Now - Entry.LastLogTime >= 0.5f))
+		{
+			LogFairHit(Entry.AttackerName, Entry.bAttackerIsBot, TEXT("phaser"), Entry.Facing, Entry.Bearing, Entry.Distance, Entry.Applied, Entry.Unscaled, Entry.bAttackerIsBot ? Scale : 1.0f, false);
+			Entry.Applied = 0.0f;
+			Entry.Unscaled = 0.0f;
+			Entry.LastLogTime = Now;
+		}
+		else if (Entry.Applied <= 0.0f && (bAll || Now - Entry.LastLogTime > 3.0f))
+		{
+			// That beam is over.
+			FairBeamLogs.RemoveAtSwap(Index);
+		}
+	}
 }
 
 void AHCJShipCharacter::MulticastShieldHit_Implementation(uint16 PackedDirection, uint8 StrengthAfter)
@@ -1229,6 +1372,7 @@ void AHCJShipCharacter::PossessedBy(AController* NewController)
 	{
 		SpawnProtectionEndTime = static_cast<float>(World->GetTimeSeconds()) + SpawnProtectionSeconds;
 		bSpawnShield = true;
+		SectorArrivalTime = static_cast<float>(World->GetTimeSeconds());
 	}
 	UpdateShipColor();
 }
@@ -1494,6 +1638,7 @@ void AHCJShipCharacter::ServerApplyPendingTeleport()
 	// A ship that flies into a portal at warp comes out of it at boost speed.
 	ServerCancelWarp(TEXT("portal"));
 	TeleportTo(GetActorLocation() + PendingTeleportDelta, GetActorRotation(), false, true);
+	SectorArrivalTime = static_cast<float>(GetWorld()->GetTimeSeconds());
 	ForceNetUpdate();
 
 	UE_LOG(LogHCJ, Verbose, TEXT("%s jumped from sector %d to sector %d%s"), *GetName(), FromSector, GetCurrentSector(), bPendingWormhole ? TEXT(" through a wormhole") : TEXT(""));
@@ -2143,6 +2288,12 @@ void AHCJShipCharacter::TickShipEffects()
 			LocalController->GetPlayerViewPoint(ViewLocation, ViewRotation);
 		}
 		const bool bOwn = LocalController != nullptr && LocalController->GetPawn() == this;
+		if (!bIsDead)
+		{
+			// Remembered for the moment it dies: by then the controller may have let go of it (on a client that can
+			// arrive a frame before the death). A ship has one pilot for its whole life, so the flag is only ever set.
+			bWasLocalShip |= bOwn;
+		}
 		const bool bShown = LocalController != nullptr && !bIsDead && !bCloakLook;
 		const bool bHighlight = UHCJUserSettings::Get().bEnemyHighlight;
 		const float Distance = static_cast<float>(FVector::Dist(ViewLocation, Location));
@@ -2287,6 +2438,20 @@ void AHCJShipCharacter::TickShipEffects()
 	const float EffectDelta = GetWorld()->GetDeltaSeconds();
 	const float EffectNow = static_cast<float>(GetWorld()->GetTimeSeconds());
 
+	// The hull of a ship that was destroyed stays in view while it fails; the blast takes it.
+	const bool bHullFailing = HullFailEndTime > 0.0f && EffectNow < HullFailEndTime;
+	if (HullFailEndTime > 0.0f && !bHullFailing)
+	{
+		HullFailEndTime = 0.0f;
+		for (UStaticMeshComponent* Body : { HullMesh.Get(), WingMesh.Get(), EngineMesh.Get() })
+		{
+			if (Body != nullptr)
+			{
+				Body->SetVisibility(false, false);
+			}
+		}
+	}
+
 	// Shield bubble: nothing to do unless a flare or a collapse flicker is running.
 	if (bShieldBubbleActive)
 	{
@@ -2310,7 +2475,9 @@ void AHCJShipCharacter::TickShipEffects()
 		LastBankYaw = Yaw;
 		bHasLastBankYaw = true;
 		const float WantedBank = bIsDead ? 0.0f : FMath::Clamp(YawRate * BankPerYawRate, -MaxBankDegrees, MaxBankDegrees);
-		BankAngle = FMath::FInterpTo(BankAngle, WantedBank, EffectDelta, 3.5f);
+		// A failing hull rolls over, faster and faster.
+		BankAngle = bHullFailing ? BankAngle + (60.0f + 600.0f * (1.0f - (HullFailEndTime - EffectNow) / FMath::Max(UHCJEffectsDirector::GetHullFailSeconds(), 0.01f))) * EffectDelta
+			: FMath::FInterpTo(BankAngle, WantedBank, EffectDelta, 3.5f);
 		// Positive roll puts the right wing down: a turn to the right (yaw growing) banks right.
 		const FQuat Bank = FRotator(0.0, 0.0, BankAngle).Quaternion();
 		HullMesh->SetRelativeLocationAndRotation(Bank.RotateVector(BaseHullLocation), Bank * BaseHullRotation);
@@ -2339,7 +2506,14 @@ void AHCJShipCharacter::TickShipEffects()
 	const bool bQuadNow = !bIsDead && HasPowerup(EHCJPowerup::Quad);
 	if (HullMaterial != nullptr && bUsingShipMesh && !Settings.ShipTintParameter.IsNone())
 	{
-		if (bQuadNow)
+		if (bHullFailing)
+		{
+			// The lights of a failing hull flare orange-white, brighter towards the blast.
+			const float Left = (HullFailEndTime - EffectNow) / FMath::Max(UHCJEffectsDirector::GetHullFailSeconds(), 0.01f);
+			const float Flicker = 0.6f + 0.4f * FMath::Sin(EffectNow * 70.0f);
+			HullMaterial->SetVectorParameterValue(Settings.ShipTintParameter, FLinearColor(1.0f, 0.55f, 0.2f) * ((6.0f + 30.0f * (1.0f - Left)) * Flicker));
+		}
+		else if (bQuadNow)
 		{
 			const float Pulse = 0.5f + 0.5f * FMath::Sin(EffectNow * 9.0f);
 			HullMaterial->SetVectorParameterValue(Settings.ShipTintParameter, FLinearColor(1.0f, 0.1f, 0.9f) * (2.0f + 6.0f * Pulse));
@@ -2410,6 +2584,43 @@ void AHCJShipCharacter::PlayDeathEffects()
 	bDeathEffectsPlayed = true;
 
 	const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
+	if (!UHCJEffectsDirector::IsClassicBlast())
+	{
+		// The staged explosion: the hull fails with a few pops (it stays in view for that moment, glowing and rolling),
+		// then the blast. All of it is the director's; the sounds come with the blast.
+		UHCJEffectsDirector* Effects = UHCJEffectsDirector::Get(this);
+		const UWorld* World = GetWorld();
+		if (Effects == nullptr || World == nullptr)
+		{
+			return;
+		}
+		const AHCJPlayerState* ShipPlayerState = GetPlayerState<AHCJPlayerState>();
+		const float HullLength = (bUsingShipMesh ? Settings.ShipMeshLength : 200.0f) * GetTypeDef().Scale;
+		Effects->PlayShipDeath(GetActorLocation(), LastEffectVelocity, ShipPlayerState != nullptr ? ShipPlayerState->GetPlayerColor() : UnownedHullColor,
+			GetActorForwardVector(), GetActorUpVector(), HullLength, bWasLocalShip);
+		const float FailSeconds = UHCJEffectsDirector::GetHullFailSeconds();
+		if (FailSeconds > 0.0f && !bCloakLook && UHCJAssetSettings::IsNearLocalView(this, GetActorLocation(), Settings.BlastMediumDetailDistance))
+		{
+			HullFailEndTime = static_cast<float>(World->GetTimeSeconds()) + FailSeconds;
+			for (UStaticMeshComponent* Body : { HullMesh.Get(), WingMesh.Get(), EngineMesh.Get() })
+			{
+				if (Body != nullptr)
+				{
+					Body->SetVisibility(true, false);
+					Body->SetOwnerNoSee(false);
+				}
+			}
+		}
+		if (bWasLocalShip)
+		{
+			// The view of the pilot stays with the wreck (the controller is about to lose this pawn).
+			if (AHCJPlayerController* LocalPilot = Cast<AHCJPlayerController>(GEngine != nullptr ? GEngine->GetFirstLocalPlayerController(World) : nullptr))
+			{
+				LocalPilot->NotifyOwnShipDestroyed(GetActorLocation(), LastEffectVelocity, FailSeconds);
+			}
+		}
+		return;
+	}
 	UHCJAssetSettings::SpawnEffect(this, Settings.ExplosionEffect, TEXT("ship explosion"), GetActorLocation(), GetActorRotation(), Settings.ExplosionScale);
 	// Debris: three bursts of the rock impact (it throws chunks) around the blast.
 	for (int32 Burst = 0; Burst < 3; ++Burst)

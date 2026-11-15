@@ -103,6 +103,75 @@ namespace HCJUi
 	 * clamped to the rim. OutHeight is the height above (+) or below (-) the ship's plane in [-1, 1] of Range.
 	 */
 	HYPECUBEJAM_API FVector2D ProjectRadar(float Forward, float Right, float Up, float Range, float& OutHeight);
+
+	/** "It has its nose on us": an enemy this close (uu) whose forward direction is within this many degrees of the line to the own ship. */
+	inline constexpr float AimWarnDistance = 9000.0f;
+	inline constexpr float AimWarnConeDeg = 12.0f;
+	/** "ENEMY BEHIND": the nose has to stay on the own ship this long before the line and the cue come (a bot on Hard holds its fire for 0.5 s). */
+	inline constexpr float AimWarnDwellSeconds = 0.3f;
+	/** ... and the cue is the warning tick at this pitch, so that it is not the torpedo's "break away". */
+	inline constexpr float AimWarnCuePitch = 0.67f;
+	/**
+	 * Whether another ship is aiming at the own ship, from what every machine knows of it: OtherForward is its forward
+	 * direction, OtherToOwn the vector from it to the own ship. Used for the "!" arrow, the ring on the radar and
+	 * "ENEMY BEHIND" - the warning before a bot that got behind a player opens fire.
+	 */
+	HYPECUBEJAM_API bool IsAimingAt(const FVector& OtherForward, const FVector& OtherToOwn, float MaxDistance = AimWarnDistance, float ConeDeg = AimWarnConeDeg);
+}
+
+/** Where a hit came from, as the pilot saw it (the death recap). */
+enum class EHCJHitSide : uint8
+{
+	Ahead,
+	Side,
+	Behind
+};
+
+namespace HCJUi
+{
+	/**
+	 * BearingDeg is the angle between the own nose and the direction to the shooter (0 dead ahead, 180 dead astern):
+	 * behind beyond the rear arc of HCJBalance::RearArcDot (about 107 degrees), from the side beyond 60 degrees, else head-on.
+	 */
+	HYPECUBEJAM_API EHCJHitSide ClassifyHitSide(float BearingDeg);
+}
+
+/** One label of the hypercube map: the mark it belongs to, the room its text needs and (out) where it goes. */
+struct FHCJMapLabel
+{
+	/** Centre of the mark of its sector, pixels. */
+	FVector2D Anchor = FVector2D::ZeroVector;
+	/** Half size of that mark: the label keeps clear of it. */
+	float AnchorRadius = 0.0f;
+	/** Size of the text. */
+	FVector2D Size = FVector2D::ZeroVector;
+	/** Out: centre of the text. */
+	FVector2D Center = FVector2D::ZeroVector;
+};
+
+namespace HCJUi
+{
+	/**
+	 * Hypercube map: where sector Sector of a Dimension-dimensional hypercube is drawn. X and Y are in [-1, 1] (Y
+	 * down, the picture fills the square), Z is the depth in [0, 1] (1 = nearest to the viewer: drawn larger and
+	 * brighter). The first three bits span a cube seen a little from the right and from above, with a mild
+	 * perspective; every further bit shifts the whole cube: the fourth sideways (two cubes next to each other), the
+	 * fifth downwards (four cubes, two by two), the sixth a little back along a diagonal. So a portal of one dimension
+	 * always runs in the same direction on the map. Pure function of its arguments; SwayRad turns the cubes about
+	 * their vertical axis (the slow sway of the HUD) without changing the scale.
+	 */
+	HYPECUBEJAM_API FVector ProjectMapSector(int32 Sector, int32 Dimension, float SwayRad = 0.0f);
+
+	/**
+	 * Puts every label next to its mark - below, above, beside or diagonally, near or one line farther out - so that
+	 * it stays inside Bounds, off the marks of all labelled sectors, off the other labels, off Obstacles (the enemy
+	 * badges) and, where there is a choice, off the plain dots (Dots, each DotHalfSize around its centre) and on the
+	 * side of its mark that faces away from AwayFrom (the own sector: the lines to the neighbours start there). Three
+	 * rounds, each label taking the best of sixteen places given where the others are. Returns the area (square
+	 * pixels) by which labels still overlap marks, obstacles or each other.
+	 */
+	HYPECUBEJAM_API float PlaceMapLabels(TArrayView<FHCJMapLabel> Labels, const FBox2D& Bounds, TConstArrayView<FVector2D> Dots, float DotHalfSize, const FVector2D& AwayFrom,
+		TConstArrayView<FBox2D> Obstacles = TConstArrayView<FBox2D>());
 }
 
 /** Process-wide menu flow state that has to survive a map change (leaving a server, a failed connection). */

@@ -57,24 +57,29 @@ protected:
 	/** Sector id in binary, score and match clock. LocalSector may be INDEX_NONE. */
 	void DrawMatchInfo(const AHCJGameState& GameState, const AHCJPlayerState* LocalPlayerState, int32 LocalSector);
 	/**
-	 * Hypercube map inside the square (TopLeft, Size): one dot per sector at ProjectSector, a line per open edge,
-	 * the local sector highlighted, sectors tinted with their sector tint, a small marker for every sector that
-	 * holds at least one other combatant (from the replicated AHCJPlayerState::GetCurrentSector).
+	 * Hypercube map (HCJHUDMap.cpp), a panel hanging from TopRight; returns its height. One mark per sector at
+	 * HCJUi::ProjectMapSector (nearer ones larger and brighter, lines at the back thinner), a line per open portal.
+	 *   own sector            white ring, "YOU", a slow halo; rings run out from it for a moment after a jump and the
+	 *                         line just travelled lights up
+	 *   one jump away         thick lines from the own sector, a diamond and the sector id - the text of the in-world
+	 *                         "PORTAL > 0101" marker; violet for the far end of the own wormhole
+	 *   enemies               a red badge with their number (replicated AHCJPlayerState::GetCurrentSector; the own
+	 *                         sector counts the ships this machine sees, as the radar does)
+	 *   target                yellow corner brackets, its id and the way there in yellow: the sector of the locked
+	 *                         ship, else the sector the HUD is guiding to (GuideSector)
+	 *   nearest fight         a pulsing red ring with four sparks: the nearest other sector where a ship was lost in
+	 *                         the last seconds (a death count that went up) or that holds two or more ships
+	 *   station / black hole / wormhole   white frame / orange ring around a black core / violet dashed arc; one
+	 *                         legend row names the ones this universe has
+	 * Everything is read from what the client already has; the strings are cached per universe.
 	 */
-	void DrawHypercubeMap(const AHCJGameState& GameState, const FVector2D& TopLeft, float Size, int32 LocalSector);
+	float DrawHypercubeMap(const AHCJGameState& GameState, const FVector2D& TopRight, int32 LocalSector, const AHCJShipCharacter* LiveShip);
 	void DrawKillFeed(const AHCJGameState& GameState, const FVector2D& TopRight);
 	/** Respawn countdown / "press FIRE to respawn" once the earliest respawn time has passed. */
 	void DrawRespawnInfo(const AHCJGameState& GameState, const AHCJPlayerState& LocalPlayerState, bool bCompact);
 	void DrawIntermission(const AHCJGameState& GameState);
 	/** Table: name, kills, deaths, sector (binary); bots marked; local player's row highlighted. */
 	void DrawScoreboard(const AHCJGameState& GameState, const AHCJPlayerState* LocalPlayerState);
-
-	/**
-	 * 2D position in [-1, 1]^2 of a sector on the map: sum over set bits d of a fixed per-dimension 2D axis
-	 * (axes fan out at different angles and shrink with d), normalised by the sum of all axis lengths.
-	 * Pure function of (Sector, Dimension), so the picture is stable for a given dimension.
-	 */
-	static FVector2D ProjectSector(int32 Sector, int32 Dimension);
 
 	// ---- readability (HCJHUDReadability.cpp) ----
 
@@ -109,10 +114,14 @@ protected:
 	void NotePanel(float X, float Y, float Width, float Height);
 	/** Where the last damage came from (an arc around the centre), a flash when hit, a red vignette on a low hull. */
 	void DrawDamageFeedback(const AHCJShipCharacter& Ship, const AHCJPlayerController* Controller);
+	/** NumBands bands of Color along the screen edges, each BandWidth wide (pixels at 1080p), strongest at the edge (Strength: the alpha there). */
+	void DrawVignette(const FLinearColor& Color, float Strength, int32 NumBands = 6, float BandWidth = 16.0f);
+	/** The own ship blew up (AHCJPlayerController::GetOwnBlastAge): a warm flash over the screen for a fifth of a second, an orange vignette for a second. */
+	void DrawDeathFlash(const AHCJPlayerController& Controller);
 	/** "PORTAL > 0101  320 m" over the portals of the current sector that are in range. */
 	void DrawPortalLabels(const AHCJShipCharacter& Ship);
-	/** What the marks of the map mean; returns the height used. */
-	float DrawMapLegend(const FVector2D& TopLeft, float Width);
+	/** One row under the map for the marks that do not explain themselves (station, black hole, wormhole), each only when the universe has one; returns the height used. */
+	float DrawMapLegend(const FVector2D& TopLeft, float Width, bool bStations, bool bBlackHoles, bool bWormholes);
 	/** The big centre line of AHCJGameState::GetCenterMessage while it is fresh; also announces a new match. */
 	void DrawCenterMessage(AHCJGameState& GameState, bool bDraw);
 	/** Controls and the goal of the game (F1, and by itself for the first seconds of the first ship). */
@@ -155,6 +164,8 @@ public:
 	/** Development aids (console command HCJMenuCmd): the onboarding steps count as done / every hint may be shown again. */
 	static void DebugSkipOnboarding();
 	static void DebugResetHints();
+	/** Development (HCJMenuCmd mapjump <seconds>): the map shows the animation of the last change of sector frozen at that age; negative = as it runs. */
+	static float DebugMapJumpAge;
 
 protected:
 	/** Sector of the local player: from the ship's location when there is one, else from the player state. */
@@ -197,6 +208,10 @@ protected:
 	TArray<FBox2D> PrevPanelRects;
 	/** The torpedo the warning cue was last played for. */
 	TWeakObjectPtr<const AActor> WarnedTorpedo;
+	/** "ENEMY BEHIND": local world time of the last warning cue (at most one every few seconds). */
+	float LastEnemyBehindCueTime = -1000.0f;
+	/** "ENEMY BEHIND": local world time since which a ship has been behind with its nose on the own one without a break (negative: none). */
+	float EnemyBehindSince = -1.0f;
 
 	/** Set by DrawPortalLabels each frame: live enemies in the local sector, and the way out towards the nearest enemy (hop as FHCJRouteTable names it, INDEX_NONE when there is none or enemies are here). */
 	int32 EnemiesInSector = 0;
@@ -240,7 +255,46 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "HCJ|HUD")
 	float PickupMarkerDistance = 12000.0f;
 
-	/** Map square edge at 1080p, in pixels. */
+	/** Map width at 1080p, in pixels: up to 16 sectors, and from 32 sectors on. */
 	UPROPERTY(EditDefaultsOnly, Category = "HCJ|HUD")
-	float MapSize = 260.0f;
+	float MapSize = 300.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|HUD")
+	float MapSizeLarge = 390.0f;
+
+	/** The cubes of the map turn this many degrees to either side, slowly (0 = they stand still). */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|HUD", meta = (ClampMin = "0.0", ClampMax = "12.0"))
+	float MapSwayDegrees = 4.0f;
+
+	/** Hypercube map: what is kept between frames (HCJHUDMap.cpp). Times are real seconds of the world. */
+	struct FMapState
+	{
+		/** The universe the strings below were made for. */
+		int32 Dimension = 0;
+		int32 MatchNumber = -1;
+		int32 Seed = 0;
+		/** Own sector as the map last drew it, the one before, and when it changed. */
+		int32 Sector = INDEX_NONE;
+		int32 PrevSector = INDEX_NONE;
+		float SectorTime = -1000.0f;
+		FString Title;
+		/** Binary id of every sector ("0101"), and "1" .. "9", "9+" for the badges. */
+		TArray<FString> SectorNames;
+		TArray<FString> CountNames;
+		/** Per sector: when a ship was last seen lost there. */
+		TArray<float> LossTimes;
+		/** Text sizes, measured once per universe and canvas size instead of every frame: the UI scale they are for, every sector name, "YOU", a badge digit, the title, the three legend words. */
+		float MeasuredScale = 0.0f;
+		TArray<FVector2D> NameSizes;
+		FVector2D YouSize = FVector2D::ZeroVector;
+		FVector2D DigitSize = FVector2D::ZeroVector;
+		FVector2D TitleSize = FVector2D::ZeroVector;
+		FVector2D LegendSizes[3] = { FVector2D::ZeroVector, FVector2D::ZeroVector, FVector2D::ZeroVector };
+	};
+	FMapState Map;
+	/** Development: time the game thread spent drawing the map since the last log line. */
+	double MapDrawSeconds = 0.0;
+	int32 MapDrawFrames = 0;
+	/** Deaths of every player state as last seen, to notice where a ship was lost. */
+	TMap<TWeakObjectPtr<const AHCJPlayerState>, int32> MapDeathCounts;
 };

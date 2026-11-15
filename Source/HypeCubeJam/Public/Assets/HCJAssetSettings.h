@@ -176,9 +176,9 @@ public:
 	static void PlaySoundAt(const UObject* WorldContextObject, TConstArrayView<FSoftObjectPath> Sounds, const TCHAR* Purpose,
 		const FVector& Location, float Volume, float PitchVariation, EHCJSoundGroup Group, float PitchScale = 1.0f);
 
-	/** Plays a random entry of Sounds without spatialisation (interface cues, music stems). Never call on a dedicated server. */
+	/** Plays a random entry of Sounds without spatialisation (interface cues, music stems), at Pitch times its pitch. Never call on a dedicated server. */
 	static void PlaySound2D(const UObject* WorldContextObject, TConstArrayView<FSoftObjectPath> Sounds, const TCHAR* Purpose,
-		float Volume, EHCJSoundGroup Group = EHCJSoundGroup::UI);
+		float Volume, EHCJSoundGroup Group = EHCJSoundGroup::UI, float Pitch = 1.0f);
 
 	/** Voice limit of a group (transient object built from the Max*Voices settings). */
 	static USoundConcurrency* GetConcurrency(EHCJSoundGroup Group);
@@ -819,6 +819,98 @@ public:
 
 	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "0.0", ClampMax = "4.0"))
 	float ExplosionShakeStrength = 1.0f;
+
+	// ---- the staged explosion of a ship (UHCJEffectsDirector::PlayShipDeath; all of it local and cosmetic) ----
+
+	/**
+	 * One puff of the fireball: M_HCJ_Fireball (docs/tools/make_explosion_materials.py) on a quad facing the view:
+	 * a billowing ball that grows, cools from white through orange to dark red and ends as smoke. Parameters: vector
+	 * Color, scalars Age (0..1), Seed, Brightness and Smoke (0..1). Empty = no fireball (flare and debris only).
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+	FSoftObjectPath FireballMaterial;
+
+	/** The shockwave: M_HCJ_ShockRing (same script) on a quad in the plane of the wreck. Parameters: vector Color, scalars Age, Seed, Brightness. Empty = none. */
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+	FSoftObjectPath ShockRingMaterial;
+
+	/** Hull plates: M_HCJ_HullDebris (same script), dark metal whose edges glow by per-instance custom data 0 (heat). Empty = the engine's plain grey. */
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+	FSoftObjectPath HullDebrisMaterial;
+
+	/** Smoke and fire behind the largest hull pieces of a ship that blew up near the view (one of the trail systems already in use). Empty = none. */
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (AllowedClasses = "/Script/Niagara.NiagaraSystem"))
+	FSoftObjectPath DebrisTrailEffect;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions")
+	float DebrisTrailScale = 2.5f;
+
+	/** Seconds a burning piece trails. */
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "0.1"))
+	float DebrisTrailSeconds = 1.7f;
+
+	/** Seconds between the moment a hull fails (small pops along it) and the blast. 0 = at once. */
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "0.0", ClampMax = "0.8"))
+	float HullFailSeconds = 0.32f;
+
+	/**
+	 * Width (uu) of the main fireball quad of a ship; how long a lobe of the fireball lasts, give or take a quarter (it
+	 * burns for 30 to 40 % of that, the main puff for 45 %); how long the main puff lasts in all - fire first, then the
+	 * smoke that stays; how bright.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "10.0"))
+	float ShipFireballSize = 2300.0f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "0.1"))
+	float ShipFireballSeconds = 1.5f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "0.1"))
+	float ShipSmokeSeconds = 3.0f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions")
+	float FireballBrightness = 2.4f;
+
+	/** Width (uu) the shockwave ring of a ship reaches, in how many seconds, how bright. */
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "10.0"))
+	float ShipRingSize = 5600.0f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "0.05"))
+	float ShipRingSeconds = 0.6f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions")
+	float RingBrightness = 2.2f;
+
+	/** Hard caps: fireball puffs, shockwave rings and burning-piece trails alive at one time. */
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "0", ClampMax = "24"))
+	int32 MaxFireballs = 14;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "0", ClampMax = "8"))
+	int32 MaxShockRings = 3;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "0", ClampMax = "8"))
+	int32 MaxDebrisTrails = 5;
+
+	/** Sparks (streaks along their flight) thrown by a destroyed ship at full detail. */
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "0", ClampMax = "64"))
+	int32 ShipDebrisSparks = 22;
+
+	/** A ship that blows up nearer than this (uu) to the view gets every stage; up to the second distance a simpler one; beyond it flare, one puff and a few pieces. */
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "0.0"))
+	float BlastFullDetailDistance = 7000.0f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "0.0"))
+	float BlastMediumDetailDistance = 16000.0f;
+
+	/** Camera shake of the own ship's blast (strength as ExplosionShakeStrength: 1 = the jolt of a heavy hit). */
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "0.0", ClampMax = "4.0"))
+	float OwnShipShake = 2.4f;
+
+	/** The own ship is gone: the view pulls back this far (uu) from where it was, turning slowly round the wreck. */
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (ClampMin = "0.0"))
+	float DeathCameraPullBack = 1500.0f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Explosions")
+	float DeathCameraOrbitDegrees = 7.0f;
 
 	/** A rock breaking apart: particles (one of the explosion systems already in use) and sounds. Empty = none. */
 	UPROPERTY(Config, EditAnywhere, Category = "Explosions", meta = (AllowedClasses = "/Script/Niagara.NiagaraSystem"))

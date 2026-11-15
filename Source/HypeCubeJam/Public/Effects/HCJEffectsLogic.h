@@ -78,4 +78,35 @@ namespace HCJEffects
 
 	/** A count for something of size Radius when BaseCount is right for ReferenceRadius: proportional, within [MinCount, MaxCount]. */
 	HYPECUBEJAM_API int32 ScaleCount(int32 BaseCount, float Radius, float ReferenceRadius, int32 MinCount, int32 MaxCount);
+
+	/** How much of a ship's staged explosion a machine draws. */
+	enum EBlastDetail : int32
+	{
+		/** Every stage: pops, flash, fireball of four puffs (the first ends as the smoke), ring, sparks, plates, burning pieces. */
+		BlastFull = 0,
+		/** No burning pieces, one lobe, half the pieces. */
+		BlastMedium = 1,
+		/** Flash, one puff, a few pieces. */
+		BlastLow = 2
+	};
+
+	/**
+	 * The detail for a ship that blows up at Distance from the view while NumRunning other blasts are in their first
+	 * second: full within FullDistance, medium within MediumDistance, low beyond; with two others running only a blast
+	 * within 40 % of FullDistance stays full, with four or more nothing is better than medium and whatever is beyond
+	 * FullDistance is low. The own ship is always full.
+	 */
+	HYPECUBEJAM_API int32 PickBlastDetail(float Distance, bool bOwnShip, int32 NumRunning, float FullDistance, float MediumDistance);
+
+	/**
+	 * The stages of a ship's death and when they run (seconds after the death; FailSeconds is how long the hull takes
+	 * to fail): 0..2 three pops along the hull (at 0, 34 % and 68 % of FailSeconds), 3 the blast (at FailSeconds),
+	 * 4..6 the lobes of the fireball (0.07, 0.15 and 0.27 s later).
+	 */
+	inline constexpr int32 NumBlastStages = 7;
+	inline constexpr int32 BlastMainStage = 3;
+	HYPECUBEJAM_API float BlastStageTime(int32 Stage, float FailSeconds);
+
+	/** Heat (1 = glowing .. 0 = cold) of a hull plate of that age (seconds): it cools over about a second and a half, fast at first. */
+	HYPECUBEJAM_API float PlateHeat(float Age);
 }

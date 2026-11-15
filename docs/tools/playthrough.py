@@ -287,8 +287,19 @@ def scenario_net(r, c):
     fly = ['-HCJCapture=8', '-HCJAutoFly', '-HCJAutoAim', '-HCJAutoTorpedo']
     # The client leaves with its sixth picture (48 s after it started) and joins again two pictures later.
     leave_rejoin = '-HCJCaptureCmds=;;;;;;HCJMenuCmd_leave;;HCJMenuCmd_join_' + address
+    # The host breaks a rock on purpose with its 8th, 16th and 21st picture (64 s, 128 s, 168 s; nothing happens when its
+    # ship is gone at that moment), so that there is a destroyed set to compare whatever the fight did: a rock the client
+    # sees break while it is connected, one that is already gone when the late joiner arrives, one that all three see.
+    # (Until the bots were made fair to people - devlog item 29 - the torpedoes of autopilots that died every few
+    # seconds broke a rock or two in every run; pilots that live longer get fewer torpedoes, and one run broke none.)
+    break_rocks = '-HCJCaptureCmds=' + ';' * 7 + 'HCJMenuCmd_breakrock' + ';' * 8 + 'HCJMenuCmd_breakrock' + ';' * 5 + 'HCJMenuCmd_breakrock'
+    # -HCJNoFair on the host: this scenario is about the network, and its score checks (a kill, a death, something on the
+    # board for each remote player) were set for easy bots that treat a person like any other ship. With the fairness
+    # rules an autopilot on Easy dies about once a minute and a late joiner has 110 s: five runs gave 1 to 6 events per
+    # player and one remote death in one of them - one event fewer and the scenario fails with nothing broken.
+    # How the bots treat people is measured by fair_matches.py, and autopilot_hangar_match plays with the rules on.
     logs = r.run([
-        ('net_host', '/Engine/Maps/Entry?listen?Seed=1234?FragLimit=0?TimeLimit=0?Bots=6?Difficulty=0', 250, ['-port=%d' % host_port, pilot('Hana')] + fly, 0),
+        ('net_host', '/Engine/Maps/Entry?listen?Seed=1234?FragLimit=0?TimeLimit=0?Bots=6?Difficulty=0', 250, ['-port=%d' % host_port, '-HCJNoFair', break_rocks, pilot('Hana')] + fly, 0),
         ('net_client', address, 200, ['-port=%d' % client_port, leave_rejoin, pilot('Clive')] + fly, 25),
         ('net_late', address, 110, ['-port=%d' % late_port, pilot('Lena')] + fly, 100),
     ])

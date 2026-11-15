@@ -1,6 +1,7 @@
 #include "Tests/HCJTestHelpers.h"
 
 #include "Algo/Reverse.h"
+#include "Assets/HCJAssetSettings.h"
 #include "Audio/HCJMusicLogic.h"
 #include "Effects/HCJEffectsLogic.h"
 #include "Game/HCJBalance.h"
@@ -721,6 +722,80 @@ bool FHCJDebrisCapsTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("a pebble: the minimum"), HCJEffects::ScaleCount(9, 50.0f, 400.0f, 4, 18), 4);
 	TestEqual(TEXT("a giant: the maximum"), HCJEffects::ScaleCount(9, 3000.0f, 400.0f, 4, 18), 18);
 	TestEqual(TEXT("switched off"), HCJEffects::ScaleCount(0, 400.0f, 400.0f, 4, 18), 0);
+	HCJ_TEST_FINISH();
+}
+
+/**
+ * The staged explosion of a ship: its stages come in order - three pops while the hull fails, the blast when it has
+ * failed, the lobes and the smoke after it -, far blasts and blasts in a crowd get fewer of them, the own ship always
+ * all; hull plates cool; the pools and distances of the settings are caps a weak machine can carry.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHCJBlastStagesTest, "HypeCubeJam.Effects.BlastStages", HCJPhaserTestFlags)
+
+bool FHCJBlastStagesTest::RunTest(const FString& Parameters)
+{
+	int32 NumFailures = 0;
+	constexpr float Fail = 0.32f;
+	TestEqual(TEXT("the first pop comes with the death"), HCJEffects::BlastStageTime(0, Fail), 0.0f);
+	TestEqual(TEXT("the blast comes when the hull has failed"), HCJEffects::BlastStageTime(HCJEffects::BlastMainStage, Fail), Fail);
+	float Last = -1.0f;
+	for (int32 Stage = 0; Stage < HCJEffects::NumBlastStages; ++Stage)
+	{
+		const float Time = HCJEffects::BlastStageTime(Stage, Fail);
+		HCJ_TEST_CHECK(Time > Last, TEXT("stage %d at %.3f s after stage %d at %.3f s"), Stage, Time, Stage - 1, Last);
+		HCJ_TEST_CHECK((Stage < HCJEffects::BlastMainStage) == (Time < Fail), TEXT("stage %d at %.3f s is on the wrong side of the blast"), Stage, Time);
+		Last = Time;
+	}
+	TestTrue(TEXT("everything has started within a second of the blast"), Last < Fail + 1.0f);
+	TestTrue(TEXT("no stage after the last"), HCJEffects::BlastStageTime(HCJEffects::NumBlastStages, Fail) > 1.0e6f);
+	// No failing time (the hull goes at once): pops and blast in the same frame, the rest after it.
+	TestEqual(TEXT("no failing time: the blast at once"), HCJEffects::BlastStageTime(HCJEffects::BlastMainStage, 0.0f), 0.0f);
+	TestTrue(TEXT("no failing time: the lobes still follow"), HCJEffects::BlastStageTime(HCJEffects::BlastMainStage + 1, 0.0f) > 0.0f);
+
+	// Detail: by distance, by how many are running; the own ship is never simplified.
+	constexpr float Full = 7000.0f;
+	constexpr float Medium = 16000.0f;
+	TestEqual(TEXT("near: everything"), HCJEffects::PickBlastDetail(3000.0f, false, 0, Full, Medium), static_cast<int32>(HCJEffects::BlastFull));
+	TestEqual(TEXT("mid distance: simpler"), HCJEffects::PickBlastDetail(10000.0f, false, 0, Full, Medium), static_cast<int32>(HCJEffects::BlastMedium));
+	TestEqual(TEXT("far: least"), HCJEffects::PickBlastDetail(25000.0f, false, 0, Full, Medium), static_cast<int32>(HCJEffects::BlastLow));
+	TestEqual(TEXT("two others running, close by: still everything"), HCJEffects::PickBlastDetail(2000.0f, false, 2, Full, Medium), static_cast<int32>(HCJEffects::BlastFull));
+	TestEqual(TEXT("two others running, 50 m: simpler"), HCJEffects::PickBlastDetail(5000.0f, false, 2, Full, Medium), static_cast<int32>(HCJEffects::BlastMedium));
+	TestEqual(TEXT("four others running, close by: simpler"), HCJEffects::PickBlastDetail(2000.0f, false, 4, Full, Medium), static_cast<int32>(HCJEffects::BlastMedium));
+	TestEqual(TEXT("four others running, mid distance: least"), HCJEffects::PickBlastDetail(10000.0f, false, 4, Full, Medium), static_cast<int32>(HCJEffects::BlastLow));
+	TestEqual(TEXT("the own ship in a crowd: everything"), HCJEffects::PickBlastDetail(1200.0f, true, 6, Full, Medium), static_cast<int32>(HCJEffects::BlastFull));
+	for (int32 Running = 0; Running <= 8; ++Running)
+	{
+		int32 LastDetail = HCJEffects::BlastFull;
+		for (float Distance = 0.0f; Distance <= 30000.0f; Distance += 500.0f)
+		{
+			const int32 Detail = HCJEffects::PickBlastDetail(Distance, false, Running, Full, Medium);
+			HCJ_TEST_CHECK(Detail >= LastDetail && Detail <= HCJEffects::BlastLow, TEXT("detail %d at %.0f uu with %d running after %d"), Detail, Distance, Running, LastDetail);
+			HCJ_TEST_CHECK(Running == 0 || Detail >= HCJEffects::PickBlastDetail(Distance, false, Running - 1, Full, Medium), TEXT("more blasts running (%d) gave more detail at %.0f uu"), Running, Distance);
+			LastDetail = Detail;
+		}
+	}
+
+	// Hull plates cool: glowing when torn off, cold after a second and a half, never hotter again.
+	TestEqual(TEXT("torn off: glowing"), HCJEffects::PlateHeat(0.0f), 1.0f);
+	TestEqual(TEXT("after two seconds: cold"), HCJEffects::PlateHeat(2.0f), 0.0f);
+	float LastHeat = 1.0f;
+	for (float Age = 0.0f; Age <= 3.0f; Age += 0.05f)
+	{
+		const float Heat = HCJEffects::PlateHeat(Age);
+		HCJ_TEST_CHECK(Heat <= LastHeat + KINDA_SMALL_NUMBER && Heat >= 0.0f, TEXT("heat %.3f at %.2f s after %.3f"), Heat, Age, LastHeat);
+		LastHeat = Heat;
+	}
+
+	// The settings: caps and distances that hold together (the effect is cosmetic; this is its budget).
+	const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
+	HCJ_TEST_CHECK(Settings.MaxFireballs >= 5 && Settings.MaxFireballs <= 24, TEXT("%d fireball puffs: one full blast needs five"), Settings.MaxFireballs);
+	HCJ_TEST_CHECK(Settings.MaxShockRings >= 1 && Settings.MaxShockRings <= 8 && Settings.MaxDebrisTrails <= 8, TEXT("%d rings, %d trails"), Settings.MaxShockRings, Settings.MaxDebrisTrails);
+	HCJ_TEST_CHECK(Settings.ShipDebrisPieces + 3 + Settings.ShipDebrisSparks + Settings.ShipDebrisEmbers + 4 + 12 <= Settings.MaxDebris,
+		TEXT("one full blast throws %d pieces, the pool holds %d"), Settings.ShipDebrisPieces + 3 + Settings.ShipDebrisSparks + Settings.ShipDebrisEmbers + 4 + 12, Settings.MaxDebris);
+	HCJ_TEST_CHECK(Settings.BlastFullDetailDistance < Settings.BlastMediumDetailDistance && Settings.BlastMediumDetailDistance <= Settings.EffectMaxDistance * 2.0f,
+		TEXT("detail distances %.0f / %.0f uu, effects end at %.0f uu"), Settings.BlastFullDetailDistance, Settings.BlastMediumDetailDistance, Settings.EffectMaxDistance * 2.0f);
+	HCJ_TEST_CHECK(Settings.HullFailSeconds >= 0.0f && Settings.HullFailSeconds <= 0.8f, TEXT("the hull fails for %.2f s: the ship lingers for a second"), Settings.HullFailSeconds);
+	HCJ_TEST_CHECK(Settings.ShipFireballSeconds <= 2.5f && Settings.ShipSmokeSeconds <= 4.0f, TEXT("fire %.1f s, smoke %.1f s: a respawn takes four"), Settings.ShipFireballSeconds, Settings.ShipSmokeSeconds);
 	HCJ_TEST_FINISH();
 }
 

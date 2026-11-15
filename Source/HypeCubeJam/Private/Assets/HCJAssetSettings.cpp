@@ -257,7 +257,7 @@ void UHCJAssetSettings::PlaySoundAt(const UObject* WorldContextObject, TConstArr
 }
 
 void UHCJAssetSettings::PlaySound2D(const UObject* WorldContextObject, TConstArrayView<FSoftObjectPath> Sounds, const TCHAR* Purpose,
-	float Volume, EHCJSoundGroup Group)
+	float Volume, EHCJSoundGroup Group, float Pitch)
 {
 	if (Sounds.Num() == 0 || Volume <= 0.0f)
 	{
@@ -268,7 +268,7 @@ void UHCJAssetSettings::PlaySound2D(const UObject* WorldContextObject, TConstArr
 	if (USoundBase* Asset = Load<USoundBase>(Pick, Purpose))
 	{
 		++Cache.NumPlayed[static_cast<int32>(Group)];
-		UGameplayStatics::PlaySound2D(WorldContextObject, Asset, Volume, 1.0f, 0.0f, GetConcurrency(Group));
+		UGameplayStatics::PlaySound2D(WorldContextObject, Asset, Volume, FMath::Clamp(Pitch, 0.25f, 4.0f), 0.0f, GetConcurrency(Group));
 	}
 }
 

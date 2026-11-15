@@ -38,6 +38,79 @@ bool FHCJBotSkillTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("below the range is easy"), FHCJBotSkill::Get(-5).AimErrorDeg, FHCJBotSkill::Get(0).AimErrorDeg);
 	TestEqual(TEXT("above the range is hard"), FHCJBotSkill::Get(9).AimErrorDeg, FHCJBotSkill::Get(2).AimErrorDeg);
+
+	// The fourth level, Ace, flies with Hard's numbers.
+	{
+		const FHCJBotSkill Hard = FHCJBotSkill::Get(2);
+		const FHCJBotSkill Ace = FHCJBotSkill::Get(3);
+		TestEqual(TEXT("four levels"), HCJBalance::NumBotDifficulties, 4);
+		TestTrue(TEXT("ace has hard's seven numbers"), Ace.AimErrorDeg == Hard.AimErrorDeg && Ace.ReactionDelay == Hard.ReactionDelay && Ace.TurnRateDeg == Hard.TurnRateDeg
+			&& Ace.BurstSeconds == Hard.BurstSeconds && Ace.BurstPause == Hard.BurstPause && Ace.EngageRangeFactor == Hard.EngageRangeFactor
+			&& Ace.RetreatHullFraction == Hard.RetreatHullFraction && Ace.StrafeStrength == Hard.StrafeStrength);
+		TestTrue(TEXT("ace has hard's tactics"), Ace.Tactics == Hard.Tactics && Ace.ComboChance == Hard.ComboChance);
+		TestEqual(TEXT("above the range is ace"), FHCJBotSkill::Get(9).MaxAttackersOnHuman, Ace.MaxAttackersOnHuman);
+	}
+
+	// Fairness towards people: every step up allows more, Ace has no rule at all, and the "off" switch gives Ace's rules to any level.
+	for (int32 Level = 0; Level < 2; ++Level)
+	{
+		const FHCJBotSkill Low = FHCJBotSkill::Get(Level);
+		const FHCJBotSkill High = FHCJBotSkill::Get(Level + 1);
+		TestTrue(TEXT("more attackers on a person"), High.MaxAttackersOnHuman > Low.MaxAttackersOnHuman && Low.MaxAttackersOnHuman >= 1);
+		TestTrue(TEXT("more hunters in a person's sector"), High.MaxHuntersPerHuman > Low.MaxHuntersPerHuman && Low.MaxHuntersPerHuman >= Low.MaxAttackersOnHuman);
+		TestTrue(TEXT("a shorter wait before fire from behind"), High.RearFireDelay < Low.RearFireDelay && High.RearFireDelay > 0.0f);
+		TestTrue(TEXT("aim from behind no worse than before"), High.RearAimErrorScale <= Low.RearAimErrorScale && High.RearAimErrorScale >= 1.0f);
+		TestTrue(TEXT("less pull to the front"), High.FrontBias < Low.FrontBias && High.FrontBias > 0.0f && Low.FrontBias <= 1.0f);
+		TestTrue(TEXT("a person's tail counts for more"), High.HumanTailScore > Low.HumanTailScore && High.HumanTailScore <= 1.5f);
+		TestTrue(TEXT("a shorter grace after arriving"), High.ArrivalGrace < Low.ArrivalGrace && High.ArrivalGrace > 0.0f);
+		TestTrue(TEXT("a shorter breather between fights"), High.RespiteSeconds < Low.RespiteSeconds && High.RespiteSeconds >= 0.0f);
+		TestTrue(TEXT("more damage to a person"), High.DamageToHumanScale > Low.DamageToHumanScale && Low.DamageToHumanScale > 0.0f && High.DamageToHumanScale <= 1.0f);
+		TestTrue(TEXT("more torpedoes at a person"), High.TorpedoOnHumanChance > Low.TorpedoOnHumanChance && Low.TorpedoOnHumanChance > 0.0f && High.TorpedoOnHumanChance <= 1.0f);
+	}
+	TestFalse(TEXT("no flanking of people on easy and normal"), FHCJBotSkill::Get(0).bFlankHumans || FHCJBotSkill::Get(1).bFlankHumans);
+	TestTrue(TEXT("flanking on hard"), FHCJBotSkill::Get(2).bFlankHumans);
+	TestEqual(TEXT("easy: one attacker"), FHCJBotSkill::Get(0).MaxAttackersOnHuman, 1);
+	TestEqual(TEXT("easy: bots do half of their damage to a person"), FHCJBotSkill::Get(0).DamageToHumanScale, 0.5f);
+	TestEqual(TEXT("normal: a little more than half"), FHCJBotSkill::Get(1).DamageToHumanScale, 0.55f);
+	TestEqual(TEXT("hard: full damage"), FHCJBotSkill::Get(2).DamageToHumanScale, 1.0f);
+	{
+		const FHCJBotSkill Ace = FHCJBotSkill::Get(3);
+		const FHCJBotSkill Off;
+		TestTrue(TEXT("ace has no fairness rule"), Ace.MaxAttackersOnHuman == 0 && Ace.MaxHuntersPerHuman == 0 && Ace.RearFireDelay == 0.0f && Ace.RearAimErrorScale == 1.0f
+			&& Ace.FrontBias == 0.0f && Ace.HumanTailScore == 1.5f && Ace.bFlankHumans && Ace.ArrivalGrace == 0.0f && Ace.RespiteSeconds == 0.0f && Ace.DamageToHumanScale == 1.0f
+			&& Ace.TorpedoOnHumanChance == 1.0f);
+		TestTrue(TEXT("the defaults are off"), Off.MaxAttackersOnHuman == 0 && Off.RearFireDelay == 0.0f && Off.DamageToHumanScale == 1.0f && Off.bFlankHumans);
+		for (int32 Level = 0; Level < HCJBalance::NumBotDifficulties; ++Level)
+		{
+			FHCJBotSkill Cleared = FHCJBotSkill::Get(Level);
+			const FHCJBotSkill Row = Cleared;
+			Cleared.ClearFairness();
+			TestTrue(TEXT("cleared: ace's rules"), Cleared.MaxAttackersOnHuman == 0 && Cleared.MaxHuntersPerHuman == 0 && Cleared.RearFireDelay == 0.0f && Cleared.RearAimErrorScale == 1.0f
+				&& Cleared.FrontBias == 0.0f && Cleared.HumanTailScore == 1.5f && Cleared.bFlankHumans && Cleared.ArrivalGrace == 0.0f && Cleared.RespiteSeconds == 0.0f
+				&& Cleared.DamageToHumanScale == 1.0f && Cleared.TorpedoOnHumanChance == 1.0f);
+			TestTrue(TEXT("cleared: the skill numbers stay"), Cleared.AimErrorDeg == Row.AimErrorDeg && Cleared.ReactionDelay == Row.ReactionDelay && Cleared.Tactics == Row.Tactics);
+			// What the menu says about the level: a name and one line that fits the page (the 13 pt line of the web build is 74 characters).
+			const FString Name = HCJBalance::GetDifficultyName(Level);
+			const FString Description = HCJBalance::GetDifficultyDescription(Level);
+			TestTrue(TEXT("a name"), !Name.IsEmpty());
+			TestTrue(TEXT("a description that fits"), Description.Len() > 20 && Description.Len() < 74);
+		}
+		TestEqual(TEXT("names"), FString(HCJBalance::GetDifficultyName(0)), FString(TEXT("Easy")));
+		TestEqual(TEXT("names"), FString(HCJBalance::GetDifficultyName(3)), FString(TEXT("Ace")));
+		TestEqual(TEXT("names are clamped"), FString(HCJBalance::GetDifficultyName(12)), FString(TEXT("Ace")));
+	}
+
+	// Bearings: 0 dead ahead, 180 dead astern, and the rear arc begins a little behind the beam (about 107 degrees).
+	TestEqual(TEXT("dead ahead"), HCJBalance::BearingDegrees(FVector::ForwardVector, FVector(500.0, 0.0, 0.0)), 0.0f, 0.01f);
+	TestEqual(TEXT("abeam"), HCJBalance::BearingDegrees(FVector::ForwardVector, FVector(0.0, -300.0, 0.0)), 90.0f, 0.01f);
+	TestEqual(TEXT("dead astern"), HCJBalance::BearingDegrees(FVector::ForwardVector, FVector(-2.0, 0.0, 0.0)), 180.0f, 0.01f);
+	TestEqual(TEXT("above"), HCJBalance::BearingDegrees(FVector::ForwardVector, FVector(100.0, 0.0, 100.0)), 45.0f, 0.01f);
+	TestEqual(TEXT("no direction"), HCJBalance::BearingDegrees(FVector::ForwardVector, FVector::ZeroVector), -1.0f);
+	TestFalse(TEXT("abeam is not behind"), HCJBalance::IsRearBearing(90.0f));
+	TestFalse(TEXT("105 degrees is not behind"), HCJBalance::IsRearBearing(105.0f));
+	TestTrue(TEXT("110 degrees is behind"), HCJBalance::IsRearBearing(110.0f));
+	TestTrue(TEXT("dead astern is behind"), HCJBalance::IsRearBearing(180.0f));
+	TestFalse(TEXT("an unknown bearing is not behind"), HCJBalance::IsRearBearing(-1.0f));
 	return true;
 }
 

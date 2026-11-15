@@ -140,3 +140,43 @@ int32 HCJEffects::ScaleCount(int32 BaseCount, float Radius, float ReferenceRadiu
 	}
 	return FMath::Clamp(FMath::RoundToInt32(BaseCount * Radius / ReferenceRadius), MinCount, FMath::Max(MaxCount, MinCount));
 }
+
+int32 HCJEffects::PickBlastDetail(float Distance, bool bOwnShip, int32 NumRunning, float FullDistance, float MediumDistance)
+{
+	if (bOwnShip)
+	{
+		return BlastFull;
+	}
+	int32 Detail = Distance <= FullDistance ? BlastFull : Distance <= MediumDistance ? BlastMedium : BlastLow;
+	if (NumRunning >= 4)
+	{
+		Detail = Distance <= FullDistance ? BlastMedium : BlastLow;
+	}
+	else if (NumRunning >= 2 && Distance > 0.4f * FullDistance)
+	{
+		Detail = FMath::Max(Detail, static_cast<int32>(BlastMedium));
+	}
+	return Detail;
+}
+
+float HCJEffects::BlastStageTime(int32 Stage, float FailSeconds)
+{
+	FailSeconds = FMath::Max(FailSeconds, 0.0f);
+	switch (Stage)
+	{
+	case 0: return 0.0f;
+	case 1: return 0.34f * FailSeconds;
+	case 2: return 0.68f * FailSeconds;
+	case 3: return FailSeconds;
+	case 4: return FailSeconds + 0.07f;
+	case 5: return FailSeconds + 0.15f;
+	case 6: return FailSeconds + 0.27f;
+	default: return TNumericLimits<float>::Max();
+	}
+}
+
+float HCJEffects::PlateHeat(float Age)
+{
+	const float Left = FMath::Clamp(1.0f - Age / 1.6f, 0.0f, 1.0f);
+	return Left * Left;
+}

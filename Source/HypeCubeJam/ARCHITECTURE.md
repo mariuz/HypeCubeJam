@@ -232,6 +232,39 @@ Pillow -> `SourceAssets/Cinematic/*.png`) and `docs/tools/make_cinematic_materia
     shot with the phaser for up to 3.2 s), the station's reach (`StationDangerRadius`, applied in `SteerTowards`
     unless the bot attacks the turrets), warp towards a hostile far away (`bChasing` / `bWarpChase`).
   - `DescribeForLog`: the bot's state as key=value tokens, written by the game mode when its ship is stuck.
+- Fairness towards people (devlog item 29; server only, nothing replicated; numbers per difficulty in the fairness
+  fields of `FHCJBotSkill`, all "off" on Ace = level 3 and with `-HCJNoFair`, which calls `FHCJBotSkill::ClearFairness`
+  on the row every `Think`). The rules apply only when the other ship's controller is an `APlayerController`
+  (`IsHumanShip`); bots among themselves fly as before.
+  - `IsOffLimits` (called from `FindNearestHostile` and the smart loop of `PickTarget`, so every way a bot gets a
+    target passes it): a human ship is not picked while it is under its spawn shield or less than `ArrivalGrace`
+    seconds in its sector (`AHCJShipCharacter::GetSectorArrivalTime`: set at possession and after a portal or wormhole
+    jump), nor while `MaxAttackersOnHuman` bots are attacking it (`CountBotsAttacking`: in Attack on it and not
+    breaking off), nor for `RespiteSeconds` after the last bot attacked it (`AHCJShipCharacter::NoteBotAttack`, stamped
+    by every attacking bot's `Think`). Never off limits: the bot's current target, and a human that damaged the bot
+    in the last `HCJBalance::ProvokedSeconds`. `Think` drops a human target when the bot is over the cap and not
+    provoked: the bots that human shot count first, then the senior ones (`TargetAcquiredTime`), so the others make
+    room for a bot the player picked a fight with.
+  - `UpdateRearHold` (every `Think` and every `TickAttack`): `RearArcSince` runs while the bot is in the human's rear
+    arc (`HCJBalance::RearArcDot`, about 107 degrees off its nose); for `RearFireDelay` seconds `bRearHold` blocks the
+    trigger, torpedoes and the tractor beam, and the aim error is multiplied by `RearAimErrorScale` for as long as the
+    bot is there. `FrontBias` adds the across-the-line part of the human's forward vector to the strafe, so the bot
+    slides round to the front. `HumanTailScore` replaces the +1.5 of a tail in `PickTarget`; `bFlankHumans` gates the
+    scout's cloaked approach to the tail and the close pass; `ResightTime` restarts the reaction delay when a human
+    target was out of sight for more than a second.
+  - `ChooseTravelDim`: a human's sector that already holds `MaxHuntersPerHuman` bot ships (bots travelling into it
+    count) is not routed to, and not roamed into while another portal is open (`NotifyFairHeldHunters`).
+  - `AHCJShipCharacter::TakeDamage`: damage with a bot as instigator on a human ship is multiplied by
+    `AHCJGameMode::GetBotDamageToHumanScale` (`DamageToHumanScale`) before anything else is computed from it.
+    `ThinkTorpedo` fires a torpedo at a human with the chance `TorpedoOnHumanChance` only.
+  - `AHCJGameMode::ChooseSpawn` turns a new ship towards the nearest ship of its sector.
+    `AHCJGameMode::SetBotDifficulty` changes the level of a running match (the in-match menu of the host).
+  - Client side (`HCJHUDReadability.cpp`, from data every machine has): `HCJUi::IsAimingAt` (an enemy within 90 m with
+    its nose within 12 degrees of the own ship) gives it the "!" arrow, a yellow ring on the radar and, when it is in
+    the view's rear arc, "ENEMY BEHIND - name - distance" with a cue; a hit from the view's rear arc draws the wide
+    arc with "HIT FROM BEHIND", placed as on the radar (behind is down); `AHCJPlayerController::GetLastDamageBearingDeg` (computed in `ClientDamageTaken`)
+    gives the respawn screen "from behind / from the side / head-on" (`HCJUi::ClassifyHitSide`).
+  - Telemetry: `Fair: event=rules | spawn | hit | death | status` (see "Playthrough tests" below for the format).
 
 ## Collision
 | Thing | Object type | Notes |
@@ -256,6 +289,13 @@ Three layers, all reading the same server-side facts:
   (score line of every human), and warnings `stuck` (a bot's ship moved less than 2.5 m in 20 s; with
   `AHCJBotController::DescribeForLog`), `out_of_bounds` (alive beyond the kill radius for 3 s), `nan`. Clients write
   `event=client` every 10 s (layout, destroyed set, own score, movement corrections received).
+  The fairness rules write `Fair: event=...` lines in the same key=value form (not read by the runner): `rules` at
+  each match start (the numbers in force), `spawn` (a human's ship: distance to the nearest ship of its sector), `hit`
+  (every hit on a human ship: attacker, weapon, facing, bearing 0-180 from the victim's nose, damage applied and
+  before the difficulty's scale; phaser steps summed per attacker, a line every 0.5 s), `death` (a human's death:
+  killer, cause, bearing, seconds alive, bots on it) and `status` (every 15 s and at the match end: damage by bots on
+  humans in all / from the rear arc / on the aft facing, deaths, the most bots on one human, how often the cap, the
+  rear rule and the grace held a bot back).
   `AHCJGameMode::UpdatePlaythroughWatch` runs once a second; `Tick` measures the server's frames.
 - **In the automation suite** (`Private/Tests/HCJPlaythroughTests.cpp`, `HypeCubeJam.Playthrough.*`): the engine's
   `FTestWorldWrapper` with the game's URL options - a real game world, game mode, universe and bot controllers, ticked
@@ -326,15 +366,32 @@ D -> C `AHCJPlayerState::GetCurrentSector`.
 ## Menu, HUD and feel (added in the polish pass)
 - `Game/HCJUiLogic.h` (plain C++, tested): kill streaks, HUD scale, off-screen marker, start-menu command-line rule,
   target selection, fire-now rule, radar projection, and `HCJMenuFlow` (process-wide "open the title menu" state).
-- `Game/HCJBalance.h` (plain C++, tested): bot difficulty rows, spawn scoring, boost meter step, shield regeneration.
+- `Game/HCJBalance.h` (plain C++, tested): bot difficulty rows (four levels: easy, normal, hard, ace) with the
+  fairness fields, their names and menu descriptions, bearings and the rear arc, spawn scoring, boost meter step,
+  shield regeneration.
 - `Game/HCJUserSettings.h`: what the menu stores in the user's GameUserSettings.ini.
 - `Private/UI/HCJMenu.*`: the one Slate menu widget; every action goes through `AHCJPlayerController::Menu*`
   (the two online pages read `UHCJEOSSubsystem` directly).
 - Title menu: `AHCJGameMode::PostLogin` puts the local host into the menu (spectator, no ship) when
   `HCJMenuFlow::ShouldOpenMenu`; `StartMatchFromMenu` / `ReturnToMenu` / `BeginMatch` are the transitions.
-- HUD: `HCJHUD.cpp` (frame, map, feed, boards) and `HCJHUDReadability.cpp` (targets, radar, damage, portals, help).
+- HUD: `HCJHUD.cpp` (frame, feed, boards), `HCJHUDMap.cpp` (the hypercube map) and `HCJHUDReadability.cpp` (targets,
+  radar, damage, portals, help).
   Target lock lives in `AHCJPlayerController` (local) and is mirrored to the server through
   `AHCJShipCharacter::SetLockTarget` for homing missiles.
+- Hypercube map (item 30; `AHCJHUD::DrawHypercubeMap`, class comment of `AHCJHUD` for the marks). Layout:
+  `HCJUi::ProjectMapSector(sector, dimension, sway)` (plain C++, tested) - the first three bits span a cube seen 27
+  degrees from the right and 24 from above with a mild perspective, every further bit shifts the whole cube (two
+  cubes side by side for 16 sectors, four cubes two by two for 32), fitted to the square per dimension once; Z is the
+  depth that sizes and shades the marks and thins the lines. Labels: `HCJUi::PlaceMapLabels` (tested) puts each next
+  to its mark - 16 places, three rounds - off the marks, the enemy badges, the other labels and the panel edge; it is
+  run on the positions at rest, so the slow sway (`MapSwayDegrees`) cannot make a label jump. Data: the graph, the
+  universe (tints, stations, black holes, wormhole links, `FHCJRouteTable` for the way to the target and the
+  distance to a fight), the replicated player states (sector, deaths, waiting to respawn), `EnemiesInSector` /
+  `GuideSector` / `GuideHop` of `DrawPortalLabels`, the lock target of the own ship. Kept between frames
+  (`AHCJHUD::FMapState`, rebuilt when dimension, match number or seed change): the sector names, the title, the
+  count strings, when a ship was last lost in each sector (`MapDeathCounts`: a death count that went up), the own
+  sector and when it changed (the rings, the slide of the own mark, the line just travelled). Per frame: inline
+  arrays only; about 150 (8 sectors) to 400 (32 sectors) canvas lines.
 - Hints: `UI/HCJHints.h` (plain C++, tested): `FHCJHintDirector` (which hint is up: onboarding order, priorities,
   show limits, cooldowns), key-cap markup, death tips, objective line. `Private/UI/HCJHUDHints.cpp` feeds it from the
   local ship and draws the hint panel, the sector banner, the jump flash and the shared panel / key-cap helpers.
@@ -505,6 +562,38 @@ D -> C `AHCJPlayerState::GetCurrentSector`.
   bounce off rocks by one line trace per piece every other frame; black hole drift), a pool of flare quads with
   `M_HCJ_ExplosionFlare`, camera shake read by `AHCJShipCharacter::TickShipEffects` (`UHCJUserSettings::bCameraShake`).
   Called from `PlayDeathEffects`, `AHCJTorpedoBlast::Play`, `AHCJUniverse::ApplyAsteroidDestroyed`.
+- The death of a ship is staged (item 30; all cosmetic, per machine, nothing replicated, no gameplay value read):
+  `AHCJShipCharacter::PlayDeathEffects` -> `UHCJEffectsDirector::PlayShipDeath(location, velocity, colour, forward, up,
+  hull length, own ship)`. The director keeps up to 8 `FShipBlast` and runs their stages by time
+  (`HCJEffects::BlastStageTime`, tested): three pops along the hull while it fails (`HullFailSeconds`, 0.32 s: impact
+  star, the metal impact system, sparks, a crack), the blast (the flare as core flash, the first puff of the fireball,
+  the shockwave ring, the Niagara explosion of before, hull plates, sparks, embers, shake, the sounds), three more
+  puffs 0.07 / 0.15 / 0.27 s later. The first puff lives `ShipSmokeSeconds`: fire for the first 0.7 s, then the smoke
+  that stays (one quad instead of a second, larger one on top: the fill rate of a GTX 950 is the budget).
+  - Pools, all created in `EnsureReady` and capped by the settings: `MaxFireballs` quads with `M_HCJ_Fireball` (alpha
+    composite, turned to the view every tick, drifting with 60 % of the ship's speed), `MaxShockRings` quads with
+    `M_HCJ_ShockRing` (lying in the plane of the hull, tipped towards a view that is close to that plane),
+    `MaxDebrisTrails` Niagara components with `DebrisTrailEffect` that follow the three largest plates (`FDebrisTrail`:
+    the slot, the time left, the age of the piece - a slot that was reused ends the trail).
+  - Debris kinds: rock chunks, hull plates (`M_HCJ_HullDebris`; `HCJEffects::PlateHeat` of the piece's age goes into
+    per-instance custom data 0 each tick), embers, sparks (the cube stretched along its velocity, no rock trace).
+  - Detail: `HCJEffects::PickBlastDetail` (tested) from the distance to the local view and the number of blasts in
+    their first second - full / medium (one lobe, half the pieces, no trails) / low (flare, one puff, a few pieces,
+    no pops, no ring); the own ship always full.
+  - The ship: `PlayDeathEffects` shows the hull again for `HullFailSeconds` when it is within
+    `BlastMediumDetailDistance` of the view (`HullFailEndTime`; `TickShipEffects` rolls it, lets its lights flare and
+    hides it when the time is up). `bWasLocalShip` (set, never cleared, in any tick in which the local controller holds the ship) tells whether it was the local
+    player's: then `AHCJPlayerController::NotifyOwnShipDestroyed`.
+  - Death camera: `AHCJPlayerController::CalcCamera` (the controller is the view target while it has no pawn; the
+    game mode already put its spawn location on the wreck). From the view at the moment of death it pulls back
+    `DeathCameraPullBack` along the line wreck -> camera, turns `DeathCameraOrbitDegrees` a second round the wreck,
+    follows its drift, stops in front of a rock (one line trace), adds `UHCJEffectsDirector::GetCameraShake`.
+    `GetOwnBlastAge` drives `AHCJHUD::DrawDeathFlash` (a warm flash, an orange vignette). The respawn lines moved
+    below the middle of the screen. The camera ends with the next live pawn (`HasLivePawn`), not with any pawn: on a
+    client the death of the ship (one actor) can arrive a frame before the controller (another actor) lets go of it.
+  - `-HCJClassicBlast` (`UHCJEffectsDirector::IsClassicBlast`): the single pop of before in the same binary, with the
+    view of before (at the place of the ship) - the measurement baseline. `-HCJBlastBench=<enemy|own|crowd>[,<rounds>[,<uu>[,<sector>]]]`
+    (`AHCJPlayerController::TickBlastBench`): frame times before and during blasts, `BlastBench:` log lines.
 
 ## Music
 - `Audio/HCJMusicLogic.h` (plain C++, tested): `FHCJMusicSelector` (menu / explore / combat with hysteresis and a hold

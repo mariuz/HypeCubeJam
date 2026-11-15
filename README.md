@@ -83,7 +83,7 @@ URL options (append to the map URL of the server):
 | `?EdgeP=<0..1>` | chance that a non-spanning-tree edge is open (default 0.5)   |
 | `?Bots=<n>`   | minimum combatants; bots fill the rest (default 8)             |
 | `?MinBots=<n>` | bots that stay however many humans join (default 0)           |
-| `?Difficulty=<0..2>` | bot difficulty: 0 easy (default), 1 normal, 2 hard     |
+| `?Difficulty=<0..3>` | bot difficulty: 0 easy (default), 1 normal, 2 hard, 3 ace (hard without the fairness rules) |
 | `?FragLimit=<n>` / `?TimeLimit=<s>` | match end (defaults 25 kills / 600 s; 0 disables) |
 | `?BlackHoles=0|1` / `?BlackHoleP=<0..1>` | black holes on/off, share of sectors with one (default on, 0.25) |
 | `?Pickups=0|1` | pickup pads on/off (default on) |
@@ -113,14 +113,18 @@ canvas (`AHCJHUD`, in `HCJHUD.cpp` and `HCJHUDReadability.cpp`) with the engine'
 Menu sizes follow the engine's DPI scaling of viewport widgets, HUD sizes `HCJUi::ComputeUIScale` (1 at 1920x1080,
 0.67 at 1280x720; text never below 0.8).
 
-- Title menu: QUICK PLAY (first button: joins an open match found through Epic Online Services, hosts one when there is
+- Title menu: the first row is **Difficulty** (Easy / Normal / Hard / Ace) with one line under it that says what the
+  level does to the player ("One bot at a time. Slow, wide aim, and they come at you from the front." on Easy; see
+  "Bots and people: the fairness rules"). Then QUICK PLAY (first button: joins an open match found through Epic Online Services, hosts one when there is
   none - see "Online"), PLAY (host with bots - one click; Enter), HANGAR (ship type, hull and paint with a turning 3D preview and stat
-  bars; see "Ship types, warp drive, cloak, tractor beam"), bots 0-15, hypercube 3D-5D, bot difficulty, seed, pilot name, JOIN
+  bars; see "Ship types, warp drive, cloak, tractor beam"), bots 0-15, hypercube 3D-5D, seed, pilot name, JOIN
   by address, FIND GAMES and LEADERBOARDS (see "Online"), SETTINGS (mouse sensitivity, music / effects /
   interface volume), QUIT. The choices are kept in the
   user's `GameUserSettings.ini` (`UHCJUserSettings`). The host has no ship while in the menu and does not count as
   a combatant; PLAY starts a fresh match (`AHCJGameMode::StartMatchFromMenu`).
-- Esc in a match: RESUME, HANGAR (the next ship), SETTINGS, CONTROLS, LEAVE TO MENU, QUIT GAME. The match is not paused (it is a network
+- Esc in a match: RESUME, "Bot difficulty (applies now)" with the level's one-line description (host and single
+  player only: the running match changes level at once and the setting is saved), HANGAR (the next ship), SETTINGS,
+  CONTROLS, LEAVE TO MENU, QUIT GAME. The match is not paused (it is a network
   game). A client that leaves, loses the host or fails to connect ends up in the title menu with a line saying why.
   Every page has a line of key caps (Enter = the big button, Esc = back, F1 = controls); CONTROLS is a two-column
   page of all keys and of what the HUD marks mean; SETTINGS also has "In-game hints On / Off".
@@ -168,14 +172,44 @@ Menu sizes follow the engine's DPI scaling of viewport widgets, HUD sizes `HCJUi
   SECTOR: n" or, when there is none, the sector of the nearest enemy and the portal or wormhole that leads there
   (route table), which is also marked "ENEMIES THIS WAY" in the world or by a chevron at the screen edge.
 - Also: spread circle on the crosshair, an arc showing where damage came from, a red vignette on a low hull.
+- Threats from behind (all from data every machine has; nothing new is replicated):
+  - **ENEMY BEHIND - name - distance** (yellow, top of the screen, with a warning cue at most every 4 s): an enemy
+    within 90 m behind the view has had its nose within 12 degrees of the own ship (`HCJUi::IsAimingAt`) for 0.3 s
+    (`AimWarnDwellSeconds`: a nose that sweeps past is not a warning) - it is about to shoot, or shooting. The cue
+    is the warning tick a fifth lower than the torpedo's and the missile's (`AimWarnCuePitch`). The same ship has a pulsing "!" edge arrow (it comes first among the arrows) and a yellow
+    ring around its radar blip, also when it is not behind. Bots hold their fire for a moment when they get behind
+    a player (below); this is the warning for that moment. "MISSILE LOCK" has the place on the screen when both apply.
+  - **HIT FROM BEHIND**: a hit from the view's rear arc (more than about 107 degrees off the view direction) draws a
+    wider, heavier, three-line arc at the bottom of the ring for 2 s with that label, so that it cannot be taken
+    for a hit from below.
+  - The respawn screen says where the last hit came from: "Destroyed by Bot-03 with the PHASER - from behind" (or
+    "from the side", "head-on"), and for "from behind" the tip is about the radar and the "!" arrows.
 - Development console command `HCJParkEnemy <distance> [right] [up]` (listen host) puts the nearest other ship in
   front of the own ship, for pictures.
-- World: destination labels on portals and wormholes, map legend, the neighbours of the current sector ringed and
-  labelled with their binary id.
+- World: destination labels on portals and wormholes.
+- **Hypercube map** (top right; `Private/Game/HCJHUDMap.cpp`). The sectors are the corners of cubes: one cube for 8
+  sectors, two side by side for 16, four (two by two) for 32, seen a little from the right and from above; near
+  corners are larger and brighter, lines at the back thin and dim, and the cubes sway slowly (4 degrees). A portal of
+  one dimension always runs in the same direction on the map.
+  - **YOU**: a white ring with a slow halo on the own sector; after a jump (or a new ship) rings run out from it,
+    the mark slides along the line it travelled and that line lights up for a second.
+  - **One jump away**: thick lines from the own sector to a diamond with the sector id - the same text as the
+    in-world "PORTAL > 0101" marker, in the colour of that marker; violet with a round ring for the far end of the
+    own sector's wormhole.
+  - **Enemies**: a red badge with their number on every sector that holds some (the own sector counts what the radar
+    counts).
+  - **Target**: yellow corner brackets, the id and the way there hop by hop in yellow - the sector the HUD is
+    guiding to ("enemies in 0011: take PORTAL > 0111"), or red brackets on the sector of the locked ship.
+  - **Nearest fight**: a pulsing red ring with four sparks on the nearest other sector where a ship was lost in the
+    last 8 s or that holds two or more ships.
+  - **Station / black hole / wormhole**: a white frame / an orange ring round a black core / a violet dashed arc;
+    one legend row under the map names them (only those the universe has). The three-row legend is gone.
+  - 300 px wide at 1080p (200 at 1280x720), 390 (260) from 32 sectors on. Everything comes from data the client
+    already has.
 - Feedback: kill feed with the weapon or cause, centre messages (match start, kill, killed by, double / triple
   kill, rampage every fifth kill of a life - with the existing interface stingers), respawn countdown,
   end-of-match board with the winner and the countdown, scoreboard (rank, pilot, kills, deaths, turrets, ping).
-- Development console command `HCJMenuCmd <play|join <ip>|pause|resume|leave|settings|controls|main|lobbies|leaderboards|refresh|joinlobby <n>|help|scores|endmatch|hurt <n>|shieldhit <f>,<n>|enemyhit <f>,<n>|torpedo|enemytorpedo <uu>|torpedostock <n>|slomo <f>|hints|skiptutorial|resethints|die>`
+- Development console command `HCJMenuCmd <play|join <ip>|pause|resume|leave|settings|controls|main|lobbies|leaderboards|refresh|joinlobby <n>|help|scores|endmatch|hurt <n>|shieldhit <f>,<n>|enemyhit <f>,<n>|torpedo|enemytorpedo <uu>|torpedostock <n>|slomo <f>|hints|skiptutorial|resethints|mapjump <s>|die>`
   does what the buttons and keys do; with `-HCJCaptureCmds=` a capture run can walk through the menus.
 
 ## Intro
@@ -371,7 +405,7 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
     facing of the own ship / the target; `-LogCmds="LogHCJ Verbose"` logs every facing change, flare and collapse
     (`Shield: ...`); `-HCJSingleShield` gives ships the single 50-point shield of the earlier builds, to compare
     bot matches with the same binary.
-- Spawn shield: 2 s without taking damage; firing drops it at once, so no damage is dealt from under it. The ship's
+- Spawn shield: 3 s without taking damage; firing drops it at once, so no damage is dealt from under it. The ship's
   lights shimmer white while it is up (replicated flag) and the HUD says so.
 - Photon torpedoes (`Ship/HCJTorpedo.h`, plain C++ with tests; numbers in `[/Script/HypeCubeJam.HCJGameplaySettings]`):
   the secondary weapon of every ship, on the right mouse button (or X). A fresh ship has 4 (the `Ammo` of the TORPEDO
@@ -400,13 +434,51 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
   - Development: `-HCJNoTorpedoes` (no stock, no pads: to measure a match without them), `-HCJAutoTorpedo` (capture
     autopilot fires them), `HCJMenuCmd torpedo | enemytorpedo <uu> | torpedostock <n> | slomo <f>`, the
     `Torpedoes t=` line of the server log.
-- Spawn choice: the best of 12 random spawn points (`HCJBalance::ScoreSpawn`): never within 50 m of an enemy, in
+- Spawn choice: the best of 12 random spawn points (`HCJBalance::ScoreSpawn`): never within 80 m of an enemy, in
   range of a live turret or in a gravity well when there is an alternative; a slight preference for a sector
-  with one to three enemies.
-- Bots have three difficulty levels (`FHCJBotSkill`; menu, `BotDifficulty` in `[/Script/HypeCubeJam.HCJGameMode]`,
-  URL `?Difficulty=0..2`): aim error 7 / 3.5 / 1.5 degrees, reaction 1.0 / 0.5 / 0.2 s before the first shot at
-  a new target, turn rate, burst rhythm, opening range, strafe strength, and the hull fraction (45 / 30 / 20 %) at
-  which a bot breaks off, stops firing and boosts for a repair pad in its sector. The default is easy.
+  with one to three enemies. A new ship is turned to face the nearest ship of its sector.
+- Bots have four difficulty levels - Easy, Normal, Hard, Ace (`FHCJBotSkill`; the Difficulty row of the menu,
+  `BotDifficulty` in `[/Script/HypeCubeJam.HCJGameMode]`, URL `?Difficulty=0..3`): aim error 7 / 3.5 / 1.5 degrees,
+  reaction 1.0 / 0.5 / 0.2 s before the first shot at a new target, turn rate, burst rhythm, opening range, strafe
+  strength, and the hull fraction (45 / 30 / 20 %) at which a bot breaks off, stops firing and boosts for a repair
+  pad in its sector. Ace flies with Hard's numbers. The default is Easy.
+- **Bots and people: the fairness rules** (devlog item 29; `AHCJBotController`, the fairness fields of
+  `FHCJBotSkill`, server only, nothing replicated). They apply only when the other ship is flown by a person; bots
+  among themselves fly the same on every level, so bot matches and their kill rates are unchanged.
+
+  | | Easy | Normal | Hard | Ace |
+  |---|---|---|---|---|
+  | bots attacking one player at a time (`MaxAttackersOnHuman`) | 1 | 2 | 3 | no limit |
+  | bots in a player's sector before travelling bots go elsewhere (`MaxHuntersPerHuman`) | 3 | 4 | 6 | no limit |
+  | a bot in the player's rear arc holds its fire for (`RearFireDelay`) | 2.5 s | 1.2 s | 0.5 s | - |
+  | aim error from the rear arc (`RearAimErrorScale`) | x 2 | x 1.5 | x 1 | x 1 |
+  | pull round to the player's front (`FrontBias`) | 1.0 | 0.6 | 0.3 | 0 |
+  | target score of a player's tail (`HumanTailScore`; bots among themselves +1.5) | -2 | -1 | 0 | +1.5 |
+  | scout ambush from cloak, close passes around a player (`bFlankHumans`) | no | no | yes | yes |
+  | left alone after appearing in a sector (`ArrivalGrace`; also under the spawn shield) | 4 s | 3.5 s | 1 s | - |
+  | left alone after the attacker is gone (`RespiteSeconds`) | 6 s | 5 s | - | - |
+  | damage of a bot's hit on a player (`DamageToHumanScale`) | 50 % | 55 % | 100 % | 100 % |
+  | torpedoes a bot would fire at a player that are fired (`TorpedoOnHumanChance`) | 35 % | 45 % | 100 % | 100 % |
+
+  - "Rear arc": more than about 107 degrees off the nose of the player's ship (`HCJBalance::RearArcDot`). The wait
+    starts again every time the bot gets there; the HUD's ENEMY BEHIND is the warning for it.
+  - A bot the player shot in the last 4 s (`HCJBalance::ProvokedSeconds`) may always answer: the cap, the grace, the
+    respite and the rear wait do not hold it. When the cap is full it is the other bots that make room for it, so a
+    player who fights one bot at a time has one bot at a time on Easy.
+  - A bot that was shaken off for a second (a rock in between) needs its reaction time again.
+  - Hunters: a bot that travels counts the bots in a player's sector and the ones on their way into it; when that is
+    `MaxHuntersPerHuman` it neither hunts that player nor roams through a portal into that sector while it has
+    another way out (`held_hunters` of the `Fair: event=status` line counts how often).
+  - Ace (`?Difficulty=3`) is Hard's flying with none of these rules - what Hard was before. `-HCJNoFair` switches
+    the rules off on every level (for comparisons with the same binary; the spawn changes - 3 s of spawn shield,
+    80 m, facing the nearest ship - and the HUD stay).
+  - The server logs what happened to the people in a match: `Fair: event=rules | spawn | hit | death | status`
+    (key=value; see "Fairness telemetry" in docs/DEVLOG_NOTES.md, item 29, for the fields and how to read the rear
+    share and the deaths per minute out of a log).
+  - In a match the host changes the level with Esc > "Bot difficulty (applies now)" (`AHCJGameMode::SetBotDifficulty`;
+    the bots read their row every 0.25 s).
+  - Development: `HCJMenuCmd difficulty [n]` (the menu row), `matchdifficulty <+1|-1>` (the in-match stepper),
+    `enemybehind [uu]` (listen host, with `peace`: the nearest ship is put behind the own one with its nose on it).
 - Bot tactics (`AHCJBotController`, class comment; `FHCJBotSkill::Tactics` 0.25 / 0.7 / 1 is the chance that a ship is
   flown "smart" at all and that a clever move is made when there is one, so easy bots mostly fly as before):
   - **Target**: not simply the nearest - the ship that is shooting at the bot, a damaged one, one whose shield facing
@@ -580,11 +652,29 @@ lines of the gameplay settings; the server sends them with the match config.
   `-HCJNoShockwaves` switches it off.
 - **Debris (local, cosmetic).** A destroyed ship throws hull plates and glowing embers, a breaking rock chunks of
   rock; they tumble, slow down, bounce off rocks, are carried by black holes, are pushed by later explosions and
-  shrink away after about 3 s. Never more than 72 pieces (`MaxDebris`): a new one replaces the one nearest its end.
+  shrink away after about 3 s. Never more than 120 pieces (`MaxDebris`): a new one replaces the one nearest its end.
 - **Flares.** Ship, torpedo and rock explosions get a flare (`M_HCJ_ExplosionFlare`: bloom flash, a horizontal
   streak, a star), at most 6 at a time, and a camera shake by distance (SETTINGS > "Camera shake" switches it off;
   the jolt of a hit on the own hull stays).
+- **A ship's explosion is staged (local, cosmetic).** The hull fails for a third of a second - it rolls, its lights
+  flare orange, three small pops run along it (a star, sparks, a crack) - then the blast: a core flash, a fireball of
+  four puffs that billows out and cools from white-yellow through orange to dark red and smoke (`M_HCJ_Fireball`), a
+  shockwave ring in the plane of the wreck (`M_HCJ_ShockRing`), sparks drawn out along their flight, hull plates
+  whose torn edges glow while they are hot (`M_HCJ_HullDebris`), the three largest trailing fire and smoke (the
+  rocket trail of the Niagara Examples); the heart of the fireball stays as a smoke cloud with a dull glow in it that
+  drifts and thins out over three seconds. `docs/tools/make_explosion_materials.py` builds the three materials (the
+  fireball takes its billows from the cloud texture of the sky; nothing was imported). Beyond 70 m, or with two other
+  blasts running, a simpler version is played (one lobe, half the pieces, no trails); beyond 160 m only flare, one
+  puff and a few pieces. Hard caps: 14 puffs, 3 rings, 5 trails, 120 debris pieces.
+- **The own ship's death.** The view no longer sits inside the explosion: it starts where the chase camera was, pulls
+  back 15 m and turns slowly round the wreck for the whole respawn countdown (it stops in front of a rock). The blast
+  shakes it hard and briefly (SETTINGS > "Camera shake" switches that off), the screen flashes warm for a fifth of a
+  second with an orange vignette for a second, and a low boom is played under the explosion sound. The respawn
+  lines sit below the middle of the screen now.
 - `UHCJEffectsDirector` ticks only while something is alive. Numbers: "explosions" block of the asset settings.
+  Development: `-HCJClassicBlast` (the single pop and the view of before, same binary), `-HCJBlastBench=<enemy|own|crowd>[,<rounds>[,<uu>[,<sector>]]]`
+  (frame times before and during blasts: `BlastBench:` lines), `HCJMenuCmd mapjump <s>` (the map's jump animation frozen at that age),
+  `-HCJNoMap` (the HUD without the map, to measure what it costs; with `-LogCmds="LogHCJ Verbose"` the map logs its game-thread time every 2000 frames).
 
 ## Black holes
 
@@ -798,7 +888,7 @@ hardware.
 & "F:\EpicGames\UE_5.9\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "F:\work\HypeCubeJam\HypeCubeJam.uproject" -ExecCmds="Automation RunTests HypeCubeJam; Quit" -unattended -nullrhi -nosplash -log "-ini:EditorPerProjectUserSettings:[/Script/ModelContextProtocol.ModelContextProtocolSettings]:bAutoStartServer=False"
 ```
 
-71 automation tests (about a minute). Two of them are playthroughs (`HypeCubeJam.Playthrough.*`): a real game world
+73 automation tests (about a minute). Two of them are playthroughs (`HypeCubeJam.Playthrough.*`): a real game world
 with the game mode, the universe and bots, ticked by hand at 30 frames per game second - a match of six hard bots to
 a frag limit of 4 and the start of the next one on another layout, and three minutes of an open match of eight bots
 (kills, portal jumps, pickups, every ship type, nobody stuck or outside its sector). About 15 and 20 s of real time.
@@ -821,7 +911,7 @@ scenario; exit code 1 when one failed. Logs go to `Saved/Playthrough/<time>/`. S
 | `match_cycle` | 8 normal bots, kill limit 5 | the match ends by the limit, winner first on a board of 8 rows sorted by kills, match 2 starts on another seed and layout checksum |
 | `difficulty_easy` / `_normal` / `_hard` | 8 bots, 230 s, no limits | at that difficulty: kills, every ship type kills and dies, portal and wormhole jumps, pickups, warp / cloak / tractor used |
 | `small_universe` | 8 easy bots on 4 sectors, 260 s | a crowd: kills; its turret and rock numbers go into the sum below |
-| `net_host_client_late` | listen host + client (25 s later) + late joiner (100 s later), all on the autopilot with aim; the client leaves after 48 s and joins again | same seed and layout checksum everywhere; every destroyed-rock set a client had is one the host had (count and checksum); client and late joiner get ships and have at least one kill and one death between them (an autopilot does not score every time); at most 30 movement corrections per 100 s; the host saw three remote joins and the client leave |
+| `net_host_client_late` | listen host (`-HCJNoFair`: the score checks below need easy bots that treat a person like any ship) + client (25 s later) + late joiner (100 s later), all on the autopilot with aim; the client leaves after 48 s and joins again | same seed and layout checksum everywhere; every destroyed-rock set a client had is one the host had (count and checksum; the host breaks three rocks on purpose - `HCJMenuCmd breakrock` after 64, 128 and 168 s - so that there is always something to compare); client and late joiner get ships and have at least one kill and one death between them (an autopilot does not score every time); at most 30 movement corrections per 100 s; the host saw three remote joins and the client leave |
 | `autopilot_hangar_match` | title menu, hangar (cruiser, hull 2, paint 5), PLAY, kill limit 4 | the choice reaches the server, the match ends by the limit, the player is on the board as a cruiser with a kill or a death, the next match starts |
 | `all_matches_together` | the logs of the above | every weapon has a kill, every pad item was taken (cloak cells excepted), a turret shot a ship down, a turret was destroyed, a rock was destroyed |
 
@@ -833,6 +923,25 @@ and say nothing about balance.
 Structured lines (server): `match_start`, `match_end`, `board`, `stats` (all counters of the match, every 15 s),
 `human`, and the warnings `stuck` (a bot's ship moved less than 2.5 m in 20 s; the line says what the bot was doing),
 `out_of_bounds`, `nan`; clients: `client` every 10 s.
+
+### Fairness matches
+
+How the bots treat a human player (see "Bots and people: the fairness rules") is measured with one human on an
+autopilot against seven bots, headless, several processes at a time, and read out of the server's `Fair:` lines:
+
+```powershell
+python docs\tools\fair_matches.py Saved\Fair easy_nofair:0:nofair:3 easy_fair:0:fair:3
+python docs\tools\fair_matches.py Saved\Fair blind_nofair:0:nofair:3:blind blind_fair:0:fair:3:blind
+python docs\tools\fair_stats.py Saved\Fair\*.log
+```
+
+`<tag>:<difficulty 0..3>:<fair|nofair>[:<count>[:blind]]` - `nofair` adds `-HCJNoFair` (the bots before the rules),
+`blind` takes the autopilot that only circles and fires straight ahead instead of the one that aims (the aiming one
+faces its attacker, so only the blind one shows how much damage comes from behind). `fair_stats.py` prints per log
+and per group: deaths per minute, the share of bot damage from the player's rear arc, deaths by a bot in the rear
+arc, deaths within 12 s of the spawn, the most bots on the player at once, and how often the cap, the rear rule,
+the arrival grace and the respite held a bot back. It works on any game log - also the one of a real match
+(`Saved\Logs\HypeCubeJam.log` of the host). Numbers: docs/DEVLOG_NOTES.md, item 29.
 
 ## MCP (Unreal MCP server)
 

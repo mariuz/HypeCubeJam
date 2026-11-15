@@ -40,7 +40,7 @@ public:
 	UPROPERTY(Config)
 	float UiVolume = 1.0f;
 
-	/** Host options: bots that fill the match (0 .. 15), hypercube dimension (3 .. 5), seed (0 = random), bot difficulty (0 easy, 1 normal, 2 hard). */
+	/** Host options: bots that fill the match (0 .. 15), hypercube dimension (3 .. 5), seed (0 = random), bot difficulty (0 easy, 1 normal, 2 hard, 3 ace). */
 	UPROPERTY(Config)
 	int32 BotCount = 7;
 

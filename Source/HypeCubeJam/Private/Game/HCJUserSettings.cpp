@@ -1,5 +1,6 @@
 #include "Game/HCJUserSettings.h"
 
+#include "Game/HCJBalance.h"
 #include "Ship/HCJShipTypes.h"
 
 void UHCJUserSettings::Sanitize()
@@ -10,7 +11,7 @@ void UHCJUserSettings::Sanitize()
 	UiVolume = FMath::Clamp(UiVolume, 0.0f, 1.0f);
 	BotCount = FMath::Clamp(BotCount, 0, 15);
 	Dimension = FMath::Clamp(Dimension, 3, 5);
-	BotDifficulty = FMath::Clamp(BotDifficulty, 0, 2);
+	BotDifficulty = FMath::Clamp(BotDifficulty, 0, HCJBalance::NumBotDifficulties - 1);
 	MusicSet = FMath::Clamp(MusicSet, 0, 1);
 	ShipType = HCJShipTypes::SanitizeType(ShipType);
 	ShipVariant = (ShipVariant >= 0 && ShipVariant < HCJShipTypes::Get(ShipType).NumHulls) ? ShipVariant : -1;

@@ -1,5 +1,6 @@
 #include "UI/HCJMenu.h"
 
+#include "Game/HCJBalance.h"
 #include "Game/HCJPlayerController.h"
 #include "Game/HCJUserSettings.h"
 #include "Online/HCJEOSSubsystem.h"
@@ -30,7 +31,7 @@ namespace
 
 	const TCHAR* DifficultyName(int32 Difficulty)
 	{
-		return Difficulty <= 0 ? TEXT("Easy") : Difficulty == 1 ? TEXT("Normal") : TEXT("Hard");
+		return HCJBalance::GetDifficultyName(Difficulty);
 	}
 
 	const FLinearColor MenuKeyFill(0.02f, 0.07f, 0.11f, 1.0f);
@@ -364,6 +365,22 @@ TSharedRef<SWidget> SHCJMenu::BuildMain()
 		];
 	}
 
+	// The difficulty comes first, above PLAY, with a line that says what the level does to the player. (Outside the
+	// platform switch below: the web build has it too.)
+	Box->AddSlot().AutoHeight().Padding(Row)
+	[
+		MakeStepper(TEXT("Difficulty"), []() { return FString(DifficultyName(UHCJUserSettings::Get().BotDifficulty)); },
+			[](int32 Step) { UHCJUserSettings& S = UHCJUserSettings::Get(); S.BotDifficulty = FMath::Clamp(S.BotDifficulty + Step, 0, HCJBalance::NumBotDifficulties - 1); })
+	];
+	Box->AddSlot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 8.0f))
+	[
+		// (The page is not rebuilt when the stepper is pressed: the text follows the setting.)
+		SNew(STextBlock)
+		.Text_Lambda([]() { return FText::FromString(HCJBalance::GetDifficultyDescription(UHCJUserSettings::Get().BotDifficulty)); })
+		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 13))
+		.ColorAndOpacity(FSlateColor(MenuDim))
+	];
+
 #if PLATFORM_WASM
 	// The web build is single-player: a browser cannot host or reach a host, and there is no online service.
 	Box->AddSlot().AutoHeight().Padding(Row)
@@ -408,11 +425,6 @@ TSharedRef<SWidget> SHCJMenu::BuildMain()
 	[
 		MakeStepper(TEXT("Hypercube"), []() { const int32 D = UHCJUserSettings::Get().Dimension; return FString::Printf(TEXT("%dD  -  %d sectors"), D, 1 << D); },
 			[](int32 Step) { UHCJUserSettings& S = UHCJUserSettings::Get(); S.Dimension = FMath::Clamp(S.Dimension + Step, 3, 5); })
-	];
-	Box->AddSlot().AutoHeight().Padding(Row)
-	[
-		MakeStepper(TEXT("Bot difficulty"), []() { return FString(DifficultyName(UHCJUserSettings::Get().BotDifficulty)); },
-			[](int32 Step) { UHCJUserSettings& S = UHCJUserSettings::Get(); S.BotDifficulty = FMath::Clamp(S.BotDifficulty + Step, 0, 2); })
 	];
 	Box->AddSlot().AutoHeight().Padding(Row)
 	[
@@ -604,7 +616,7 @@ TSharedRef<SWidget> SHCJMenu::BuildPause()
 	const TWeakObjectPtr<AHCJPlayerController> WeakOwner = Owner;
 	const FMargin Row(0.0f, 6.0f);
 
-	return SNew(SVerticalBox)
+	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 4.0f))
 		[
 			MakeLabel(TEXT("MENU"), 32.0f, MenuAccent, true)
@@ -647,6 +659,25 @@ TSharedRef<SWidget> SHCJMenu::BuildPause()
 		[
 			MakeKeyLegend(TEXT("[Esc] or [Enter] resume     [F1] controls"))
 		];
+
+	// The host (and a single player) can make the bots easier or harder without leaving the match: under RESUME.
+	if (WeakOwner.IsValid() && WeakOwner->HasAuthority())
+	{
+		Box->InsertSlot(3).AutoHeight().Padding(FMargin(0.0f, 8.0f, 0.0f, 0.0f))
+		[
+			MakeStepper(TEXT("Bot difficulty (applies now)"),
+				[WeakOwner]() { const AHCJPlayerController* C = WeakOwner.Get(); return FString(DifficultyName(C != nullptr ? C->GetMenuDifficulty() : 0)); },
+				[WeakOwner](int32 Step) { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuStepDifficulty(Step); } })
+		];
+		Box->InsertSlot(4).AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 8.0f))
+		[
+			SNew(STextBlock)
+			.Text_Lambda([WeakOwner]() { const AHCJPlayerController* C = WeakOwner.Get(); return FText::FromString(HCJBalance::GetDifficultyDescription(C != nullptr ? C->GetMenuDifficulty() : 0)); })
+			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 13))
+			.ColorAndOpacity(FSlateColor(MenuDim))
+		];
+	}
+	return Box;
 }
 
 TSharedRef<SWidget> SHCJMenu::BuildControls()

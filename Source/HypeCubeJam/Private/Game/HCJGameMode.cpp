@@ -102,6 +102,86 @@ void AHCJGameMode::LogPlaythroughMatchStart() const
 	UE_LOG(LogHCJ, Log, TEXT("Playthrough: event=match_start match=%d seed=%d layout=%08X dim=%d difficulty=%d frag_limit=%d time_limit=%.0f bots=%d humans=%d rocks=%d"),
 		CurrentConfig.MatchNumber, CurrentConfig.Seed, Universe != nullptr ? Universe->GetLayoutChecksum() : 0, CurrentConfig.Dimension, BotDifficulty, FragLimit, TimeLimitSeconds,
 		GetDesiredBotCount(), GetNumHumanPlayers(), Universe != nullptr ? Universe->GetNumLiveAsteroids() : 0);
+	LogFairRules();
+}
+
+void AHCJGameMode::SetBotDifficulty(int32 Difficulty)
+{
+	const int32 NewDifficulty = FMath::Clamp(Difficulty, 0, HCJBalance::NumBotDifficulties - 1);
+	if (NewDifficulty == BotDifficulty)
+	{
+		return;
+	}
+	UE_LOG(LogHCJ, Log, TEXT("Menu: bot difficulty %d (%s) -> %d (%s) in the running match"), BotDifficulty, HCJBalance::GetDifficultyName(BotDifficulty), NewDifficulty,
+		HCJBalance::GetDifficultyName(NewDifficulty));
+	BotDifficulty = NewDifficulty;
+	LogFairRules();
+}
+
+void AHCJGameMode::LogFairRules() const
+{
+	// The fairness rules in force (bots towards human ships), so that a log says what a match was played with.
+	FHCJBotSkill Skill = FHCJBotSkill::Get(BotDifficulty);
+	if (IsNoFair())
+	{
+		Skill.ClearFairness();
+	}
+	UE_LOG(LogHCJ, Log, TEXT("Fair: event=rules match=%d difficulty=%d level=%s nofair=%d max_attackers=%d max_hunters=%d rear_fire_delay=%.1f rear_aim_scale=%.1f front_bias=%.1f tail_score=%.1f flank=%d arrival_grace=%.1f damage_scale=%.2f respite=%.1f torpedo_chance=%.2f"),
+		CurrentConfig.MatchNumber, BotDifficulty, *FString(HCJBalance::GetDifficultyName(BotDifficulty)).ToLower(), IsNoFair() ? 1 : 0, Skill.MaxAttackersOnHuman, Skill.MaxHuntersPerHuman,
+		Skill.RearFireDelay, Skill.RearAimErrorScale, Skill.FrontBias, Skill.HumanTailScore, Skill.bFlankHumans ? 1 : 0, Skill.ArrivalGrace, Skill.DamageToHumanScale, Skill.RespiteSeconds, Skill.TorpedoOnHumanChance);
+}
+
+bool AHCJGameMode::IsNoFair()
+{
+	static const bool bNoFair = FParse::Param(FCommandLine::Get(), TEXT("HCJNoFair"));
+	return bNoFair;
+}
+
+float AHCJGameMode::GetBotDamageToHumanScale() const
+{
+	return IsNoFair() ? 1.0f : FMath::Clamp(FHCJBotSkill::Get(BotDifficulty).DamageToHumanScale, 0.05f, 1.0f);
+}
+
+void AHCJGameMode::NotifyFairHit(float Applied, float Unscaled, float BearingDeg, bool bAft, bool bFatal, bool bAttackerIsBot)
+{
+	if (!bAttackerIsBot)
+	{
+		// (Turrets, other people, the own torpedo: not what the fairness rules are about.)
+		return;
+	}
+	MatchStats.FairDamage += Applied;
+	MatchStats.FairDamageUnscaled += Unscaled;
+	MatchStats.FairDamageRear += HCJBalance::IsRearBearing(BearingDeg) ? Applied : 0.0f;
+	MatchStats.FairDamageAft += bAft ? Applied : 0.0f;
+}
+
+int32 AHCJGameMode::CountBotsAttacking(const AHCJShipCharacter* Target) const
+{
+	int32 Count = 0;
+	for (const AHCJBotController* Bot : Bots)
+	{
+		Count += (IsValid(Bot) && Bot->GetBotState() == EHCJBotState::Attack && Bot->GetShip() != nullptr && Bot->GetTargetShip() == Target) ? 1 : 0;
+	}
+	return Count;
+}
+
+void AHCJGameMode::LogFairStatus() const
+{
+	const UWorld* World = GetWorld();
+	if (World == nullptr)
+	{
+		return;
+	}
+	// Human ships in the match right now (a host in the title menu is not one).
+	int32 HumanShips = 0;
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		HumanShips += HasLiveShip(It->Get()) ? 1 : 0;
+	}
+	UE_LOG(LogHCJ, Log, TEXT("Fair: event=status t=%.0f match=%d difficulty=%d nofair=%d humans=%d dmg_total=%.0f dmg_rear=%.0f dmg_aft=%.0f deaths=%d rear_deaths=%d peak_attackers=%d held_cap=%d held_rear=%d held_grace=%d bot_deaths=%d dmg_unscaled=%.0f human_ships=%d match_t=%.0f held_respite=%d held_hunters=%d"),
+		World->GetTimeSeconds(), CurrentConfig.MatchNumber, BotDifficulty, IsNoFair() ? 1 : 0, GetNumHumanPlayers(), MatchStats.FairDamage, MatchStats.FairDamageRear, MatchStats.FairDamageAft,
+		MatchStats.FairDeaths, MatchStats.FairRearDeaths, MatchStats.FairPeakAttackers, MatchStats.FairHeldCap, MatchStats.FairHeldRear, MatchStats.FairHeldGrace,
+		MatchStats.FairBotDeaths, MatchStats.FairDamageUnscaled, HumanShips, World->GetTimeSeconds() - MatchStats.StartTime, MatchStats.FairHeldRespite, MatchStats.FairHeldHunters);
 }
 
 void AHCJGameMode::LogPlaythroughStats() const
@@ -302,7 +382,7 @@ void AHCJGameMode::InitGame(const FString& MapName, const FString& Options, FStr
 
 	MinCombatants = FMath::Max(0, UGameplayStatics::GetIntOption(Options, TEXT("Bots"), MinCombatants));
 	MinBots = FMath::Max(0, UGameplayStatics::GetIntOption(Options, TEXT("MinBots"), MinBots));
-	BotDifficulty = FMath::Clamp(UGameplayStatics::GetIntOption(Options, TEXT("Difficulty"), BotDifficulty), 0, 2);
+	BotDifficulty = FMath::Clamp(UGameplayStatics::GetIntOption(Options, TEXT("Difficulty"), BotDifficulty), 0, HCJBalance::NumBotDifficulties - 1);
 	MaxBots = FMath::Max(0, MaxBots);
 	FragLimit = FMath::Max(0, UGameplayStatics::GetIntOption(Options, TEXT("FragLimit"), FragLimit));
 	if (UGameplayStatics::HasOption(Options, TEXT("TimeLimit")))
@@ -443,6 +523,12 @@ void AHCJGameMode::RestartPlayer(AController* NewPlayer)
 
 	if (HasLiveShip(NewPlayer))
 	{
+		if (Cast<APlayerController>(NewPlayer) != nullptr)
+		{
+			// Where a person's ship appeared: how far the nearest other ship of the sector is (-1: nobody there).
+			UE_LOG(LogHCJ, Log, TEXT("Fair: event=spawn t=%.2f name=%s nearest=%.0f enemies=%d sector=%d"), GetWorld()->GetTimeSeconds(),
+				*PlaythroughToken(NewPlayer->PlayerState != nullptr ? NewPlayer->PlayerState->GetPlayerName() : FString()), LastSpawnNearestEnemy, LastSpawnEnemiesInSector, Sector);
+		}
 		CancelRespawn(NewPlayer);
 		if (AHCJPlayerState* HCJPlayerState = NewPlayer->GetPlayerState<AHCJPlayerState>())
 		{
@@ -476,6 +562,9 @@ bool AHCJGameMode::PlayerCanRestart_Implementation(APlayerController* Player)
 
 void AHCJGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	// The fairness counters as they stand when the world goes away (a run that quits by itself ends between two status lines).
+	LogFairStatus();
+
 	FTimerManager& TimerManager = GetWorldTimerManager();
 	TimerManager.ClearTimer(GameUpdateTimerHandle);
 	TimerManager.ClearTimer(IntermissionTimerHandle);
@@ -670,6 +759,7 @@ void AHCJGameMode::NotifyShipKilled(AController* VictimController, AController* 
 	}
 
 	FString Cause;
+	FString FairCause;
 	if (KillerName.IsEmpty() && Causer != nullptr && Cast<AHCJTurret>(Causer->GetOwner()) != nullptr)
 	{
 		// Shot down by a station: an environment death with a name on it.
@@ -685,7 +775,17 @@ void AHCJGameMode::NotifyShipKilled(AController* VictimController, AController* 
 		const AHCJProjectile* OwnProjectile = Cast<AHCJProjectile>(Causer);
 		Cause = (OwnProjectile != nullptr && OwnProjectile->IsTorpedo()) ? TEXT("OWN TORPEDO")
 			: (VictimShip != nullptr && Universe != nullptr && Universe->IsInsideEventHorizon(VictimShip->GetActorLocation())) ? TEXT("BLACK HOLE") : TEXT("THE VOID");
-		UE_LOG(LogHCJ, Log, TEXT("Death: %s (no killer)"), *VictimName);
+		// What "the void" was, for the log (the kill feed keeps its three names): outside the sector's safe radius, or
+		// something else without a shooter - a collision at warp, a development command.
+		FairCause = Cause.ToLower();
+		if (Cause == TEXT("THE VOID") && VictimShip != nullptr && Universe != nullptr)
+		{
+			const int32 VictimSector = Universe->GetSectorAtLocation(VictimShip->GetActorLocation());
+			const bool bOutside = VictimSector == INDEX_NONE
+				|| FVector::DistSquared(VictimShip->GetActorLocation(), Universe->GetSectorOrigin(VictimSector)) > FMath::Square(static_cast<double>(HCJ::SectorSafeRadius));
+			FairCause = bOutside ? TEXT("out of the sector") : TEXT("no shooter inside the sector");
+		}
+		UE_LOG(LogHCJ, Log, TEXT("Death: %s (no killer: %s)"), *VictimName, *FairCause);
 	}
 	else if (KillerName != TEXT("Station") || (KillerController && KillerController != VictimController))
 	{
@@ -711,6 +811,28 @@ void AHCJGameMode::NotifyShipKilled(AController* VictimController, AController* 
 	}
 
 	HCJGameState->MulticastKillEvent(KillerName, VictimName, Cause, AHCJGameState::PackKillTypes(KillerType, VictimType));
+
+	if (Cast<APlayerController>(VictimController) != nullptr)
+	{
+		// A person's ship is gone: who did it, with what, and from which side of it (0 = dead ahead, 180 = dead astern).
+		const bool bCredited = KillerController != nullptr && KillerController != VictimController;
+		const AActor* Source = bCredited && KillerController->GetPawn() != nullptr ? static_cast<const AActor*>(KillerController->GetPawn())
+			: (Causer != nullptr && Causer != VictimShip) ? Causer : nullptr;
+		const float Bearing = (VictimShip != nullptr && Source != nullptr)
+			? HCJBalance::BearingDegrees(VictimShip->GetActorForwardVector(), Source->GetActorLocation() - VictimShip->GetActorLocation()) : -1.0f;
+		const float Distance = (VictimShip != nullptr && Source != nullptr) ? static_cast<float>(FVector::Dist(Source->GetActorLocation(), VictimShip->GetActorLocation())) : -1.0f;
+		const bool bByBot = bCredited && Cast<AHCJBotController>(KillerController) != nullptr;
+		++MatchStats.FairDeaths;
+		MatchStats.FairBotDeaths += bByBot ? 1 : 0;
+		MatchStats.FairRearDeaths += (bByBot && HCJBalance::IsRearBearing(Bearing)) ? 1 : 0;
+		if (FairCause.IsEmpty())
+		{
+			FairCause = Cause.IsEmpty() ? FString(TEXT("-")) : Cause.ToLower();
+		}
+		UE_LOG(LogHCJ, Log, TEXT("Fair: event=death t=%.0f name=%s killer=%s cause=%s bearing=%.0f dist=%.0f killer_bot=%d rear=%d alive=%.1f attackers=%d"), GetWorld()->GetTimeSeconds(),
+			*PlaythroughToken(VictimName), *PlaythroughToken(KillerName), *PlaythroughToken(FairCause), Bearing, Distance, bByBot ? 1 : 0, (bByBot && HCJBalance::IsRearBearing(Bearing)) ? 1 : 0,
+			VictimShip != nullptr ? VictimShip->GetGameTimeSinceCreation() : -1.0f, CountBotsAttacking(VictimShip));
+	}
 
 	if (APlayerController* VictimPlayer = Cast<APlayerController>(VictimController); VictimPlayer && VictimShip)
 	{
@@ -958,6 +1080,7 @@ void AHCJGameMode::LogStatus() const
 			MatchStats.TorpedoOpenFacingKills);
 	}
 	LogPlaythroughStats();
+	LogFairStatus();
 
 	if (CurrentConfig.Pickups.bEnabled)
 	{
@@ -1057,6 +1180,7 @@ void AHCJGameMode::EndMatch()
 			*PlaythroughToken(Row->GetPlayerName()), Row->GetKills(), Row->GetDeaths(), *FString(HCJShipTypes::Get(Row->GetShipType()).ShortName).ToLower(), Row->IsABot() ? 1 : 0);
 	}
 	LogPlaythroughStats();
+	LogFairStatus();
 }
 
 void AHCJGameMode::StartNewMatch()
@@ -1127,7 +1251,7 @@ void AHCJGameMode::StartMatchFromMenu(AHCJPlayerController* Host, int32 NumBots,
 	MatchDimension = FMath::Clamp(Dimension, FHCJHypercubeGraph::MinDimension, FHCJHypercubeGraph::MaxDimension);
 	bHasSeedOverride = Seed != 0;
 	SeedOverride = Seed;
-	BotDifficulty = FMath::Clamp(Difficulty, 0, 2);
+	BotDifficulty = FMath::Clamp(Difficulty, 0, HCJBalance::NumBotDifficulties - 1);
 	if (Host->PlayerState != nullptr)
 	{
 		Host->PlayerState->SetIsOnlyASpectator(false);
@@ -1221,6 +1345,8 @@ int32 AHCJGameMode::ChooseSpawn(const AController* ForController, FTransform& Ou
 	TArray<FHCJSpawnCandidate, TInlineAllocator<NumCandidates>> Candidates;
 	TArray<FTransform, TInlineAllocator<NumCandidates>> Transforms;
 	TArray<int32, TInlineAllocator<NumCandidates>> Sectors;
+	// The nearest other ship of each candidate's sector (the new ship is turned to face it).
+	TArray<FVector, TInlineAllocator<NumCandidates>> NearestShips;
 	for (int32 Index = 0; Index < NumCandidates; ++Index)
 	{
 		const int32 Sector = ChooseSpawnSector(ForController);
@@ -1231,12 +1357,18 @@ int32 AHCJGameMode::ChooseSpawn(const AController* ForController, FTransform& Ou
 		const FTransform Transform = Universe->GetRandomSpawnTransform(Sector, GameplayRandom);
 		const FVector Location = Transform.GetLocation();
 		FHCJSpawnCandidate Candidate;
+		FVector NearestShip = FVector::ZeroVector;
 		for (const FShipAt& Ship : Ships)
 		{
 			if (Ship.Sector == Sector)
 			{
 				++Candidate.EnemiesInSector;
-				Candidate.NearestEnemyDistance = FMath::Min(Candidate.NearestEnemyDistance, static_cast<float>(FVector::Dist(Ship.Location, Location)));
+				const float Distance = static_cast<float>(FVector::Dist(Ship.Location, Location));
+				if (Distance < Candidate.NearestEnemyDistance)
+				{
+					Candidate.NearestEnemyDistance = Distance;
+					NearestShip = Ship.Location;
+				}
 			}
 		}
 		for (const FVector& Turret : Turrets)
@@ -1251,6 +1383,7 @@ int32 AHCJGameMode::ChooseSpawn(const AController* ForController, FTransform& Ou
 		Candidates.Add(Candidate);
 		Transforms.Add(Transform);
 		Sectors.Add(Sector);
+		NearestShips.Add(NearestShip);
 	}
 
 	const int32 Best = HCJBalance::PickBestSpawn(Candidates);
@@ -1259,6 +1392,20 @@ int32 AHCJGameMode::ChooseSpawn(const AController* ForController, FTransform& Ou
 		return INDEX_NONE;
 	}
 	OutTransform = Transforms[Best];
+	LastSpawnEnemiesInSector = Candidates[Best].EnemiesInSector;
+	LastSpawnNearestEnemy = Candidates[Best].EnemiesInSector > 0 ? Candidates[Best].NearestEnemyDistance : -1.0f;
+	if (Candidates[Best].EnemiesInSector > 0)
+	{
+		// Somebody is in the sector: the new ship looks at the nearest one, so that its pilot sees what is coming
+		// instead of being found from behind. (No extra draw from GameplayRandom.)
+		const FVector ToNearest = NearestShips[Best] - OutTransform.GetLocation();
+		if (ToNearest.SizeSquared() > 1.0)
+		{
+			FRotator Facing = ToNearest.Rotation();
+			Facing.Roll = 0.0;
+			OutTransform.SetRotation(Facing.Quaternion());
+		}
+	}
 	UE_LOG(LogHCJ, Verbose, TEXT("Spawn: sector %d, %d enemies there, nearest %.0f uu, turret range %d, pull %.0f (score %.0f)"), Sectors[Best],
 		Candidates[Best].EnemiesInSector, Candidates[Best].NearestEnemyDistance, Candidates[Best].bInTurretRange ? 1 : 0, Candidates[Best].GravityPull,
 		HCJBalance::ScoreSpawn(Candidates[Best]));

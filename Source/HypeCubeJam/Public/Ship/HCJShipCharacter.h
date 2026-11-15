@@ -275,6 +275,17 @@ public:
 	bool IsSpawnShielded() const { return bSpawnShield && !bIsDead; }
 	/** SERVER ONLY: true while incoming damage is ignored after a spawn. */
 	bool IsSpawnProtected() const;
+	/**
+	 * SERVER ONLY (bots): world time at which this ship appeared in the sector it is in - its spawn, or its last jump
+	 * through a portal or a wormhole. Bots leave a person's ship alone for a moment after that (FHCJBotSkill::ArrivalGrace).
+	 */
+	float GetSectorArrivalTime() const { return SectorArrivalTime; }
+	/**
+	 * SERVER ONLY (bots): a bot is attacking this ship right now (called from its Think), and the world time of the
+	 * last such call - a person's ship gets a breather after its attacker is gone (FHCJBotSkill::RespiteSeconds).
+	 */
+	void NoteBotAttack(float Now) { LastBotAttackTime = Now; }
+	float GetLastBotAttackTime() const { return LastBotAttackTime; }
 
 	/** SERVER ONLY (balance statistics): seconds since the first hit of the current engagement (hits less than 4 s apart); -1 when never hit. */
 	float GetEngagementSeconds() const;
@@ -478,7 +489,11 @@ protected:
 	void ApplyShipLook();
 	/** Not on a dedicated server, every tick: engine volume/pitch, thruster glow and boost trail from the current speed. */
 	void TickShipEffects();
-	/** Not on a dedicated server, once per ship: explosion effect and sound at the ship. */
+	/**
+	 * Not on a dedicated server, once per ship: its explosion (UHCJEffectsDirector::PlayShipDeath - the hull fails for a
+	 * moment, then the blast) and, for the ship of the local player, the death camera of its controller.
+	 * With -HCJClassicBlast the single explosion effect and sound of before.
+	 */
 	void PlayDeathEffects();
 
 	UPROPERTY(VisibleAnywhere, Category = "HCJ")
@@ -640,8 +655,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Weapon")
 	float MuzzleOffset = 270.0f;
 
+	/** Seconds a new ship takes no damage (its first shot ends it). */
 	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Ship")
-	float SpawnProtectionSeconds = 2.0f;
+	float SpawnProtectionSeconds = 3.0f;
 
 	/** How long the hidden, dead ship stays around so the death replicates before destruction. */
 	UPROPERTY(EditDefaultsOnly, Category = "HCJ|Ship")
@@ -794,6 +810,10 @@ protected:
 	int32 LookPlayerId = INDEX_NONE;
 	/** PlayDeathEffects ran (or must not run: the ship was already dead when it arrived on this machine). */
 	bool bDeathEffectsPlayed = false;
+	/** Local: this was the ship of the local player when it was last seen alive (its explosion is the showcase: full detail, the death camera). */
+	bool bWasLocalShip = false;
+	/** Local world time until which the hull of the destroyed ship stays in view, failing (the blast follows); 0 = not failing. */
+	float HullFailEndTime = 0.0f;
 	/** Local sound cues: where the ship was last tick (a jump of a sector's width is a portal jump) and whether it boosted. */
 	FVector LastEffectLocation = FVector::ZeroVector;
 	FVector LastEffectVelocity = FVector::ZeroVector;
@@ -830,4 +850,30 @@ protected:
 	/** Balance statistics: first and latest hit of the current engagement. */
 	float EngagementStartTime = -1.0f;
 	float LastHitTime = -1000.0f;
+	/** See GetSectorArrivalTime and NoteBotAttack. */
+	float SectorArrivalTime = -1000.0f;
+	float LastBotAttackTime = -1000.0f;
+	/**
+	 * "Fair: event=hit" lines of a ship flown by a person: the steps of one attacker's phaser beam are added up and
+	 * written at most twice a second (and at once when the hit destroys the ship).
+	 */
+	struct FFairBeamLog
+	{
+		TWeakObjectPtr<AController> Attacker;
+		FString AttackerName;
+		bool bAttackerIsBot = false;
+		float Applied = 0.0f;
+		float Unscaled = 0.0f;
+		float Bearing = -1.0f;
+		float Distance = -1.0f;
+		const TCHAR* Facing = TEXT("NONE");
+		float LastLogTime = -1000.0f;
+	};
+	TArray<FFairBeamLog, TInlineAllocator<4>> FairBeamLogs;
+	/** The pilot's name as one token of a log line (taken at each hit: a destroyed ship has no player state). */
+	FString FairVictimName;
+	/** Writes one "Fair: event=hit" line. */
+	void LogFairHit(const FString& AttackerName, bool bAttackerIsBot, const TCHAR* Weapon, const TCHAR* Facing, float Bearing, float Distance, float Applied, float Unscaled, float Scale, bool bFatal) const;
+	/** Writes the beam sums that have waited long enough (all of them with bAll). */
+	void FlushFairBeamLogs(bool bAll);
 };
