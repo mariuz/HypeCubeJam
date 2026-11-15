@@ -106,6 +106,7 @@ void AHCJHUD::DrawHUD()
 		DrawCrosshair(*Ship);
 		DrawVitals(*Ship);
 		DrawFlightInfo(*Ship);
+		DrawSystems(*Ship);
 		DrawBoundsWarning(*Ship);
 		DrawPickupMarkers(*Ship);
 		DrawLoadout(*Ship, Controller);
@@ -356,6 +357,64 @@ void AHCJHUD::DrawFlightInfo(const AHCJShipCharacter& Ship)
 	}
 }
 
+void AHCJHUD::DrawSystems(const AHCJShipCharacter& Ship)
+{
+	const UWorld* World = GetWorld();
+	if (World == nullptr)
+	{
+		return;
+	}
+	const float UIScale = GetUIScale();
+	const float Now = static_cast<float>(World->GetTimeSeconds());
+	const float CenterX = Canvas->ClipX * 0.5f;
+	// Under the own ship, above the hint zone (the space above the crosshair belongs to target labels and warnings);
+	// one line per thing that is going on.
+	float Y = Canvas->ClipY * 0.79f;
+	const float Pulse = 0.6f + 0.4f * FMath::Sin(Now * 11.0f);
+	const FLinearColor SystemColor(0.55f, 0.8f, 1.0f);
+	const auto Line = [&](const FString& Markup, const FLinearColor& Color, float Scale)
+	{
+		Y += static_cast<float>(DrawKeyMarkup(Markup, FVector2D(CenterX, Y), Color, Scale, true).Y) + 4.0f * UIScale;
+	};
+
+	// Tractor beam: caught in one (the way out), or holding somebody.
+	if (Ship.GetTractorHolder() != nullptr)
+	{
+		Line(TEXT("CAUGHT IN TRACTOR BEAM  -  [Shift] BOOST TO BREAK FREE"), WithAlpha(HCJWarningColor, Pulse), 1.3f);
+	}
+	if (const AHCJShipCharacter* Held = Ship.GetTractorTarget())
+	{
+		const AHCJPlayerState* HeldState = Held->GetPlayerState<AHCJPlayerState>();
+		Line(FString::Printf(TEXT("TRACTOR LOCK  -  %s  %d m"), HeldState != nullptr ? *HeldState->GetPlayerName() : TEXT("?"),
+			FMath::RoundToInt32(static_cast<float>(FVector::Dist(Held->GetActorLocation(), Ship.GetActorLocation())) / 100.0f)), SystemColor, 1.2f);
+	}
+
+	// Warp drive.
+	const EHCJWarpPhase Phase = Ship.GetWarpPhase();
+	if (Phase == EHCJWarpPhase::Charging)
+	{
+		Line(TEXT("WARP CHARGING  -  keep [Z] held"), WithAlpha(SystemColor, Pulse), 1.2f);
+		const float BarWidth = 220.0f * UIScale;
+		DrawBar(FVector2D(CenterX - BarWidth * 0.5f, Y), FVector2D(BarWidth, FMath::Max(4.0f, 6.0f * UIScale)), Ship.GetWarpMeter(), SystemColor);
+		Y += FMath::Max(4.0f, 6.0f * UIScale) + 6.0f * UIScale;
+	}
+	else if (Phase == EHCJWarpPhase::Active)
+	{
+		Line(TEXT("WARP  -  let go of [Z] to drop out"), FLinearColor::White, 1.2f);
+	}
+
+	// Cloak.
+	if (Ship.IsCloaked())
+	{
+		Line(Ship.IsCloakRevealed() ? TEXT("CLOAK REVEALED  -  they can see you") : TEXT("CLOAKED  -  shields down, weapons offline   [C] decloak"),
+			Ship.IsCloakRevealed() ? WithAlpha(HCJWarningColor, Pulse) : FLinearColor(0.75f, 0.85f, 0.9f), 1.15f);
+	}
+	else if (const float SinceDecloak = Now - Ship.GetLastDecloakTime(); SinceDecloak >= 0.0f && SinceDecloak < HCJCloak::WeaponDelay)
+	{
+		Line(FString::Printf(TEXT("DECLOAKING  -  weapons in %.1f s"), HCJCloak::WeaponDelay - SinceDecloak), HCJWarningColor, 1.15f);
+	}
+}
+
 void AHCJHUD::DrawLoadout(const AHCJShipCharacter& Ship, const AHCJPlayerController* Controller)
 {
 	const float UIScale = GetUIScale();
@@ -384,7 +443,6 @@ void AHCJHUD::DrawLoadout(const AHCJShipCharacter& Ship, const AHCJPlayerControl
 	TArray<FPowerRow, TInlineAllocator<3>> PowerRows;
 	if (Ship.HasPowerup(EHCJPowerup::Overdrive)) { PowerRows.Add({ EHCJPickupItem::Overdrive, Ship.GetPowerupTimeRemaining(EHCJPowerup::Overdrive), Gameplay.OverdriveSeconds }); }
 	if (Ship.HasPowerup(EHCJPowerup::Quad)) { PowerRows.Add({ EHCJPickupItem::QuadDamage, Ship.GetPowerupTimeRemaining(EHCJPowerup::Quad), Gameplay.QuadSeconds }); }
-	if (Ship.HasPowerup(EHCJPowerup::Cloak)) { PowerRows.Add({ EHCJPickupItem::Cloak, Ship.GetPowerupTimeRemaining(EHCJPowerup::Cloak), Gameplay.CloakSeconds }); }
 
 	// Bottom right panel: WEAPON, its name and ammunition (with a bar), how to drop it, then the running power-ups.
 	const float Width = 250.0f * TextScale;
@@ -400,7 +458,11 @@ void AHCJHUD::DrawLoadout(const AHCJShipCharacter& Ship, const AHCJPlayerControl
 	const bool bTorpedoes = HCJTorpedo::IsEnabled();
 	const float PipHeight = FMath::Max(9.0f, 13.0f * UIScale);
 	const float TorpedoBlock = bTorpedoes ? 6.0f * UIScale + SmallRow + PipHeight + 4.0f * UIScale + FMath::Max(3.0f, 4.0f * UIScale) + 2.0f * UIScale : 0.0f;
-	const float Height = 2.0f * Pad + SmallRow + NameRow + ((bBlaster && !bPhaser) ? 0.0f : BarRow) + DropRow + TorpedoBlock + PowerRows.Num() * PowerRow + (PowerRows.Num() > 0 ? 4.0f * UIScale : 0.0f);
+	// Warp drive, cloak and tractor beam: a key, a state and a thin bar each.
+	const float SystemBar = FMath::Max(3.0f, 4.0f * UIScale);
+	const float SystemTextRow = static_cast<float>(DrawKeyMarkup(TEXT("[Z] WARP"), FVector2D::ZeroVector, HCJDimTextColor, 0.75f, false, false).Y) + 2.0f * UIScale;
+	const float SystemsBlock = 6.0f * UIScale + 3.0f * (SystemTextRow + SystemBar + 4.0f * UIScale);
+	const float Height = 2.0f * Pad + SmallRow + NameRow + ((bBlaster && !bPhaser) ? 0.0f : BarRow) + DropRow + TorpedoBlock + SystemsBlock + PowerRows.Num() * PowerRow + (PowerRows.Num() > 0 ? 4.0f * UIScale : 0.0f);
 	const float Left = Canvas->ClipX - Margin - Width;
 	const float Top = Canvas->ClipY - Margin - Height;
 	const float InnerWidth = Width - 2.0f * Pad - 4.0f * UIScale;
@@ -490,6 +552,74 @@ void AHCJHUD::DrawLoadout(const AHCJShipCharacter& Ship, const AHCJPlayerControl
 		// Reload: runs full after every shot.
 		DrawBar(FVector2D(X, Y), FVector2D(InnerWidth, FMath::Max(3.0f, 4.0f * UIScale)), Count > 0 ? Reload : 0.0f, bReady ? FLinearColor(0.3f, 1.0f, 0.35f) : TorpedoColor);
 		Y += FMath::Max(3.0f, 4.0f * UIScale) + 2.0f * UIScale;
+	}
+	{
+		const float Now = World != nullptr ? static_cast<float>(World->GetTimeSeconds()) : 0.0f;
+		const FLinearColor ReadyColor(0.3f, 1.0f, 0.35f);
+		const FLinearColor SystemColor(0.55f, 0.8f, 1.0f);
+		Y += 4.0f * UIScale;
+		DrawRect(FLinearColor(HCJDimTextColor.R, HCJDimTextColor.G, HCJDimTextColor.B, 0.35f), X, Y, InnerWidth, FMath::Max(1.0f, UIScale));
+		Y += 2.0f * UIScale;
+		const auto SystemRow = [&](const TCHAR* Markup, const FString& State, const FLinearColor& StateColor, float Fraction, const FLinearColor& BarColor)
+		{
+			DrawKeyMarkup(Markup, FVector2D(X, Y), HCJDimTextColor, 0.75f, false);
+			DrawLabel(State, FVector2D(X + InnerWidth - MeasureLabel(State, 0.8f, true).X, Y + 1.0f * UIScale), StateColor, 0.8f, false, true);
+			Y += SystemTextRow;
+			DrawBar(FVector2D(X, Y), FVector2D(InnerWidth, SystemBar), Fraction, BarColor);
+			Y += SystemBar + 4.0f * UIScale;
+		};
+
+		// Warp drive: charge while the key is held, what is left of the jump, then the cooldown.
+		switch (Ship.GetWarpPhase())
+		{
+		case EHCJWarpPhase::Charging:
+			SystemRow(TEXT("[Z] WARP"), TEXT("CHARGING"), WithAlpha(SystemColor, 0.65f + 0.35f * FMath::Sin(Now * 12.0f)), Ship.GetWarpMeter(), SystemColor);
+			break;
+		case EHCJWarpPhase::Active:
+			SystemRow(TEXT("[Z] WARP"), TEXT("AT WARP"), FLinearColor::White, Ship.GetWarpMeter(), FLinearColor::White);
+			break;
+		case EHCJWarpPhase::Cooldown:
+			SystemRow(TEXT("[Z] WARP"), FString::Printf(TEXT("%d s"), FMath::CeilToInt(Ship.GetWarpCooldownSeconds())), HCJDimTextColor, 1.0f - Ship.GetWarpMeter(), HCJDimTextColor);
+			break;
+		default:
+			SystemRow(TEXT("[Z] WARP"), Ship.IsCloaked() ? TEXT("NOT CLOAKED") : Ship.GetTractorHolder() != nullptr ? TEXT("HELD") : TEXT("READY"),
+				(Ship.IsCloaked() || Ship.GetTractorHolder() != nullptr) ? HCJWarningColor : ReadyColor, 1.0f, SystemColor);
+			break;
+		}
+
+		// Cloak: the meter drains while cloaked.
+		const float CloakEnergy = Ship.GetCloakEnergy();
+		if (Ship.IsCloaked())
+		{
+			const bool bRevealed = Ship.IsCloakRevealed();
+			SystemRow(TEXT("[C] CLOAK"), bRevealed ? TEXT("REVEALED") : TEXT("CLOAKED"), bRevealed ? HCJWarningColor : FLinearColor::White, CloakEnergy,
+				CloakEnergy < 0.25f ? HCJWarningColor : FLinearColor(0.75f, 0.85f, 0.9f));
+		}
+		else if (Ship.IsCloakLocked())
+		{
+			SystemRow(TEXT("[C] CLOAK"), TEXT("RECHARGING"), HCJWarningColor, CloakEnergy, HCJWarningColor);
+		}
+		else
+		{
+			SystemRow(TEXT("[C] CLOAK"), FString::Printf(TEXT("%d %%"), FMath::RoundToInt32(CloakEnergy * 100.0f)), CloakEnergy >= 0.999f ? ReadyColor : HCJTextColor, CloakEnergy,
+				FLinearColor(0.75f, 0.85f, 0.9f));
+		}
+
+		// Tractor beam: it feeds on the phaser bank.
+		const float Bank = Ship.GetPhaserCharge();
+		if (Ship.GetTractorTarget() != nullptr)
+		{
+			SystemRow(TEXT("[R] TRACTOR"), TEXT("LOCK"), FLinearColor::White, Bank, SystemColor);
+		}
+		else if (Ship.GetTractorHolder() != nullptr)
+		{
+			SystemRow(TEXT("[R] TRACTOR"), TEXT("CAUGHT"), WithAlpha(HCJWarningColor, 0.6f + 0.4f * FMath::Sin(Now * 12.0f)), Bank, HCJWarningColor);
+		}
+		else
+		{
+			const bool bNoPower = Ship.IsPhaserLocked();
+			SystemRow(TEXT("[R] TRACTOR"), bNoPower ? TEXT("NO POWER") : TEXT("READY"), bNoPower ? HCJWarningColor : ReadyColor, Bank, bNoPower ? HCJWarningColor : SystemColor);
+		}
 	}
 	if (PowerRows.Num() > 0)
 	{
@@ -907,10 +1037,17 @@ void AHCJHUD::DrawKillFeed(const AHCJGameState& GameState, const FVector2D& TopR
 		}
 
 		// "killer [WEAPON] victim", or "victim lost to CAUSE" for a death nobody caused.
+		// (With the ship types: "Ann (INT)  [PHASER]  Bot-03 (CRU)".)
+		const auto WithType = [](const FString& Name, uint8 Type)
+		{
+			return Type < HCJShipTypes::NumTypes ? FString::Printf(TEXT("%s (%s)"), *Name, HCJShipTypes::Get(Type).ShortName) : Name;
+		};
+		const FString Killer = WithType(Entry.KillerName, Entry.KillerType);
+		const FString Victim = WithType(Entry.VictimName, Entry.VictimType);
 		const FString Text = Entry.KillerName.IsEmpty()
-			? FString::Printf(TEXT("%s  lost to  %s"), *Entry.VictimName, Entry.Cause.IsEmpty() ? TEXT("THE VOID") : *Entry.Cause)
-			: Entry.Cause.IsEmpty() ? FString::Printf(TEXT("%s  >  %s"), *Entry.KillerName, *Entry.VictimName)
-			: FString::Printf(TEXT("%s  [%s]  %s"), *Entry.KillerName, *Entry.Cause, *Entry.VictimName);
+			? FString::Printf(TEXT("%s  lost to  %s"), *Victim, Entry.Cause.IsEmpty() ? TEXT("THE VOID") : *Entry.Cause)
+			: Entry.Cause.IsEmpty() ? FString::Printf(TEXT("%s  >  %s"), *Killer, *Victim)
+			: FString::Printf(TEXT("%s  [%s]  %s"), *Killer, *Entry.Cause, *Victim);
 
 		const FVector2D Size = MeasureLabel(Text, TextScale);
 		// Fade out over the last second.
@@ -1062,6 +1199,7 @@ void AHCJHUD::DrawScoreboard(const AHCJGameState& GameState, const AHCJPlayerSta
 
 	const float RankX = Left + Padding;
 	const float NameX = Left + Padding + Width * 0.06f;
+	const float ShipX = Left + Width * 0.36f;
 	const float KillsX = Left + Width * 0.52f;
 	const float DeathsX = Left + Width * 0.64f;
 	const float TurretsX = Left + Width * 0.76f;
@@ -1082,6 +1220,7 @@ void AHCJHUD::DrawScoreboard(const AHCJGameState& GameState, const AHCJPlayerSta
 
 	DrawLabel(TEXT("#"), FVector2D(RankX, Y), HCJDimTextColor, TextScale);
 	DrawLabel(TEXT("PILOT"), FVector2D(NameX, Y), HCJDimTextColor, TextScale);
+	DrawLabel(TEXT("SHIP"), FVector2D(ShipX, Y), HCJDimTextColor, TextScale);
 	DrawLabel(TEXT("KILLS"), FVector2D(KillsX, Y), HCJDimTextColor, TextScale);
 	DrawLabel(TEXT("DEATHS"), FVector2D(DeathsX, Y), HCJDimTextColor, TextScale);
 	DrawLabel(TEXT("TURRETS"), FVector2D(TurretsX, Y), HCJDimTextColor, TextScale);
@@ -1110,6 +1249,7 @@ void AHCJHUD::DrawScoreboard(const AHCJGameState& GameState, const AHCJPlayerSta
 		DrawLabel(FString::FromInt(Rank), FVector2D(RankX, Y), HCJDimTextColor, TextScale);
 		// Bold for the local player, at the same height as the other rows (the bold style is 1.3 times larger).
 		DrawLabel(Name, FVector2D(NameX, Y), RowColor, bLocal ? TextScale / 1.3f : TextScale, false, bLocal);
+		DrawLabel(HCJShipTypes::Get(PlayerState->GetShipType()).Name, FVector2D(ShipX, Y), HCJTextColor, TextScale * 0.9f);
 		DrawLabel(FString::FromInt(PlayerState->GetKills()), FVector2D(KillsX, Y), NumberColor, TextScale);
 		DrawLabel(FString::FromInt(PlayerState->GetDeaths()), FVector2D(DeathsX, Y), NumberColor, TextScale);
 		DrawLabel(FString::FromInt(PlayerState->GetTurretKills()), FVector2D(TurretsX, Y), NumberColor, TextScale);

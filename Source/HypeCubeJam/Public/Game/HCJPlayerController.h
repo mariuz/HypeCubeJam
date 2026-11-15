@@ -34,6 +34,9 @@ struct FInputActionValue;
  *   Respawn (bool)   R / Enter                                  -> ServerRequestRespawn when shipless
  *   DropWeapon (bool) G                                         -> AHCJShipCharacter::DropWeapon (back to the blaster)
  *   Torpedo (bool)   right mouse button / X                     -> AHCJShipCharacter::FireTorpedo (one per press)
+ *   Warp   (bool)    Z, held                                    -> AHCJShipCharacter::SetWarping (charge, then warp while held)
+ *   Cloak  (bool)    C                                          -> AHCJShipCharacter::ToggleCloak
+ *   Tractor (bool)   R, held (R also asks for a respawn when shipless) -> AHCJShipCharacter::SetTractoring
  * Handlers do nothing when there is no live ship (except Scoreboard and the respawn requests).
  *
  * MENU (local controller only): the title menu and the in-match menu are one Slate widget (SHCJMenu) that this
@@ -75,6 +78,11 @@ public:
 	void MenuLeave();
 	void MenuQuit();
 	void MenuCancelConnect();
+	/** Hangar: sends the ship chosen in UHCJUserSettings to the server (it applies to the next ship, or to one still under its spawn shield). */
+	void MenuApplyShip();
+	/** Client -> server: "I want this ship". Validated by AHCJGameMode::SetShipChoice; 255 = pick hull / paint for me. */
+	UFUNCTION(Server, Reliable)
+	void ServerSetShipChoice(uint8 Type, uint8 Variant, uint8 Skin);
 	/** Esc: closes the in-match menu, or opens it. Does nothing in the title menu. */
 	void MenuEscape();
 
@@ -121,10 +129,11 @@ public:
 
 	/**
 	 * Development aid, console command "HCJParkEnemy 5000 [right] [up]" (listen host, not in shipping builds): puts
-	 * the nearest other ship at rest that many uu in front of the own ship (offset to the right / up), for pictures.
+	 * the nearest other ship (Index 1: the second nearest, ...) at rest that many uu in front of the own ship (offset to
+	 * the right / up), for pictures.
 	 */
 	UFUNCTION(Exec)
-	void HCJParkEnemy(float Distance = 5000.0f, float Right = 0.0f, float Up = 0.0f);
+	void HCJParkEnemy(float Distance = 5000.0f, float Right = 0.0f, float Up = 0.0f, int32 Index = 0);
 
 	virtual void PlayerTick(float DeltaTime) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -187,7 +196,10 @@ public:
 	 * lobbies / leaderboards (the online pages), refresh (the online page that is open), joinlobby <index>,
 	 * torpedo (fires one of the own), enemytorpedo [distance] (listen host: the nearest other ship is put that far
 	 * ahead, locks the own ship and fires one at it), torpedostock <n> (listen host: fills the own stock up to n),
-	 * slomo <factor> (listen host: time dilation, for pictures).
+	 * slomo <factor> (listen host: time dilation, for pictures), warp <0|1> / tractor <0|1> (the own key, held or let go),
+	 * cloak (the own toggle), ship <type>[,<hull>[,<paint>]] (the hangar's choice; a listen host's ship becomes it at
+	 * once), hangar (the hangar page), and for a listen host with "peace": enemyship <type>.., enemywarp <0|1>,
+	 * enemycloak, enemytractor <0|1> (the nearest other ship).
 	 */
 	UFUNCTION(Exec)
 	void HCJMenuCmd(const FString& Action, const FString& Argument = TEXT(""));
@@ -252,6 +264,14 @@ protected:
 	void HandleRespawn(const FInputActionValue& Value);
 	void HandleDropWeapon(const FInputActionValue& Value);
 	void HandleTorpedo(const FInputActionValue& Value);
+	void HandleWarpStarted(const FInputActionValue& Value);
+	void HandleWarpCompleted(const FInputActionValue& Value);
+	void HandleCloak(const FInputActionValue& Value);
+	void HandleTractorStarted(const FInputActionValue& Value);
+	void HandleTractorCompleted(const FInputActionValue& Value);
+
+	/** Local, every frame: the turning hull in front of the camera while the hangar page is open (created / removed as needed). */
+	void UpdateHangarPreview(float DeltaTime);
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInputMappingContext> MappingContext;
@@ -282,6 +302,27 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> TorpedoAction;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> WarpAction;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> CloakAction;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> TractorAction;
+
+	/** Hangar preview: a local actor with one mesh component, the hull material instance, what it shows and its turn. */
+	UPROPERTY(Transient)
+	TObjectPtr<AActor> HangarPreview;
+
+	UPROPERTY(Transient)
+	TObjectPtr<class UStaticMeshComponent> HangarPreviewMesh;
+
+	int32 HangarPreviewKey = -1;
+	float HangarPreviewYaw = 0.0f;
+	/** The ship choice of the settings was sent to the server (once per controller, and again from the hangar). */
+	bool bShipChoiceSent = false;
 
 	TWeakObjectPtr<AHCJShipCharacter> Target;
 	bool bManualTarget = false;

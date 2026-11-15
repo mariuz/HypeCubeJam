@@ -5,6 +5,8 @@
 #include "Math/RandomStream.h"
 #include "Ship/HCJPhaser.h"
 #include "Ship/HCJShieldFacings.h"
+#include "Ship/HCJShipSystems.h"
+#include "Ship/HCJShipTypes.h"
 #include "Ship/HCJWeapons.h"
 #include "Templates/SubclassOf.h"
 #include "HCJShipCharacter.generated.h"
@@ -75,6 +77,28 @@ class UStaticMeshComponent;
  * actor it holds (PhaserTarget). Every machine draws the beam from that and from the ship it sees, every frame
  * (TickPhaserEffects). The bank is replicated to the owner in one byte. With the bank emptied the trigger fires the
  * blaster until it has recharged to a level; the pilot can also switch the base weapon to the blaster (ToggleBaseWeapon).
+ *
+ * SHIP TYPES (Ship/HCJShipTypes.h): the server stamps every ship with the type, hull and paint its player chose
+ * (ServerInitShipType; replicated to everybody) and every machine applies the row of the type table (ApplyShipType):
+ * flight model, hull and shield capacity, size of collision / hit sphere / bubble, torpedoes, the look.
+ *
+ * WARP DRIVE (Ship/HCJShipSystems.h): lives in the movement simulation (UHCJShipMovementComponent) - the key travels in
+ * the move flags, the owning client predicts the jump. The ship publishes the phase in one byte for everybody's
+ * effects (WarpStateRep), tells the owner when the server stopped the drive (WarpCancelCount: a hit while charging, a
+ * tractor beam, a collision, a portal), and keeps weapons off while the drive is busy.
+ *
+ * CLOAKING DEVICE (server authoritative): a toggle (ToggleCloak -> ServerSetCloak) with a meter. Cloaked: the Cloak
+ * bit of PowerupFlags (everybody), shields down (UHCJHealthComponent::SetShieldsSuppressed), no weapons, no warp; a
+ * fire attempt drops the cloak and weapons work a second later. REVEALED (bit CloakRevealed) while hit, held by a
+ * tractor beam or very close to an enemy: still cloaked, but seen and targeted by everybody. Other machines draw a
+ * cloaked ship with the cloak material (a faint shimmer) and leave it off radar, brackets, glints and locks; its
+ * pilot sees it half transparent.
+ *
+ * TRACTOR BEAM (server authoritative): held key (SetTractoring -> ServerSetTractor). The server picks the locked
+ * target (else the nearest ship in the cone), checks range, cone and line of sight, and publishes who holds whom:
+ * TractorTarget on the holder (the beam everybody draws), TractorHolder on the victim (its movement simulation pulls
+ * and slows it, on the server and in its owner's prediction). It drains the holder's phaser bank and breaks when the
+ * victim boosts long enough, the holder takes damage, a rock gets in between, or range / cone are left.
  *
  * PORTALS (server): see RequestPortalTeleport.
  *
@@ -193,6 +217,10 @@ public:
 	/** Bit of EHCJPowerup; valid on every machine. */
 	bool HasPowerup(uint8 PowerupBit) const { return (PowerupFlags & PowerupBit) != 0; }
 	bool IsCloaked() const { return HasPowerup(EHCJPowerup::Cloak); }
+	/** Cloaked but given away for the moment (a hit, a tractor beam, an enemy very close). Every machine. */
+	bool IsCloakRevealed() const { return IsCloaked() && HasPowerup(EHCJPowerup::CloakRevealed); }
+	/** Cloaked and not revealed: other ships do not see it - no marker, radar blip, lock or aim assist. Every machine. */
+	bool IsCloakHidden() const { return IsCloaked() && !HasPowerup(EHCJPowerup::CloakRevealed); }
 	/** Seconds a power-up still runs. Server and owning client only (0 elsewhere or when it is not active). */
 	float GetPowerupTimeRemaining(uint8 PowerupBit) const;
 
@@ -248,6 +276,46 @@ public:
 
 	/** SERVER ONLY (balance statistics): seconds since the first hit of the current engagement (hits less than 4 s apart); -1 when never hit. */
 	float GetEngagementSeconds() const;
+
+	// ---- ship type ----
+
+	/** SERVER ONLY: gives the ship its type, hull (HCJShipTypes::Auto = by player id) and paint (Auto = by player colour), with full hull, shields and stock. */
+	void ServerInitShipType(uint8 InType, uint8 InVariant, uint8 InSkin);
+	/** Every machine. */
+	EHCJShipType GetShipType() const { return static_cast<EHCJShipType>(ShipType); }
+	const FHCJShipTypeDef& GetTypeDef() const { return HCJShipTypes::Get(ShipType); }
+
+	// ---- warp drive ----
+
+	/** Control API: the warp key (owning client: predicted, sent in the move flags; server: bots, listen host). */
+	void SetWarping(bool bNewWarping);
+	/** Every machine: what the drive does (owning client and server: their own simulation; others: the replicated byte). */
+	EHCJWarpPhase GetWarpPhase() const;
+	/** Owning client and server: 0..1 of the current phase - charge while charging, what is left of the jump at warp, how far from ready while cooling down. */
+	float GetWarpMeter() const;
+	/** Owning client and server: seconds until the drive is ready (0 when idle). */
+	float GetWarpCooldownSeconds() const;
+
+	// ---- cloaking device ----
+
+	/** Control API: raises / drops the cloak (owning client -> ServerSetCloak; server directly). */
+	void ToggleCloak();
+	void SetCloaking(bool bNewCloaking);
+	/** Meter 0..1 and whether it is locked after running dry. Server and owning client. */
+	float GetCloakEnergy() const;
+	bool IsCloakLocked() const;
+	/** Server and owning client: cloaked, just decloaked, or the warp drive is busy - the trigger does nothing. */
+	bool AreWeaponsOffline() const;
+	/** Every machine, local time: when this ship was last seen dropping its cloak; -1000 when never. */
+	float GetLastDecloakTime() const { return LocalDecloakTime; }
+
+	// ---- tractor beam ----
+
+	/** Control API: hold the tractor beam key (owning client -> ServerSetTractor; server directly). */
+	void SetTractoring(bool bNewTractoring);
+	/** Every machine: the ship this one holds / the ship that holds this one; nullptr when none. */
+	AHCJShipCharacter* GetTractorTarget() const { return IsValid(TractorTarget) ? TractorTarget.Get() : nullptr; }
+	AHCJShipCharacter* GetTractorHolder() const { return IsValid(TractorHolder) ? TractorHolder.Get() : nullptr; }
 
 	// ---- portals (server) ----
 
@@ -336,6 +404,44 @@ protected:
 
 	UFUNCTION()
 	void OnRep_IsDead();
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetCloak(bool bNewCloaking);
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetTractor(bool bNewTractoring);
+
+	/** Clients: type, hull or paint arrived or changed. */
+	UFUNCTION()
+	void OnRep_ShipLook();
+	/** Clients (and the server by hand): the drive changed phase - sounds, the flash, a log line. */
+	UFUNCTION()
+	void OnRep_WarpState(uint8 OldState);
+	/** Owning client: the server stopped the drive. */
+	UFUNCTION()
+	void OnRep_WarpCancel();
+	UFUNCTION()
+	void OnRep_TractorTarget();
+	/** Every machine: who holds this ship changed - the movement simulation gets the pull. */
+	UFUNCTION()
+	void OnRep_TractorHolder();
+
+	/** Every machine: applies the row of the type table (flight model, sizes, hull / shields, look). Idempotent. */
+	void ApplyShipType();
+	/** Server tick: warp bookkeeping, the cloak meter and its reveals, the tractor beam. */
+	void ServerTickSystems(float DeltaSeconds);
+	/** Server: lets go of the held ship. bBroken: torn away (a cooldown follows) rather than released. */
+	void ServerReleaseTractor(const TCHAR* Why, bool bBroken);
+	/** Server: stops the warp drive (cooldown; the owning client is told). */
+	void ServerCancelWarp(const TCHAR* Why);
+	/** Server: no rock between this ship and Other. */
+	bool HasClearLineTo(const AHCJShipCharacter& Other) const;
+	/** Server: the trigger does nothing right now (cloaked, just decloaked, warp drive busy). */
+	bool ServerWeaponsBlocked() const;
+	/** Not on a dedicated server: the cloak material on / off the hull, by who looks (see CloakSkinState). */
+	void ApplyCloakLook();
+	/** Not on a dedicated server, every tick: warp streaks and flash, the tractor beam, the cloak shimmer. */
+	void TickSystemEffects(float Now, float DeltaSeconds);
 
 	/** Bound to HealthComponent->OnDepleted in BeginPlay (server): calls Die(Killer, Causer). */
 	void HandleHealthDepleted(UHCJHealthComponent* Component, AController* Killer, AActor* Causer);
@@ -599,6 +705,67 @@ protected:
 
 	float LastTorpedoFireTime = -1000.0f;
 
+	/** EHCJShipType; hull within the type and paint (HCJShipTypes::Auto = derived from the player). To everybody. */
+	UPROPERTY(ReplicatedUsing = OnRep_ShipLook)
+	uint8 ShipType = static_cast<uint8>(EHCJShipType::Fighter);
+
+	UPROPERTY(ReplicatedUsing = OnRep_ShipLook)
+	uint8 ShipVariant = HCJShipTypes::Auto;
+
+	UPROPERTY(ReplicatedUsing = OnRep_ShipLook)
+	uint8 ShipSkin = HCJShipTypes::Auto;
+
+	/** EHCJWarpPhase of the drive, to everybody (effects on other machines). */
+	UPROPERTY(ReplicatedUsing = OnRep_WarpState)
+	uint8 WarpStateRep = 0;
+
+	/** Counts the times the server stopped the drive; owner only. */
+	UPROPERTY(ReplicatedUsing = OnRep_WarpCancel)
+	uint8 WarpCancelCount = 0;
+
+	/** The ship this one holds with its tractor beam. To everybody (the beam). */
+	UPROPERTY(ReplicatedUsing = OnRep_TractorTarget)
+	TObjectPtr<AHCJShipCharacter> TractorTarget;
+
+	/** The ship whose tractor beam holds this one. To everybody (the owner predicts the pull). */
+	UPROPERTY(ReplicatedUsing = OnRep_TractorHolder)
+	TObjectPtr<AHCJShipCharacter> TractorHolder;
+
+	/** HCJCloak::PackEnergy of the cloak meter; owner only (HUD). */
+	UPROPERTY(Replicated)
+	uint8 CloakEnergyRep = 127;
+
+	/** Cosmetic: the cloak material instance, the streak quad in front of the own camera, the tractor beam quad. */
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> CloakMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMeshComponent> WarpStreakMesh;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> WarpStreakMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMeshComponent> TractorBeamMesh;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> TractorBeamMaterial;
+
+	/** Local look: 0 not cloaked, 1 another ship's shimmer, 2 the own ship half transparent, 3 revealed (flicker); -1 = must be applied again. */
+	int32 CloakSkinState = 0;
+	/** Material slot of the thruster glow (INDEX_NONE: none), to put it back after a cloak. */
+	int32 ThrusterGlowSlot = INDEX_NONE;
+	/** The type / hull / paint the look and the numbers were last applied for. */
+	int32 AppliedTypeKey = -1;
+	int32 LookTypeKey = -1;
+	/** Local: the warp phase last seen and when it changed; when the cloak was last seen dropping. */
+	uint8 WarpPhaseLook = 0;
+	float WarpPhaseLookTime = -1000.0f;
+	float LocalDecloakTime = -1000.0f;
+	bool bWasCloakedLook = false;
+	/** Owning client: the tractor key as last sent. */
+	bool bLocalWantsTractor = false;
+
 	/** Local look: the cloak / quad state the meshes were last set up for. */
 	bool bCloakLook = false;
 	bool bQuadLook = false;
@@ -638,6 +805,19 @@ protected:
 	FVector PendingTeleportDelta = FVector::ZeroVector;
 	TWeakObjectPtr<AController> LastDamager;
 	float LastDamagerTime = -1000.0f;
+	// Warp, cloak, tractor (server).
+	FHCJCloakDevice Cloak;
+	bool bWantsCloak = false;
+	bool bWantsTractor = false;
+	/** World time the cloak last dropped (weapons work HCJCloak::WeaponDelay later), the end of a cloak pad's free time, the next proximity check. */
+	float DecloakTime = -1000.0f;
+	float CloakFreeEndTime = 0.0f;
+	float NextCloakProximityTime = 0.0f;
+	/** Tractor: when the beam may be used again, the next line-of-sight check, damage taken while holding, boost time while held. */
+	float TractorReadyTime = 0.0f;
+	float NextTractorSightTime = 0.0f;
+	float TractorDamageTaken = 0.0f;
+	float TractorBoostSeconds = 0.0f;
 	/** Balance statistics: first and latest hit of the current engagement. */
 	float EngagementStartTime = -1.0f;
 	float LastHitTime = -1000.0f;

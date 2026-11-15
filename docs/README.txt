@@ -3,6 +3,7 @@ HypeCubeJam - multiplayer space shooter on a randomly connected hypercube of sec
 Start:  HypeCubeJam.exe            plays a 10 s intro (any key, mouse button or gamepad button skips it;
                                     -HCJNoIntro starts without it), then opens the title menu.
                                     PLAY hosts a match with bots (one click).
+                                    HANGAR: choose your ship - type, hull and paint (see "Ship types").
                                     The menu also has: number of bots, hypercube size (3D-5D), bot difficulty,
                                     seed, pilot name, JOIN by address, CONTROLS (all keys), SETTINGS (mouse
                                     sensitivity, volumes, hints, camera shake, enemy highlight, music), QUIT.
@@ -29,8 +30,9 @@ Controls: mouse aim (the ship flies where you look), W/S/A/D thrust, Space/E up,
           T next target, F nearest enemy, middle mouse holds the target,
           hold left mouse for the phaser beam, B switches phaser / blaster,
           G drops a pickup weapon (back to the phaser), V camera,
+          hold Z: warp drive, C: cloak on / off, hold R: tractor beam on the target,
           Tab scoreboard, F1 controls overlay, H hints on / off, R or Enter or fire: respawn early,
-          Esc menu (resume, settings, controls, leave to the title menu, quit).
+          Esc menu (resume, hangar, settings, controls, leave to the title menu, quit).
 
 Hints: the first ship gets key prompts at the bottom of the screen (move, fire, boost, target keys); each goes
 away when you have done it. Later, short tips appear near portals, wormholes, pads, stations and black holes, when
@@ -39,7 +41,7 @@ only a few times. H or SETTINGS switches them off.
 
 Enemies glow: every other ship has a red rim, a red engine glow and trail, and from a distance a bright red glint
 that never gets smaller on the screen (your own ship keeps its own colour). SETTINGS > Enemy highlight switches the
-rim and the big glint off. A cloaked ship shows none of it.
+rim and the big glint off. A cloaked ship shows none of it: only a faint shimmer of its hull.
 On screen: every enemy in the sector has a heavy red bracket with name, distance and hull (dimmer when behind a rock);
 red arrows at the screen edge point to enemies out of view. The enemy nearest your crosshair is the target
 (orange diamond): put the crosshair on its yellow lead circle - it turns green and says FIRE when you are on it.
@@ -68,13 +70,38 @@ a pickup weapon takes the place of the phaser and gives it back when it is empty
 Rocks: phasers and torpedoes break asteroids - big ones into two or three pieces, small ones for good (bolts do
 nothing to rock). The field is whole again when the next match starts.
 Explosions push the ships around them; SETTINGS has a switch for the camera shake.
+
+Ship types (HANGAR in the title menu, and under Esc for your next ship): five types, each with eight hulls and ten
+paints. The hull turns next to the page; bars show speed, agility, hull, shields, firepower and systems.
+  Interceptor  fastest and most agile, light hull, phasers that recharge quickly, 2 torpedoes
+  Fighter      the all-rounder, 4 torpedoes
+  Gunship      slow, thick hull, fore armour (hits from the front do less), harder phasers and bolts, 6 torpedoes
+  Scout        fast, longest boost and cloak, the quickest warp drive, light hull, weaker guns
+  Cruiser      biggest and slowest, strongest shields all round, the strongest and longest tractor beam
+The scoreboard, the kill feed and the target panel show the type of every ship. Bots fly a mix of all five.
+Warp drive: point the nose where you want to go and hold Z. The drive charges for 1.6 s (WARP CHARGING), then the ship
+jumps ahead in a straight line at 150 m/s for as long as you hold the key, 2.2 to 3 s at most; then it must cool down
+(6 to 16 s by ship type; WARP row at the bottom right). No weapons while it charges or runs; a hit while it charges
+stops it; it drops out by itself before rock and at the edge of the sector, and a ship that still runs into something
+at warp is damaged. A portal can be entered at warp: you come out of it at boost speed. No warp while cloaked or while
+a tractor beam holds you.
+Cloak: C raises and drops it. Cloaked, other pilots see only a faint shimmer - no marker, no radar blip, no lock, no
+aim assist - while the CLOAK meter lasts (8 to 20 s by ship type; it refills slowly). Your shields are down while
+cloaked and come back from nothing afterwards, and weapons are off: pulling the trigger drops the cloak, weapons work
+a second later. A hit, an enemy within 15 m or a tractor beam reveals you for a moment (CLOAK REVEALED). A CLOAK pad
+fills the meter and stops the drain for 8 s.
+Tractor beam: hold R with a target within reach (60 to 85 m by ship type, in front of you, nothing in between): a
+blue-white beam holds it - it is pulled towards you and can only fly at about half speed - while you shoot it. The
+beam feeds on the phaser bank (about 3 s from a full bank, 5 s on a cruiser). It lets go when the target boosts for
+about a second, when you take a hard hit, when rock gets in between or the target leaves the beam's reach. Caught in
+one yourself (CAUGHT IN TRACTOR BEAM): hold Shift, or shoot the ship that holds you.
 A fresh ship has a 2 s spawn shield (lights shimmer white) until it fires. Bot difficulty (easy / normal / hard) is set in the menu; easy is the default.
 Fly through the portals - rings with a swirl in the colour of the sector they lead to - to reach neighbouring
 sectors; from afar a portal is a glint in that colour. Stay away from black holes.
 Space stations (two wheels on an axle, with a mast and panels) have gun turrets that shoot every ship in range;
 turrets can be destroyed.
 Bright ringed spheres are wormholes: shortcuts to far sectors (dashed lines on the map).
-Glowing pads hold pickups: repair, shield cell, overdrive (speed), quad damage, cloak, torpedoes, and four
+Glowing pads hold pickups: repair, shield cell, overdrive (speed), quad damage, cloak cell, torpedoes, and four
 limited-ammo weapons (scatter cannon, rail shot, homing missiles, rapid pulse). Fly over a pad to take it.
 Host options without the menu (append to the exe as one argument):
   "/Engine/Maps/Entry?listen?Seed=1234?Dim=4?Bots=8?Difficulty=0?Pickups=1?Wormholes=4?Stations=1"

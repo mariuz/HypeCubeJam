@@ -45,6 +45,12 @@
 #include "InputModifiers.h"
 #include "Ship/HCJHealthComponent.h"
 #include "Ship/HCJShipCharacter.h"
+#include "Ship/HCJShipMovementComponent.h"
+#include "Ship/HCJShipTypes.h"
+#include "Camera/CameraComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
 namespace
 {
@@ -188,6 +194,8 @@ void AHCJPlayerController::OpenMenu(EHCJMenuPage Page, const FString& Notice)
 	{
 		Ship->SetFiring(false);
 		Ship->SetBoosting(false);
+		Ship->SetWarping(false);
+		Ship->SetTractoring(false);
 	}
 }
 
@@ -432,6 +440,13 @@ void AHCJPlayerController::PlayerTick(float DeltaTime)
 		}
 	}
 
+	// The ship chosen in the hangar, once: the server uses it for this player's ships.
+	if (!bShipChoiceSent && PlayerState != nullptr)
+	{
+		MenuApplyShip();
+	}
+	UpdateHangarPreview(DeltaTime);
+
 	// The server needs the lock for this ship's homing missiles.
 	if (AHCJShipCharacter* Ship = GetShip())
 	{
@@ -448,7 +463,7 @@ void AHCJPlayerController::PlayerTick(float DeltaTime)
 AHCJShipCharacter* AHCJPlayerController::GetTarget() const
 {
 	AHCJShipCharacter* Ship = Target.Get();
-	return (IsValid(Ship) && !Ship->IsDead() && !Ship->IsCloaked() && Ship != GetPawn()) ? Ship : nullptr;
+	return (IsValid(Ship) && !Ship->IsDead() && !Ship->IsCloakHidden() && Ship != GetPawn()) ? Ship : nullptr;
 }
 
 void AHCJPlayerController::SetAutoTarget(AHCJShipCharacter* NewTarget)
@@ -468,7 +483,7 @@ namespace
 		const FVector Origin = Own.GetActorLocation();
 		for (TActorIterator<AHCJShipCharacter> It(Own.GetWorld()); It; ++It)
 		{
-			if (*It != &Own && !It->IsDead() && !It->IsCloaked() && FVector::DistSquared(It->GetActorLocation(), Origin) < FMath::Square(60000.0))
+			if (*It != &Own && !It->IsDead() && !It->IsCloakHidden() && FVector::DistSquared(It->GetActorLocation(), Origin) < FMath::Square(60000.0))
 			{
 				OutEnemies.Add(*It);
 			}
@@ -539,7 +554,33 @@ void AHCJPlayerController::ClientMissileWarning_Implementation()
 	LastMissileWarningTime = Now;
 }
 
-void AHCJPlayerController::HCJParkEnemy(float Distance, float Right, float Up)
+namespace
+{
+	/** Development commands: the Index-th nearest live ship other than Own (clamped to the last one); nullptr when there is none. */
+	AHCJShipCharacter* FindNthOtherShip(const AHCJShipCharacter* Own, int32 Index)
+	{
+		TArray<AHCJShipCharacter*> Others;
+		if (Own == nullptr)
+		{
+			return nullptr;
+		}
+		for (TActorIterator<AHCJShipCharacter> It(Own->GetWorld()); It; ++It)
+		{
+			if (*It != Own && !It->IsDead())
+			{
+				Others.Add(*It);
+			}
+		}
+		const FVector Origin = Own->GetActorLocation();
+		Others.Sort([Origin](const AHCJShipCharacter& A, const AHCJShipCharacter& B)
+		{
+			return FVector::DistSquared(A.GetActorLocation(), Origin) < FVector::DistSquared(B.GetActorLocation(), Origin);
+		});
+		return Others.Num() > 0 ? Others[FMath::Clamp(Index, 0, Others.Num() - 1)] : nullptr;
+	}
+}
+
+void AHCJPlayerController::HCJParkEnemy(float Distance, float Right, float Up, int32 Index)
 {
 #if !UE_BUILD_SHIPPING
 	AHCJShipCharacter* Ship = HasAuthority() ? GetShip() : nullptr;
@@ -568,7 +609,7 @@ void AHCJPlayerController::HCJParkEnemy(float Distance, float Right, float Up)
 	});
 	const FRotationMatrix Axes(GetControlRotation());
 	const FVector Location = Ship->GetActorLocation() + Axes.GetUnitAxis(EAxis::X) * Distance + Axes.GetUnitAxis(EAxis::Y) * Right + Axes.GetUnitAxis(EAxis::Z) * Up;
-	AHCJShipCharacter* Enemy = Enemies[0];
+	AHCJShipCharacter* Enemy = Enemies[FMath::Clamp(Index, 0, Enemies.Num() - 1)];
 	Enemy->GetCharacterMovement()->StopMovementImmediately();
 	// Side on, so the hull is seen along its length.
 	Enemy->TeleportTo(Location, FRotator(0.0, GetControlRotation().Yaw + 90.0, 0.0), false, true);
@@ -615,6 +656,117 @@ void AHCJPlayerController::MenuPlay()
 		SetName(Name);
 	}
 	GameMode->StartMatchFromMenu(this, Settings.BotCount, Settings.Dimension, Settings.Seed, Settings.BotDifficulty);
+}
+
+void AHCJPlayerController::MenuApplyShip()
+{
+	UHCJUserSettings& Settings = UHCJUserSettings::Get();
+	Settings.Sanitize();
+	bShipChoiceSent = true;
+	const auto ToByte = [](int32 Value) { return static_cast<uint8>((Value >= 0 && Value < HCJShipTypes::Auto) ? Value : HCJShipTypes::Auto); };
+	UE_LOG(LogHCJ, Log, TEXT("Hangar: asking the server for a %s (hull %d, paint %d)"), HCJShipTypes::Get(Settings.ShipType).Name, Settings.ShipVariant, Settings.ShipSkin);
+	ServerSetShipChoice(ToByte(Settings.ShipType), ToByte(Settings.ShipVariant), ToByte(Settings.ShipSkin));
+}
+
+void AHCJPlayerController::ServerSetShipChoice_Implementation(uint8 Type, uint8 Variant, uint8 Skin)
+{
+	if (AHCJGameMode* GameMode = GetWorld() != nullptr ? GetWorld()->GetAuthGameMode<AHCJGameMode>() : nullptr)
+	{
+		GameMode->SetShipChoice(this, Type, Variant, Skin);
+	}
+}
+
+void AHCJPlayerController::UpdateHangarPreview(float DeltaTime)
+{
+	const bool bWanted = MenuWidget.IsValid() && MenuWidget->GetPage() == EHCJMenuPage::Hangar && GetWorld() != nullptr;
+	if (!bWanted)
+	{
+		if (HangarPreview != nullptr)
+		{
+			HangarPreview->Destroy();
+			HangarPreview = nullptr;
+			HangarPreviewMesh = nullptr;
+			HangarPreviewKey = -1;
+		}
+		return;
+	}
+
+	const UHCJAssetSettings& Assets = UHCJAssetSettings::Get();
+	UHCJUserSettings& Settings = UHCJUserSettings::Get();
+	if (HangarPreview == nullptr)
+	{
+		FActorSpawnParameters Params;
+		Params.ObjectFlags |= RF_Transient;
+		HangarPreview = GetWorld()->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, Params);
+		if (HangarPreview == nullptr)
+		{
+			return;
+		}
+		HangarPreviewMesh = NewObject<UStaticMeshComponent>(HangarPreview, TEXT("HangarPreviewMesh"));
+		HangarPreviewMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		HangarPreviewMesh->SetGenerateOverlapEvents(false);
+		HangarPreviewMesh->SetCastShadow(false);
+		HangarPreviewMesh->SetMobility(EComponentMobility::Movable);
+		HangarPreview->SetRootComponent(HangarPreviewMesh);
+		HangarPreviewMesh->RegisterComponent();
+		HangarPreviewKey = -1;
+	}
+
+	// What it shows: the hull and paint of the settings ("pick for me" shows the first hull / the white paint).
+	const int32 Type = HCJShipTypes::SanitizeType(Settings.ShipType);
+	const FHCJShipTypeDef& Def = HCJShipTypes::Get(Type);
+	const int32 Variant = (Settings.ShipVariant >= 0 && Settings.ShipVariant < Def.NumHulls) ? Settings.ShipVariant : 0;
+	const int32 Skin = Assets.ShipSkins.IsValidIndex(Settings.ShipSkin) ? Settings.ShipSkin : FMath::Min(7, Assets.ShipSkins.Num() - 1);
+	const int32 Key = (Type << 16) | (Variant << 8) | (Skin & 0xFF);
+	float HullLength = Assets.ShipMeshLength * Def.Scale;
+	if (Key != HangarPreviewKey && Assets.ShipMeshes.Num() > 0)
+	{
+		HangarPreviewKey = Key;
+		const int32 MeshIndex = HCJShipTypes::PickHullMesh(Type, static_cast<uint8>(Variant), 0, Assets.ShipMeshes.Num());
+		UStaticMesh* Mesh = Assets.ShipMeshes.IsValidIndex(MeshIndex) ? UHCJAssetSettings::Load<UStaticMesh>(Assets.ShipMeshes[MeshIndex], TEXT("hangar hull")) : nullptr;
+		HangarPreviewMesh->SetStaticMesh(Mesh);
+		HangarPreviewMesh->EmptyOverrideMaterials();
+		if (Mesh != nullptr)
+		{
+			const FBox Bounds = Mesh->GetBoundingBox();
+			const double Scale = Bounds.IsValid && Bounds.GetSize().GetMax() > 1.0 ? HullLength / Bounds.GetSize().GetMax() : 1.0;
+			HangarPreviewMesh->SetWorldScale3D(FVector(Scale));
+			UMaterialInterface* SkinMaterial = Assets.ShipSkins.IsValidIndex(Skin) ? UHCJAssetSettings::Load<UMaterialInterface>(Assets.ShipSkins[Skin].Material, TEXT("hangar paint")) : nullptr;
+			if (SkinMaterial != nullptr)
+			{
+				UMaterialInstanceDynamic* Paint = UMaterialInstanceDynamic::Create(SkinMaterial, HangarPreview);
+				if (!Assets.ShipTintParameter.IsNone())
+				{
+					Paint->SetVectorParameterValue(Assets.ShipTintParameter, Assets.ShipSkins[Skin].Color * Assets.ShipTintStrength);
+				}
+				for (int32 Slot = 0; Slot < HangarPreviewMesh->GetNumMaterials(); ++Slot)
+				{
+					HangarPreviewMesh->SetMaterial(Slot, Paint);
+				}
+			}
+			// The hull's unlit side must not be black wherever the camera happens to be.
+			if (UMaterialInterface* RimBase = UHCJAssetSettings::Load<UMaterialInterface>(Assets.ShipRimMaterial, TEXT("hangar rim")))
+			{
+				UMaterialInstanceDynamic* Rim = UMaterialInstanceDynamic::Create(RimBase, HangarPreview);
+				Rim->SetScalarParameterValue(TEXT("Brightness"), 0.0f);
+				Rim->SetScalarParameterValue(TEXT("Floor"), FMath::Max(Assets.ShipAmbientFloor * 4.0f, 0.12f));
+				HangarPreviewMesh->SetOverlayMaterial(Rim);
+			}
+		}
+		UE_LOG(LogHCJ, Log, TEXT("Hangar: preview shows %s, hull %d of %d (mesh %d), paint %d"), Def.Name, Variant + 1, Def.NumHulls, MeshIndex, Skin);
+	}
+
+	// In front of the camera, to the right of the page, turning slowly (a turntable in the camera's own frame).
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	GetPlayerViewPoint(ViewLocation, ViewRotation);
+	HangarPreviewYaw = FMath::Fmod(HangarPreviewYaw + 28.0f * DeltaTime, 360.0f);
+	const FRotationMatrix View(ViewRotation);
+	const FQuat Spin = ViewRotation.Quaternion() * FRotator(-14.0f, HangarPreviewYaw, 0.0f).Quaternion() * Assets.ShipMeshRotation.Quaternion();
+	const FVector Center = ViewLocation + View.GetUnitAxis(EAxis::X) * 760.0 + View.GetUnitAxis(EAxis::Y) * 330.0 - View.GetUnitAxis(EAxis::Z) * 20.0;
+	const UStaticMesh* Mesh = HangarPreviewMesh->GetStaticMesh();
+	const FVector BoundsCenter = Mesh != nullptr ? Mesh->GetBoundingBox().GetCenter() * HangarPreviewMesh->GetComponentScale() : FVector::ZeroVector;
+	HangarPreview->SetActorLocationAndRotation(Center - Spin.RotateVector(BoundsCenter), Spin);
 }
 
 void AHCJPlayerController::MenuJoin(const FString& Address)
@@ -1112,6 +1264,128 @@ void AHCJPlayerController::HCJMenuCmd(const FString& Action, const FString& Argu
 			ClientDamageTaken(Ship->GetActorLocation() + Ship->GetActorRightVector() * 3000.0, FMath::Max(FCString::Atof(*Argument), 1.0f));
 		}
 	}
+	else if (Action == TEXT("warp"))
+	{
+		// The own warp key, held (1) or let go (0).
+		if (AHCJShipCharacter* Ship = GetShip())
+		{
+			Ship->SetWarping(Argument.IsEmpty() || FCString::Atoi(*Argument) != 0);
+		}
+	}
+	else if (Action == TEXT("cloak"))
+	{
+		if (AHCJShipCharacter* Ship = GetShip())
+		{
+			Ship->ToggleCloak();
+		}
+	}
+	else if (Action == TEXT("tractor"))
+	{
+		if (AHCJShipCharacter* Ship = GetShip())
+		{
+			Ship->SetTractoring(Argument.IsEmpty() || FCString::Atoi(*Argument) != 0);
+		}
+	}
+	else if (Action == TEXT("hangar") && MenuWidget.IsValid())
+	{
+		MenuWidget->SetPage(EHCJMenuPage::Hangar);
+	}
+	else if (Action == TEXT("ship") || Action == TEXT("enemyship"))
+	{
+		// "ship <type>[,<hull>[,<paint>]]": the own choice (as the hangar makes it; listen host: the ship it has becomes it at once).
+		// "enemyship <type>[,<hull>[,<paint>]]" (listen host): the nearest other ship becomes that type.
+		TArray<FString> Parts;
+		Argument.ParseIntoArray(Parts, TEXT(","));
+		const int32 Type = Parts.Num() > 0 ? FCString::Atoi(*Parts[0]) : 1;
+		const int32 Variant = Parts.Num() > 1 ? FCString::Atoi(*Parts[1]) : -1;
+		const int32 Skin = Parts.Num() > 2 ? FCString::Atoi(*Parts[2]) : -1;
+		if (Action == TEXT("ship"))
+		{
+			UHCJUserSettings& Settings = UHCJUserSettings::Get();
+			Settings.ShipType = Type;
+			Settings.ShipVariant = Variant;
+			Settings.ShipSkin = Skin;
+			MenuApplyShip();
+			if (AHCJShipCharacter* Ship = HasAuthority() ? GetShip() : nullptr)
+			{
+				Ship->ServerInitShipType(HCJShipTypes::SanitizeType(Type), static_cast<uint8>(Variant < 0 ? 255 : Variant), static_cast<uint8>(Skin < 0 ? 255 : Skin));
+			}
+		}
+		else if (const AHCJShipCharacter* Own = HasAuthority() ? GetShip() : nullptr)
+		{
+			// (A fourth number: which of the other ships, 0 = the nearest.)
+			AHCJShipCharacter* Nearest = FindNthOtherShip(Own, Parts.Num() > 3 ? FCString::Atoi(*Parts[3]) : 0);
+			if (Nearest != nullptr)
+			{
+				Nearest->ServerInitShipType(HCJShipTypes::SanitizeType(Type), static_cast<uint8>(Variant < 0 ? 255 : Variant), static_cast<uint8>(Skin < 0 ? 255 : Skin));
+			}
+		}
+	}
+	else if (Action == TEXT("enemywarp") || Action == TEXT("enemycloak") || Action == TEXT("enemytractor"))
+	{
+		// Listen host: the nearest other ship holds its warp key / toggles its cloak / turns to the own ship and holds its
+		// tractor beam on it ("... 0" lets go). Use with "peace", so that its bot does not interfere.
+		// The argument is "<0|1>[,<which ship: 0 = the nearest>]"; for enemycloak just "<which ship>".
+		const AHCJShipCharacter* Own = HasAuthority() ? GetShip() : nullptr;
+		TArray<FString> Parts;
+		Argument.ParseIntoArray(Parts, TEXT(","));
+		const bool bCloakCommand = Action == TEXT("enemycloak");
+		const int32 Which = bCloakCommand ? (Parts.Num() > 0 ? FCString::Atoi(*Parts[0]) : 0) : (Parts.Num() > 1 ? FCString::Atoi(*Parts[1]) : 0);
+		AHCJShipCharacter* Nearest = FindNthOtherShip(Own, Which);
+		if (Nearest != nullptr)
+		{
+			const bool bOn = Parts.Num() == 0 || FCString::Atoi(*Parts[0]) != 0;
+			if (Action == TEXT("enemywarp"))
+			{
+				Nearest->SetWarping(bOn);
+			}
+			else if (Action == TEXT("enemycloak"))
+			{
+				Nearest->ToggleCloak();
+			}
+			else
+			{
+				if (AController* Other = Nearest->GetController())
+				{
+					Other->SetControlRotation((Own->GetActorLocation() - Nearest->GetActorLocation()).Rotation());
+				}
+				Nearest->SetLockTarget(const_cast<AHCJShipCharacter*>(Own));
+				Nearest->SetTractoring(bOn);
+			}
+		}
+	}
+	else if (Action == TEXT("holdplayer"))
+	{
+		// Listen host: the own ship is put 30 m behind the nearest ship flown by another player, facing it, made
+		// undamageable, and holds its tractor beam on it ("holdplayer 0" lets go). For the netcode test of the beam.
+		AHCJShipCharacter* Own = HasAuthority() ? GetShip() : nullptr;
+		const bool bOn = Argument.IsEmpty() || FCString::Atoi(*Argument) != 0;
+		AHCJShipCharacter* Other = nullptr;
+		for (TActorIterator<AHCJShipCharacter> It(GetWorld()); Own != nullptr && It; ++It)
+		{
+			if (*It != Own && !It->IsDead() && Cast<APlayerController>(It->GetController()) != nullptr)
+			{
+				Other = *It;
+				break;
+			}
+		}
+		if (Own != nullptr && !bOn)
+		{
+			Own->SetTractoring(false);
+		}
+		else if (Own != nullptr && Other != nullptr)
+		{
+			const FVector Location = Other->GetActorLocation() - Other->GetActorForwardVector() * 3000.0;
+			const FRotator Rotation = (Other->GetActorLocation() - Location).Rotation();
+			Own->SetCanBeDamaged(false);
+			Own->GetCharacterMovement()->StopMovementImmediately();
+			Own->TeleportTo(Location, Rotation, false, true);
+			SetControlRotation(Rotation);
+			Own->SetLockTarget(Other);
+			Own->SetTractoring(true);
+			UE_LOG(LogHCJ, Log, TEXT("Debug: holding %s with the tractor beam"), *Other->GetName());
+		}
+	}
 	else if (Action == TEXT("skipintro"))
 	{
 		// What any key does while the intro movie runs.
@@ -1278,6 +1552,11 @@ void AHCJPlayerController::SetupInputComponent()
 	EnhancedInput->BindAction(RespawnAction, ETriggerEvent::Started, this, &AHCJPlayerController::HandleRespawn);
 	EnhancedInput->BindAction(DropWeaponAction, ETriggerEvent::Started, this, &AHCJPlayerController::HandleDropWeapon);
 	EnhancedInput->BindAction(TorpedoAction, ETriggerEvent::Started, this, &AHCJPlayerController::HandleTorpedo);
+	EnhancedInput->BindAction(WarpAction, ETriggerEvent::Started, this, &AHCJPlayerController::HandleWarpStarted);
+	EnhancedInput->BindAction(WarpAction, ETriggerEvent::Completed, this, &AHCJPlayerController::HandleWarpCompleted);
+	EnhancedInput->BindAction(CloakAction, ETriggerEvent::Started, this, &AHCJPlayerController::HandleCloak);
+	EnhancedInput->BindAction(TractorAction, ETriggerEvent::Started, this, &AHCJPlayerController::HandleTractorStarted);
+	EnhancedInput->BindAction(TractorAction, ETriggerEvent::Completed, this, &AHCJPlayerController::HandleTractorCompleted);
 
 	if (IsLocalController() && !MenuWidget.IsValid())
 	{
@@ -1308,6 +1587,9 @@ void AHCJPlayerController::BuildInputObjects()
 	RespawnAction = MakeAction(TEXT("IA_HCJ_Respawn"), EInputActionValueType::Boolean);
 	DropWeaponAction = MakeAction(TEXT("IA_HCJ_DropWeapon"), EInputActionValueType::Boolean);
 	TorpedoAction = MakeAction(TEXT("IA_HCJ_Torpedo"), EInputActionValueType::Boolean);
+	WarpAction = MakeAction(TEXT("IA_HCJ_Warp"), EInputActionValueType::Boolean);
+	CloakAction = MakeAction(TEXT("IA_HCJ_Cloak"), EInputActionValueType::Boolean);
+	TractorAction = MakeAction(TEXT("IA_HCJ_Tractor"), EInputActionValueType::Boolean);
 
 	UInputMappingContext* Context = NewObject<UInputMappingContext>(this, FName(TEXT("IMC_HCJ_Default")));
 
@@ -1330,6 +1612,10 @@ void AHCJPlayerController::BuildInputObjects()
 	Context->MapKey(DropWeaponAction, EKeys::G);
 	Context->MapKey(TorpedoAction, EKeys::RightMouseButton);
 	Context->MapKey(TorpedoAction, EKeys::X);
+	Context->MapKey(WarpAction, EKeys::Z);
+	Context->MapKey(CloakAction, EKeys::C);
+	// (R is also the respawn key: that one only does something without a ship, this one only with one.)
+	Context->MapKey(TractorAction, EKeys::R);
 
 	MappingContext = Context;
 }
@@ -1466,6 +1752,58 @@ void AHCJPlayerController::HandleTorpedo(const FInputActionValue& Value)
 	if (AHCJShipCharacter* Ship = GetShip())
 	{
 		Ship->FireTorpedo();
+	}
+}
+
+void AHCJPlayerController::HandleWarpStarted(const FInputActionValue& Value)
+{
+	if (IsMenuOpen())
+	{
+		return;
+	}
+	if (AHCJShipCharacter* Ship = GetShip())
+	{
+		Ship->SetWarping(true);
+	}
+}
+
+void AHCJPlayerController::HandleWarpCompleted(const FInputActionValue& Value)
+{
+	if (AHCJShipCharacter* Ship = GetShip())
+	{
+		Ship->SetWarping(false);
+	}
+}
+
+void AHCJPlayerController::HandleCloak(const FInputActionValue& Value)
+{
+	if (IsMenuOpen())
+	{
+		return;
+	}
+	if (AHCJShipCharacter* Ship = GetShip())
+	{
+		Ship->ToggleCloak();
+	}
+}
+
+void AHCJPlayerController::HandleTractorStarted(const FInputActionValue& Value)
+{
+	if (IsMenuOpen())
+	{
+		return;
+	}
+	if (AHCJShipCharacter* Ship = GetShip())
+	{
+		Ship->SetTractoring(true);
+	}
+}
+
+void AHCJPlayerController::HandleTractorCompleted(const FInputActionValue& Value)
+{
+	if (AHCJShipCharacter* Ship = GetShip())
+	{
+		Ship->SetTractoring(false);
 	}
 }
 

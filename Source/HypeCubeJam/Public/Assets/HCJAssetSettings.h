@@ -271,6 +271,21 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Ship", meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
 	FSoftObjectPath ShipRimMaterial;
 
+	/**
+	 * What a cloaked hull is drawn with (M_HCJ_Cloak, built by docs/tools/make_trek_materials.py): translucent, a faint
+	 * rim shimmer that bends the light behind it. Parameters: scalars Opacity (0.1 for another ship, 0.4 for the own,
+	 * flickering when revealed) and Phase. Empty = another ship's cloaked hull is not drawn at all.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Ship", meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+	FSoftObjectPath CloakMaterial;
+
+	/**
+	 * Star streaks of the warp drive (M_HCJ_WarpStreaks, same script): additive, on one quad in front of the own
+	 * camera. Parameters: vector Color, scalar Strength (0..1). Empty = no streaks (the view still widens).
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Ship", meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+	FSoftObjectPath WarpStreakMaterial;
+
 	/** The colour enemies glow in (rim, glint, engine), and how much of the player's own colour is mixed into it (0..1). */
 	UPROPERTY(Config, EditAnywhere, Category = "Ship")
 	FLinearColor EnemyGlowColor = FLinearColor(1.0f, 0.2f, 0.06f);

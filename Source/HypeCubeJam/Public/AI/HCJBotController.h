@@ -152,6 +152,17 @@ protected:
 	 * (SteerTowards does it while EvadeUntilTime runs).
 	 */
 	void ThinkTorpedoEvasion(const AHCJShipCharacter& Ship);
+	/**
+	 * Warp drive, cloak and tractor beam, decided once a second (and when something happens): warp on a long, clear
+	 * way to a portal or a repair pad, or away from the attacker when the hull is low; the cloak for an approach from
+	 * afar or a retreat; the tractor beam on a target in reach that is running or nearly finished. How readily is the
+	 * difficulty (FHCJBotSkill). Not with -HCJClassic.
+	 */
+	void ThinkSystems(AHCJShipCharacter& Ship, const AHCJUniverse& Universe);
+	/** Every tick, after the state's behaviour: holds or lets go of the warp and tractor keys, drops the cloak in time, boosts free of a beam. */
+	void TickSystems(AHCJShipCharacter& Ship);
+	/** Nothing solid between the ship and Point for the first MaxDistance uu (a sphere sweep the size of the ship). */
+	bool IsWayClear(const AHCJShipCharacter& Ship, const FVector& Point, float MaxDistance) const;
 	/** Turns the control rotation towards DesiredAimPoint, limited by AimTurnRateDeg. */
 	void TickAim(float DeltaTime, const AHCJShipCharacter& Ship);
 	/** Angle in degrees between the ship's aim direction and the direction to WorldPoint. */
@@ -285,6 +296,22 @@ protected:
 	/** TickShieldFacing: when the next "turns its facing" line may be logged. */
 	float NextShieldTurnLogTime = 0.0f;
 
+	/** Ship systems: the next decision; warp towards WarpGoal until WarpUntilTime (bWarpFlee: away from the attacker); the tractor key and the cloak are held until their times. */
+	float NextSystemsTime = 0.0f;
+	float WarpUntilTime = 0.0f;
+	FVector WarpGoal = FVector::ZeroVector;
+	bool bWarpFlee = false;
+	/** The trip / the retreat the warp chance was last rolled for, so that it is rolled once. */
+	int32 WarpRolledForDim = INDEX_NONE;
+	bool bWarpFleeRolled = false;
+	float TractorUntilTime = 0.0f;
+	float CloakUntilTime = 0.0f;
+	/** Caught by a beam: whether this bot boosts free was decided (once per catch), and until when it boosts. */
+	bool bCaughtDecided = false;
+	float BoostFreeUntilTime = 0.0f;
+	/** A target that cloaked: the bot fires at where it last saw it for a moment. */
+	FVector LostTargetPoint = FVector::ZeroVector;
+	float LostTargetFireUntil = 0.0f;
 	/** Per-bot randomness for behaviour (never used for world generation). */
 	FRandomStream BotRandom;
 };

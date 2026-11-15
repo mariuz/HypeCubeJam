@@ -139,7 +139,9 @@ void AHCJGameMode::StartPlay()
 void AHCJGameMode::PostLogin(APlayerController* NewPlayer)
 {
 	// The host of a game started without arguments opens on the title menu: no ship until it presses Play.
-	if (AHCJPlayerController* Host = Cast<AHCJPlayerController>(NewPlayer); Host != nullptr && Host->IsLocalController() && HCJMenuFlow::ShouldOpenMenu())
+	// (-HCJBotsOnly: the same state for a headless bot match without any network - the local player has no ship, the bots play.)
+	static const bool bBotsOnly = FParse::Param(FCommandLine::Get(), TEXT("HCJBotsOnly"));
+	if (AHCJPlayerController* Host = Cast<AHCJPlayerController>(NewPlayer); Host != nullptr && Host->IsLocalController() && (bBotsOnly || HCJMenuFlow::ShouldOpenMenu()))
 	{
 		Host->EnterStartMenu();
 		UE_LOG(LogHCJ, Log, TEXT("Menu: the local player starts in the title menu (the bots play in the background)"));
@@ -210,6 +212,11 @@ void AHCJGameMode::RestartPlayer(AController* NewPlayer)
 		CancelRespawn(NewPlayer);
 		if (AHCJPlayerState* HCJPlayerState = NewPlayer->GetPlayerState<AHCJPlayerState>())
 		{
+			// The ship its player chose (the hangar; bots: SpawnBot).
+			if (AHCJShipCharacter* NewShip = Cast<AHCJShipCharacter>(NewPlayer->GetPawn()))
+			{
+				NewShip->ServerInitShipType(HCJPlayerState->GetShipType(), HCJPlayerState->GetShipVariant(), HCJPlayerState->GetShipSkin());
+			}
 			HCJPlayerState->SetRespawnTimes(0.0f, 0.0f);
 			HCJPlayerState->SetCurrentSector(Sector);
 		}
@@ -353,7 +360,8 @@ void AHCJGameMode::NotifyTurretDestroyed(AController* Killer)
 	UE_LOG(LogHCJ, Log, TEXT("Turret destroyed by %s"), KillerName.IsEmpty() ? TEXT("nobody") : *KillerName);
 	if (!KillerName.IsEmpty())
 	{
-		HCJGameState->MulticastKillEvent(KillerName, TEXT("a station turret"), TEXT("TURRET DOWN"));
+		const AHCJPlayerState* KillerState = Killer != nullptr ? Killer->GetPlayerState<AHCJPlayerState>() : nullptr;
+		HCJGameState->MulticastKillEvent(KillerName, TEXT("a station turret"), TEXT("TURRET DOWN"), AHCJGameState::PackKillTypes(KillerState != nullptr ? KillerState->GetShipType() : -1, -1));
 	}
 }
 
@@ -403,6 +411,14 @@ void AHCJGameMode::NotifyShipKilled(AController* VictimController, AController* 
 		VictimName = VictimState->GetPlayerName();
 	}
 
+	// Ship types of the two, for the kill feed and the per-type balance numbers.
+	const int32 VictimType = VictimShip != nullptr ? static_cast<int32>(VictimShip->GetShipType()) : -1;
+	int32 KillerType = -1;
+	if (VictimType >= 0 && VictimType < HCJShipTypes::NumTypes)
+	{
+		++MatchStats.DeathsByType[VictimType];
+	}
+
 	FString KillerName;
 	if (KillerController && KillerController != VictimController)
 	{
@@ -410,6 +426,12 @@ void AHCJGameMode::NotifyShipKilled(AController* VictimController, AController* 
 		{
 			KillerState->AddKill();
 			KillerName = KillerState->GetPlayerName();
+			const AHCJShipCharacter* KillerShip = Cast<AHCJShipCharacter>(KillerController->GetPawn());
+			KillerType = KillerShip != nullptr ? static_cast<int32>(KillerShip->GetShipType()) : static_cast<int32>(KillerState->GetShipType());
+			if (KillerType >= 0 && KillerType < HCJShipTypes::NumTypes)
+			{
+				++MatchStats.KillsByType[KillerType];
+			}
 		}
 	}
 
@@ -449,7 +471,7 @@ void AHCJGameMode::NotifyShipKilled(AController* VictimController, AController* 
 		UE_LOG(LogHCJ, Log, TEXT("Kill: %s destroyed %s (%s)"), *KillerName, *VictimName, *UHCJGameplaySettings::Get().GetWeapon(KillWeapon).Name);
 	}
 
-	HCJGameState->MulticastKillEvent(KillerName, VictimName, Cause);
+	HCJGameState->MulticastKillEvent(KillerName, VictimName, Cause, AHCJGameState::PackKillTypes(KillerType, VictimType));
 
 	if (APlayerController* VictimPlayer = Cast<APlayerController>(VictimController); VictimPlayer && VictimShip)
 	{
@@ -462,6 +484,33 @@ void AHCJGameMode::NotifyShipKilled(AController* VictimController, AController* 
 
 	// Ending the match destroys every ship, and the victim is still in the middle of Die(): decide next tick.
 	GetWorldTimerManager().SetTimerForNextTick(this, &AHCJGameMode::CheckMatchEnd);
+}
+
+bool AHCJGameMode::IsClassicBots()
+{
+	static const bool bClassic = FParse::Param(FCommandLine::Get(), TEXT("HCJClassic"));
+	return bClassic;
+}
+
+void AHCJGameMode::SetShipChoice(AController* Controller, int32 Type, int32 Variant, int32 Skin)
+{
+	AHCJPlayerState* HCJPlayerState = Controller != nullptr ? Controller->GetPlayerState<AHCJPlayerState>() : nullptr;
+	if (HCJPlayerState == nullptr)
+	{
+		return;
+	}
+	// Whatever a client sends is validated here: an unknown type is the fighter, an unknown hull / paint "pick for me".
+	HCJPlayerState->SetShipChoice(Type, Variant, Skin);
+	AHCJShipCharacter* Ship = Cast<AHCJShipCharacter>(Controller->GetPawn());
+	const bool bNow = Ship != nullptr && !Ship->IsDead() && Ship->IsSpawnProtected();
+	if (bNow)
+	{
+		// The choice arrived a moment after the first ship: a ship that has not left its spawn shield is changed in place.
+		Ship->ServerInitShipType(HCJPlayerState->GetShipType(), HCJPlayerState->GetShipVariant(), HCJPlayerState->GetShipSkin());
+	}
+	UE_LOG(LogHCJ, Log, TEXT("Ship choice: %s asked for type %d, hull %d, paint %d -> %s, hull %d, paint %d (%s)"), *HCJPlayerState->GetPlayerName(), Type, Variant, Skin,
+		HCJShipTypes::Get(HCJPlayerState->GetShipType()).Name, HCJPlayerState->GetShipVariant(), HCJPlayerState->GetShipSkin(),
+		bNow ? TEXT("applied to the ship it has") : TEXT("for its next ship"));
 }
 
 void AHCJGameMode::NotifyAsteroidDestroyed(const AController* DamageInstigator, float Radius, int32 NumPieces)
@@ -628,6 +677,20 @@ void AHCJGameMode::LogStatus() const
 			MatchStats.Kills > 0 ? 100.0f * MatchStats.KillsByWeapon[static_cast<int32>(EHCJWeapon::Phaser)] / MatchStats.Kills : 0.0f,
 			MatchStats.RocksDestroyed, MatchStats.RocksDestroyedByBots, MatchStats.RocksSplit, Universe != nullptr ? Universe->GetNumLiveAsteroids() : 0,
 			Universe != nullptr ? Universe->GetDestroyedChecksum() : 0, MatchStats.Shockwaves, MatchStats.ShockwavePushes);
+	}
+
+	{
+		FString ByType;
+		for (int32 Type = 0; Type < HCJShipTypes::NumTypes; ++Type)
+		{
+			const int32 TypeKills = MatchStats.KillsByType[Type];
+			const int32 TypeDeaths = MatchStats.DeathsByType[Type];
+			ByType += FString::Printf(TEXT("%s%s %d/%d (%.2f)"), Type > 0 ? TEXT(", ") : TEXT(""), HCJShipTypes::Get(Type).ShortName, TypeKills, TypeDeaths,
+				TypeDeaths > 0 ? static_cast<float>(TypeKills) / TypeDeaths : 0.0f);
+		}
+		UE_LOG(LogHCJ, Log, TEXT("Systems t=%.0fs: warps %d (%d by bots, %d stopped by the server, %d collisions), cloaks %d (%d by bots, %d reveals), tractor holds %d (%d by bots, %d torn free, %d bots boosted free, %.0f s held) | kills/deaths by ship type: %s"),
+			World->GetTimeSeconds(), MatchStats.Warps, MatchStats.BotWarps, MatchStats.WarpCancels, MatchStats.WarpImpacts, MatchStats.Cloaks, MatchStats.BotCloaks,
+			MatchStats.CloakReveals, MatchStats.TractorHolds, MatchStats.BotTractorHolds, MatchStats.TractorBreaks, MatchStats.BotTractorEscapes, MatchStats.TractorSeconds, *ByType);
 	}
 
 	{
@@ -1106,6 +1169,15 @@ AHCJBotController* AHCJGameMode::SpawnBot()
 		{
 			BotState->SetPlayerId(GameSession->GetNextPlayerID());
 		}
+		// A mix of ship types (every bot a fighter with -HCJClassic; all of one type with -HCJBotType=<n>).
+		if (AHCJPlayerState* HCJBotState = Cast<AHCJPlayerState>(BotState))
+		{
+			int32 ForcedType = -1;
+			static const bool bForced = FParse::Value(FCommandLine::Get(), TEXT("HCJBotType="), ForcedType);
+			static const int32 StaticForcedType = ForcedType;
+			HCJBotState->SetShipChoice(IsClassicBots() ? static_cast<int32>(EHCJShipType::Fighter) : bForced ? StaticForcedType : HCJShipTypes::PickBotType(NextBotNumber),
+				HCJShipTypes::Auto, HCJShipTypes::Auto);
+		}
 		BotState->SetPlayerName(FString::Printf(TEXT("Bot-%02d"), NextBotNumber++));
 	}
 	else
@@ -1149,7 +1221,7 @@ void AHCJGameMode::UpdatePlayerSectors()
 		{
 			const AHCJShipCharacter* Ship = HasLiveShip(Controller) ? Cast<AHCJShipCharacter>(Controller->GetPawn()) : nullptr;
 			// A cloaked ship is on nobody's map (and bots do not hunt it across sectors).
-			HCJPlayerState->SetCurrentSector(Ship && !Ship->IsCloaked() ? Ship->GetCurrentSector() : INDEX_NONE);
+			HCJPlayerState->SetCurrentSector(Ship && !Ship->IsCloakHidden() ? Ship->GetCurrentSector() : INDEX_NONE);
 		}
 	});
 }

@@ -17,6 +17,11 @@ FHCJBotSkill FHCJBotSkill::Get(int32 Difficulty)
 		Skill.StrafeStrength = 0.35f;
 		Skill.PhaserConeDeg = 6.0f;
 		Skill.PhaserReserve = 0.0f;
+		Skill.WarpTravelChance = 0.35f;
+		Skill.WarpFleeChance = 0.15f;
+		Skill.CloakChance = 0.03f;
+		Skill.TractorChance = 0.03f;
+		Skill.BreakFreeChance = 0.4f;
 		break;
 	case 1:
 		Skill.AimErrorDeg = 3.5f;
@@ -29,6 +34,11 @@ FHCJBotSkill FHCJBotSkill::Get(int32 Difficulty)
 		Skill.StrafeStrength = 0.6f;
 		Skill.PhaserConeDeg = 4.0f;
 		Skill.PhaserReserve = 0.05f;
+		Skill.WarpTravelChance = 0.7f;
+		Skill.WarpFleeChance = 0.5f;
+		Skill.CloakChance = 0.1f;
+		Skill.TractorChance = 0.1f;
+		Skill.BreakFreeChance = 0.8f;
 		break;
 	default:
 		// Hard: what the bots were before difficulty levels, a little sharper.
@@ -42,6 +52,11 @@ FHCJBotSkill FHCJBotSkill::Get(int32 Difficulty)
 		Skill.StrafeStrength = 0.8f;
 		Skill.PhaserConeDeg = 3.0f;
 		Skill.PhaserReserve = 0.1f;
+		Skill.WarpTravelChance = 0.95f;
+		Skill.WarpFleeChance = 0.8f;
+		Skill.CloakChance = 0.2f;
+		Skill.TractorChance = 0.2f;
+		Skill.BreakFreeChance = 1.0f;
 		break;
 	}
 	return Skill;
@@ -116,6 +131,33 @@ bool HCJBalance::StepBoost(float& Energy, bool& bLocked, bool bWantsBoost, float
 		Energy = FMath::Min(1.0f, Energy + DeltaSeconds / FMath::Max(RechargeSeconds, 0.1f));
 	}
 	return bActive;
+}
+
+bool HCJBalance::StepBoostFollow(float& Energy, bool& bLocked, bool bClientBoosting, float DeltaSeconds, float DrainSeconds, float RechargeSeconds,
+	float RelockLevel, float Grace)
+{
+	Energy = FMath::Clamp(Energy, -Grace, 1.0f);
+	if (bClientBoosting && Energy > -Grace && !(bLocked && Energy < RelockLevel - Grace))
+	{
+		bLocked = false;
+		Energy -= DeltaSeconds / FMath::Max(DrainSeconds, 0.1f);
+		if (Energy <= -Grace)
+		{
+			bLocked = true;
+		}
+		return true;
+	}
+	if (Energy <= 0.02f)
+	{
+		// It ran (as good as) dry: from here the relock rule applies.
+		bLocked = true;
+	}
+	Energy = FMath::Min(1.0f, FMath::Max(Energy, 0.0f) + DeltaSeconds / FMath::Max(RechargeSeconds, 0.1f));
+	if (bLocked && Energy >= RelockLevel)
+	{
+		bLocked = false;
+	}
+	return false;
 }
 
 float HCJBalance::StepShieldRegen(float Shield, float MaxShield, float SecondsSinceDamage, float DeltaSeconds, float RegenDelay, float RegenRate, bool bDepleted)

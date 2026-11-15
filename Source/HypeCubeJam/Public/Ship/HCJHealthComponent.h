@@ -92,6 +92,17 @@ public:
 	void SetMaxValues(float InMaxHealth, float InMaxShield);
 	/** Every machine, before BeginPlay: 4 for a ship with shield facings, 1 (the default) for one shield all around. Not replicated. */
 	void SetFacingCount(int32 InNumFacings);
+	/**
+	 * Every machine, after BeginPlay (a ship whose type arrives or changes): new maxima. The server also refills hull
+	 * and shields; a client decodes the replicated strengths again with the new capacity.
+	 */
+	void ChangeMaxValues(float InMaxHealth, float InMaxShield);
+	/**
+	 * SERVER ONLY (a cloaked ship): true drops every facing to nothing and stops the regeneration; false lets every
+	 * facing regenerate at once, from nothing, without the usual delay.
+	 */
+	void SetShieldsSuppressed(bool bSuppressed);
+	bool AreShieldsSuppressed() const { return bShieldsSuppressed; }
 	/** Before BeginPlay (only the server uses them): seconds without a hit before a facing regenerates, and points per second per facing. */
 	void SetShieldRegen(float InDelay, float InRatePerFacing);
 
@@ -143,6 +154,8 @@ protected:
 
 	/** 1 or HCJShield::NumFacings; see SetFacingCount. */
 	int32 NumFacings = 1;
+	/** Server: see SetShieldsSuppressed. */
+	bool bShieldsSuppressed = false;
 
 	/** Initialised to MaxHealth in BeginPlay on the server. */
 	UPROPERTY(ReplicatedUsing = OnRep_Health)

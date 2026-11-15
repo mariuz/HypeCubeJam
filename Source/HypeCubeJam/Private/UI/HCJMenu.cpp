@@ -12,6 +12,9 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Notifications/SProgressBar.h"
+#include "Assets/HCJAssetSettings.h"
+#include "Ship/HCJShipTypes.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -73,15 +76,19 @@ void SHCJMenu::SetPage(EHCJMenuPage NewPage, const FString& InNotice)
 		: Page == EHCJMenuPage::Pause ? BuildPause()
 		: Page == EHCJMenuPage::Lobbies ? BuildLobbies()
 		: Page == EHCJMenuPage::Leaderboards ? BuildLeaderboards()
+		: Page == EHCJMenuPage::Hangar ? BuildHangar()
 		: Page == EHCJMenuPage::Connecting ? BuildConnecting() : BuildMain();
+	// The hangar stands at the left and leaves the world clear: the hull turns there, next to the page.
+	const bool bHangar = Page == EHCJMenuPage::Hangar;
 
 	ChildSlot
 	[
 		SNew(SBorder)
 		.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-		.BorderBackgroundColor(FLinearColor(0.0f, 0.0f, 0.0f, Page == EHCJMenuPage::Main ? 0.35f : 0.5f))
-		.HAlign(HAlign_Center)
+		.BorderBackgroundColor(FLinearColor(0.0f, 0.0f, 0.0f, bHangar ? 0.12f : Page == EHCJMenuPage::Main ? 0.35f : 0.5f))
+		.HAlign(bHangar ? HAlign_Left : HAlign_Center)
 		.VAlign(VAlign_Center)
+		.Padding(FMargin(bHangar ? 70.0f : 0.0f, 0.0f, 0.0f, 0.0f))
 		[
 			SNew(SBorder)
 			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
@@ -89,7 +96,7 @@ void SHCJMenu::SetPage(EHCJMenuPage NewPage, const FString& InNotice)
 			.Padding(FMargin(36.0f, 26.0f))
 			[
 				SNew(SBox)
-				.MinDesiredWidth(620.0f)
+				.MinDesiredWidth(bHangar ? 560.0f : 620.0f)
 				[
 					Content
 				]
@@ -125,8 +132,12 @@ FReply SHCJMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEv
 {
 	if (InKeyEvent.GetKey() == EKeys::Escape)
 	{
-		if (Page == EHCJMenuPage::Settings || Page == EHCJMenuPage::Controls || Page == EHCJMenuPage::Lobbies || Page == EHCJMenuPage::Leaderboards)
+		if (Page == EHCJMenuPage::Settings || Page == EHCJMenuPage::Controls || Page == EHCJMenuPage::Lobbies || Page == EHCJMenuPage::Leaderboards || Page == EHCJMenuPage::Hangar)
 		{
+			if (Page == EHCJMenuPage::Hangar)
+			{
+				if (AHCJPlayerController* Controller = Owner.Get()) { Controller->MenuApplyShip(); }
+			}
 			UHCJUserSettings::Get().Save();
 			SetPage(SettingsReturnPage);
 		}
@@ -354,6 +365,25 @@ TSharedRef<SWidget> SHCJMenu::BuildMain()
 	];
 	Box->AddSlot().AutoHeight().Padding(Row)
 	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+		[
+			SNew(STextBlock)
+			.Text_Lambda([]()
+			{
+				const UHCJUserSettings& S = UHCJUserSettings::Get();
+				return FText::FromString(FString::Printf(TEXT("Your ship:  %s"), HCJShipTypes::Get(S.ShipType).Name));
+			})
+			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 16))
+			.ColorAndOpacity(FSlateColor(MenuAccent))
+		]
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+		[
+			MakeButton(TEXT("HANGAR  (choose your ship)"), [this]() { SetPage(EHCJMenuPage::Hangar); }, false, 17.0f)
+		]
+	];
+	Box->AddSlot().AutoHeight().Padding(Row)
+	[
 		MakeStepper(TEXT("Bots"), []() { return FString::FromInt(UHCJUserSettings::Get().BotCount); },
 			[](int32 Step) { UHCJUserSettings& S = UHCJUserSettings::Get(); S.BotCount = FMath::Clamp(S.BotCount + Step, 0, 15); })
 	];
@@ -556,6 +586,10 @@ TSharedRef<SWidget> SHCJMenu::BuildPause()
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
 		[
+			MakeButton(TEXT("HANGAR  (your next ship)"), [this]() { SetPage(EHCJMenuPage::Hangar); }, false, 20.0f)
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
+		[
 			MakeButton(TEXT("SETTINGS"), [this]() { SetPage(EHCJMenuPage::Settings); }, false, 20.0f)
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
@@ -604,7 +638,10 @@ TSharedRef<SWidget> SHCJMenu::BuildControls()
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeControlRow(TEXT("[T]"), TEXT("next target")) ]
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeControlRow(TEXT("[F]"), TEXT("target the nearest enemy")) ]
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeControlRow(TEXT("[Middle mouse]"), TEXT("hold / release the target")) ]
-		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeControlRow(TEXT("[G]"), TEXT("drop a pickup weapon")) ];
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeControlRow(TEXT("[G]"), TEXT("drop a pickup weapon")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeControlRow(TEXT("[Z] hold"), TEXT("warp drive: charge, then jump ahead")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeControlRow(TEXT("[C]"), TEXT("cloak on / off (no shields, no weapons)")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeControlRow(TEXT("[R] hold"), TEXT("tractor beam on the target")) ];
 
 	TSharedRef<SVerticalBox> Right = SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight() [ Head(TEXT("INTERFACE")) ]
@@ -623,7 +660,10 @@ TSharedRef<SWidget> SHCJMenu::BuildControls()
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeLabel(TEXT("starboard). Red = down: hits from that side reach the hull."), 14.0f, MenuText) ]
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeLabel(TEXT("Torpedoes: a full facing stops most of one; an open side does not."), 14.0f, MenuText) ]
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeLabel(TEXT("Phaser: a beam, strongest up close; it drains the bank in the WEAPON"), 14.0f, MenuText) ]
-		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeLabel(TEXT("panel. Phasers and torpedoes break rocks; bolts do not."), 14.0f, MenuText) ];
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeLabel(TEXT("panel. Phasers and torpedoes break rocks; bolts do not."), 14.0f, MenuText) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeLabel(TEXT("Warp: no weapons; a hit while charging stops it. Cloak: drains its"), 14.0f, MenuText) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeLabel(TEXT("meter; a hit or an enemy within 15 m reveals you. Tractor beam: uses"), 14.0f, MenuText) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeLabel(TEXT("phaser energy; caught in one, boost to break free."), 14.0f, MenuText) ];
 
 	return SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 4.0f))
@@ -657,6 +697,126 @@ TSharedRef<SWidget> SHCJMenu::BuildControls()
 		[
 			MakeKeyLegend(TEXT("[Esc] back"))
 		];
+}
+
+TSharedRef<SWidget> SHCJMenu::BuildHangar()
+{
+	const TWeakObjectPtr<AHCJPlayerController> WeakOwner = Owner;
+	const FMargin Row(0.0f, 5.0f);
+	const auto Apply = [WeakOwner]()
+	{
+		UHCJUserSettings::Get().Save();
+		if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuApplyShip(); }
+	};
+
+	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Left).Padding(FMargin(0.0f, 0.0f, 0.0f, 2.0f))
+		[
+			MakeLabel(TEXT("HANGAR"), 32.0f, MenuAccent, true)
+		]
+		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Left).Padding(FMargin(0.0f, 0.0f, 0.0f, 12.0f))
+		[
+			MakeLabel(SettingsReturnPage == EHCJMenuPage::Pause ? TEXT("Your next ship: it is yours when you respawn.") : TEXT("Choose the ship you fly."), 14.0f, MenuDim)
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
+		[
+			MakeStepper(TEXT("Ship type"), []() { return FString(HCJShipTypes::Get(UHCJUserSettings::Get().ShipType).Name); },
+				[](int32 Step)
+				{
+					UHCJUserSettings& S = UHCJUserSettings::Get();
+					S.ShipType = (HCJShipTypes::SanitizeType(S.ShipType) + Step + HCJShipTypes::NumTypes) % HCJShipTypes::NumTypes;
+					S.ShipVariant = 0;
+				})
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
+		[
+			MakeStepper(TEXT("Hull"), []()
+				{
+					const UHCJUserSettings& S = UHCJUserSettings::Get();
+					const int32 Num = HCJShipTypes::Get(S.ShipType).NumHulls;
+					return S.ShipVariant < 0 ? FString(TEXT("Surprise me")) : FString::Printf(TEXT("%d of %d"), S.ShipVariant + 1, Num);
+				},
+				[](int32 Step)
+				{
+					// -1 ("surprise me") sits between the last hull and the first.
+					UHCJUserSettings& S = UHCJUserSettings::Get();
+					const int32 Num = HCJShipTypes::Get(S.ShipType).NumHulls;
+					S.ShipVariant = ((S.ShipVariant + 1 + Step + (Num + 1)) % (Num + 1)) - 1;
+				})
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
+		[
+			MakeStepper(TEXT("Paint"), []()
+				{
+					static const TCHAR* Names[] = { TEXT("Red"), TEXT("Orange"), TEXT("Yellow"), TEXT("Green"), TEXT("Cyan"), TEXT("Blue"), TEXT("Purple"), TEXT("White"), TEXT("Grey"), TEXT("Black") };
+					const int32 Skin = UHCJUserSettings::Get().ShipSkin;
+					return Skin < 0 ? FString(TEXT("By pilot colour")) : Skin < UE_ARRAY_COUNT(Names) ? FString(Names[Skin]) : FString::Printf(TEXT("Paint %d"), Skin + 1);
+				},
+				[](int32 Step)
+				{
+					UHCJUserSettings& S = UHCJUserSettings::Get();
+					const int32 Num = FMath::Max(UHCJAssetSettings::Get().ShipSkins.Num(), 1);
+					S.ShipSkin = ((S.ShipSkin + 1 + Step + (Num + 1)) % (Num + 1)) - 1;
+				})
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.0f, 10.0f, 0.0f, 8.0f))
+		[
+			SNew(SBox).WidthOverride(560.0f)
+			[
+				SNew(STextBlock)
+				.Text_Lambda([]() { return FText::FromString(HCJShipTypes::Get(UHCJUserSettings::Get().ShipType).Description); })
+				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 15))
+				.ColorAndOpacity(FSlateColor(MenuText))
+				.AutoWrapText(true)
+			]
+		];
+
+	for (int32 StatIndex = 0; StatIndex < static_cast<int32>(HCJShipTypes::EStat::Count); ++StatIndex)
+	{
+		const HCJShipTypes::EStat Stat = static_cast<HCJShipTypes::EStat>(StatIndex);
+		Box->AddSlot().AutoHeight().Padding(FMargin(0.0f, 3.0f))
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[
+				SNew(SBox).WidthOverride(230.0f)
+				[
+					MakeLabel(HCJShipTypes::GetStatName(Stat), 13.0f, MenuDim, true)
+				]
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+			[
+				SNew(SBox).HeightOverride(12.0f)
+				[
+					SNew(SProgressBar)
+					.Percent_Lambda([Stat]() { return TOptional<float>(HCJShipTypes::GetStat(UHCJUserSettings::Get().ShipType, Stat)); })
+					.FillColorAndOpacity(FSlateColor(MenuAccent))
+				]
+			]
+		];
+	}
+
+	Box->AddSlot().AutoHeight().Padding(FMargin(0.0f, 10.0f, 0.0f, 0.0f))
+	[
+		SNew(STextBlock)
+		.Text_Lambda([]()
+		{
+			const FHCJShipTypeDef& Def = HCJShipTypes::Get(UHCJUserSettings::Get().ShipType);
+			return FText::FromString(FString::Printf(TEXT("Hull %.0f   -   shields 4 x %.0f   -   %.0f m/s (boost %.0f)   -   %d torpedoes\nCloak %.0f s   -   warp every %.0f s   -   tractor beam %.0f m"),
+				Def.MaxHull, Def.ShieldFacing, Def.CruiseSpeed / 100.0f, Def.CruiseSpeed / 50.0f, Def.Torpedoes, Def.CloakSeconds, Def.WarpCooldown, Def.TractorRange / 100.0f));
+		})
+		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 13))
+		.ColorAndOpacity(FSlateColor(MenuDim))
+	];
+	Box->AddSlot().AutoHeight().Padding(FMargin(0.0f, 14.0f, 0.0f, 0.0f))
+	[
+		MakeButton(TEXT("DONE"), [this, Apply]() { Apply(); SetPage(SettingsReturnPage); }, true, 20.0f)
+	];
+	Box->AddSlot().AutoHeight()
+	[
+		MakeKeyLegend(TEXT("[Esc] back"))
+	];
+	return Box;
 }
 
 TSharedRef<SWidget> SHCJMenu::BuildConnecting()

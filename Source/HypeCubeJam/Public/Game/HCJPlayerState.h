@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerState.h"
+#include "Ship/HCJShipTypes.h"
 #include "HCJPlayerState.generated.h"
 
 /**
@@ -43,8 +44,20 @@ public:
 	float GetEarliestRespawnServerTime() const { return EarliestRespawnServerTime; }
 
 	/**
-	 * Stable display colour derived from GetPlayerId() only (golden-ratio hue, full saturation), therefore identical
-	 * on every machine without extra replication. Used for the hull tint, scoreboard rows and hypercube map dots.
+	 * The ship this combatant chose (EHCJShipType, hull within the type, paint; HCJShipTypes::Auto = derived from the
+	 * player id / colour). Replicated to everybody: scoreboard, colour. The next ship the server spawns for it is of
+	 * this type (AHCJShipCharacter carries what it actually is).
+	 */
+	uint8 GetShipType() const { return ShipType; }
+	uint8 GetShipVariant() const { return ShipVariant; }
+	uint8 GetShipSkin() const { return ShipSkin; }
+	/** SERVER ONLY: stores a choice after validation (HCJShipTypes::Sanitize*). */
+	void SetShipChoice(int32 InType, int32 InVariant, int32 InSkin);
+
+	/**
+	 * Display colour: the colour of the chosen paint (lifted when it is very dark), else derived from GetPlayerId()
+	 * only (golden-ratio hue, full saturation). Identical on every machine. Used for the hull tint, scoreboard rows
+	 * and hypercube map dots.
 	 */
 	FLinearColor GetPlayerColor() const;
 
@@ -78,4 +91,13 @@ protected:
 
 	UPROPERTY(Replicated)
 	float RespawnServerTime = 0.0f;
+
+	UPROPERTY(Replicated)
+	uint8 ShipType = static_cast<uint8>(EHCJShipType::Fighter);
+
+	UPROPERTY(Replicated)
+	uint8 ShipVariant = HCJShipTypes::Auto;
+
+	UPROPERTY(Replicated)
+	uint8 ShipSkin = HCJShipTypes::Auto;
 };

@@ -222,7 +222,7 @@ void AHCJHUD::DrawTargets(const AHCJShipCharacter& Ship)
 	{
 		AHCJShipCharacter* Other = *It;
 		// A cloaked ship is not drawn on this machine and must not be given away by the HUD either.
-		if (Other == &Ship || Other->IsDead() || Other->IsCloaked())
+		if (Other == &Ship || Other->IsDead() || Other->IsCloakHidden())
 		{
 			continue;
 		}
@@ -650,7 +650,10 @@ void AHCJHUD::DrawTargetPanel(const AHCJShipCharacter& Ship, const AHCJShipChara
 
 	float Y = Top + Padding;
 	const float X = Left + Padding + 4.0f * UIScale;
-	DrawLabel(bManual ? TEXT("TARGET  (held)") : TEXT("TARGET"), FVector2D(X, Y), ReadDimColor, 0.9f);
+	// With the type of its ship, and what it is doing that matters to us.
+	const TCHAR* TargetNote = Target.GetTractorHolder() == &Ship ? TEXT("  IN YOUR BEAM") : Target.GetTractorTarget() == &Ship ? TEXT("  HOLDS YOU")
+		: Target.IsCloaked() ? TEXT("  CLOAK REVEALED") : Target.GetWarpPhase() == EHCJWarpPhase::Charging ? TEXT("  CHARGING WARP") : TEXT("");
+	DrawLabel(FString::Printf(TEXT("TARGET%s  -  %s%s"), bManual ? TEXT(" (held)") : TEXT(""), *FString(Target.GetTypeDef().Name).ToUpper(), TargetNote), FVector2D(X, Y), ReadDimColor, 0.9f);
 	Y += RowHeight * 0.9f;
 	DrawLabel(TargetState != nullptr ? TargetState->GetPlayerName() : FString(TEXT("?")), FVector2D(X, Y), LockColor, 1.2f, false, true);
 	Y += RowHeight * 1.3f;
@@ -809,7 +812,7 @@ void AHCJHUD::DrawRadar(const AHCJShipCharacter& Ship, const AHCJGameState& Game
 	for (TActorIterator<AHCJShipCharacter> It(World); It; ++It)
 	{
 		const AHCJShipCharacter* Other = *It;
-		if (Other == &Ship || Other->IsDead() || Other->IsCloaked() || FVector::DistSquared(Other->GetActorLocation(), ShipLocation) > FMath::Square(TargetMarkerDistance))
+		if (Other == &Ship || Other->IsDead() || Other->IsCloakHidden() || FVector::DistSquared(Other->GetActorLocation(), ShipLocation) > FMath::Square(TargetMarkerDistance))
 		{
 			continue;
 		}
@@ -973,7 +976,7 @@ void AHCJHUD::DrawPortalLabels(const AHCJShipCharacter& Ship)
 	// Enemies here (the ships this machine knows, never a cloaked one) ...
 	for (TActorIterator<AHCJShipCharacter> It(World); It; ++It)
 	{
-		if (*It != &Ship && !It->IsDead() && !It->IsCloaked() && Universe->GetSectorAtLocation(It->GetActorLocation()) == Sector)
+		if (*It != &Ship && !It->IsDead() && !It->IsCloakHidden() && Universe->GetSectorAtLocation(It->GetActorLocation()) == Sector)
 		{
 			++EnemiesInSector;
 		}
@@ -1197,6 +1200,9 @@ void AHCJHUD::DrawHelp(const AHCJGameState& GameState)
 		{ TEXT("[F]"), TEXT("target the nearest enemy") },
 		{ TEXT("[Middle mouse]"), TEXT("hold / release the target") },
 		{ TEXT("[G]"), TEXT("drop a pickup weapon") },
+		{ TEXT("[Z] hold"), TEXT("warp drive: charge, then jump ahead") },
+		{ TEXT("[C]"), TEXT("cloak on / off") },
+		{ TEXT("[R] hold"), TEXT("tractor beam on the target") },
 	};
 	static const FRow InterfaceRows[] = {
 		{ TEXT("[Tab]"), TEXT("scoreboard (hold)") },
@@ -1229,7 +1235,9 @@ void AHCJHUD::DrawHelp(const AHCJGameState& GameState)
 	const FString TorpedoTip2 = TEXT("through a facing that is down it nearly finishes a ship. INCOMING TORPEDO: boost across its path, or take it on a full side.");
 	const FString PhaserTip = TEXT("Phaser (WEAPON, bottom right): a beam that hits at once and is strongest up close; it drains the phaser bank, and with the bank empty");
 	const FString PhaserTip2 = TEXT("the trigger fires the blaster. Phasers and torpedoes also break rocks: big ones into pieces. A pickup weapon takes the place of the phaser.");
-	const float Height = 2.0f * Padding + TitleHeight + 9.0f * LineHeight + 14.0f * UIScale + ColumnsHeight + HeadHeight + LineHeight;
+	const FString SystemsTip = TEXT("Warp (hold [Z]): no weapons, a hit while charging stops it, it drops out before rock. Cloak ([C]): shields down, no weapons; a hit or an");
+	const FString SystemsTip2 = TEXT("enemy within 15 m reveals you. Tractor beam (hold [R]): holds and slows your target on phaser energy; caught in one, boost to break free.");
+	const float Height = 2.0f * Padding + TitleHeight + 11.0f * LineHeight + 14.0f * UIScale + ColumnsHeight + HeadHeight + LineHeight;
 	const float Left = (Canvas->ClipX - Width) * 0.5f;
 	const float Top = FMath::Max((Canvas->ClipY - Height) * 0.5f, 8.0f * UIScale);
 
@@ -1258,6 +1266,10 @@ void AHCJHUD::DrawHelp(const AHCJGameState& GameState)
 	DrawLabel(PhaserTip, FVector2D(X, Y), ReadDimColor, 1.0f);
 	Y += LineHeight;
 	DrawLabel(PhaserTip2, FVector2D(X, Y), ReadDimColor, 1.0f);
+	Y += LineHeight;
+	DrawKeyMarkup(SystemsTip, FVector2D(X, Y - 2.0f * UIScale), ReadDimColor, 1.0f, false);
+	Y += LineHeight;
+	DrawKeyMarkup(SystemsTip2, FVector2D(X, Y - 2.0f * UIScale), ReadDimColor, 1.0f, false);
 	Y += LineHeight + 10.0f * UIScale;
 
 	const auto DrawColumn = [&](float ColumnX, float ColumnY, const TCHAR* Title, TConstArrayView<FRow> Rows, bool bKeys)

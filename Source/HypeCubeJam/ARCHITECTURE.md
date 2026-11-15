@@ -39,7 +39,9 @@ The public headers are the contract; every function comment says which machine r
 
 ## Authority
 - Movement: `ACharacter` + `UHCJShipMovementComponent` (MOVE_Flying, zero gravity). The owning client predicts,
-  the server is authoritative; boost rides in the saved-move flags so it never causes corrections.
+  the server is authoritative. Boost and warp ride in the saved-move flags as "this move WAS boosted / flown at warp"
+  (the client's meter and drive decide; the server's copies only limit them), so the two ends never disagree about a
+  move. See "Ship types, warp drive, cloak, tractor beam".
 - Combat: the client sends only a fire intent (`ServerSetFiring`). The server fires from its own view of the ship at
   most once per `FireInterval`, spawns replicated `AHCJProjectile`s, applies damage in `TakeDamage` (server only),
   owns health and the four shield facings (`UHCJHealthComponent`, replicated; see "Shield facings"), death, score
@@ -52,8 +54,9 @@ The public headers are the contract; every function comment says which machine r
 - HUD and input exist only on the owning client and read replicated/local state.
 
 ## Cosmetics (never on a dedicated server, nothing extra replicated)
-- Ship look: hull = `UHCJAssetSettings::PickShipVariant(PlayerId)`, skin = nearest `ShipSkins` colour to
-  `AHCJPlayerState::GetPlayerColor()`; applied in `AHCJShipCharacter::ApplyShipLook` when the player state arrives.
+- Ship look: hull = `HCJShipTypes::PickHullMesh(type, chosen hull or a hash of the player id)`, skin = the chosen paint,
+  else the nearest `ShipSkins` colour to `AHCJPlayerState::GetPlayerColor()`; size = `ShipMeshLength` x the type's scale;
+  applied in `AHCJShipCharacter::ApplyShipLook` when the player state or the replicated type / hull / paint arrive.
   Engine sound, boost trail and thruster glow follow the replicated velocity in `TickShipEffects`.
 - Bolt: mesh, trail and muzzle flash in `AHCJProjectile::BeginPlay` (the replicated spawn is the event). Impact:
   where the local simulation of the bolt hits (`OnCollisionHit`), or in `Destroyed()` on clients when the server
@@ -132,8 +135,8 @@ The public headers are the contract; every function comment says which machine r
   projectile reads speed, lifetime, damage and homing from the table by its replicated weapon type.
 - Power-ups: `PowerupFlags` (replicated to all) + end times (owner only). Overdrive ->
   `UHCJShipMovementComponent::SetOverdrive` on server and owning client (saved moves keep the flag for replays, the
-  server never reads it from the client). Quad -> damage multiplier at spawn. Cloak -> hidden on other machines,
-  ignored by bots and missiles beyond `CloakDetectRange`.
+  server never reads it from the client). Quad -> damage multiplier at spawn. The Cloak bit is the cloaking device's now (not a timed power-up; a CLOAK pad
+  refills its meter): see "Ship types, warp drive, cloak, tractor beam".
 - Bots: `FindUsefulPickup` every Think; Wander flies to it, Attack detours over it while firing.
 
 ## Teleport protocol
@@ -181,7 +184,8 @@ stock and reload, damage against a facing up / down, arming and blast falloff, h
 facing and the bots' rule, HUD rules incl. markers clear of panels); phasers (`HypeCubeJam.Phaser.*`: bank, falloff / beam byte / aim
 assist / design targets, weapon slots); asteroids (`HypeCubeJam.Asteroids.*`: split determinism and pieces inside the rock, replication
 round trip in any order); effects (`HypeCubeJam.Effects.*`: shockwave falloff, debris caps); music (`HypeCubeJam.Audio.MusicTracks`); online logic (config validation and the unavailable states, lobby attribute packing / parsing, join
-address, stat tracker, leaderboard page); the intro (`HypeCubeJam.UI.IntroFlow`: every way it ends, title and fade
+address, stat tracker, leaderboard page); ship systems (`HypeCubeJam.Systems.*`: warp state machine, warp and boost followed
+by the server, tractor pull, cloak device) and ship types (`HypeCubeJam.ShipTypes.*`: table, server validation); the intro (`HypeCubeJam.UI.IntroFlow`: every way it ends, title and fade
 timing; `HypeCubeJam.UI.IntroCommandLine`: which command lines play it); rock variant and visual transform envelope; ship hull/skin selection; sector sky; black hole placement
 (determinism, clearances, share of sectors) and gravity curve (direction, monotonic, clamp, tuning).
 
@@ -206,6 +210,7 @@ A = Hypercube + World (+ Tests), B = Ship, C = Game, D = AI. Each header `X.h` h
 | `Public/Ship/HCJShipCharacter.h` | B |
 | `Public/Ship/HCJShipMovementComponent.h` | B |
 | `Public/Ship/HCJHealthComponent.h`, `Public/Ship/HCJShieldFacings.h` | B |
+| `Public/Ship/HCJShipTypes.h`, `Public/Ship/HCJShipSystems.h` | B |
 | `Public/Ship/HCJProjectile.h`, `Public/Ship/HCJTorpedo.h`, `Public/Ship/HCJTorpedoBlast.h`, `Public/Ship/HCJPhaser.h` | B |
 | `Public/World/HCJAsteroidField.h` | A |
 | `Public/Effects/HCJEffectsLogic.h`, `Public/Effects/HCJEffectsDirector.h` | shared |
@@ -243,8 +248,54 @@ D -> C `AHCJPlayerState::GetCurrentSector`.
   `AHCJShipCharacter::ServerSetLockTarget`, replicated `bSpawnShield`; torpedoes: `ServerFireTorpedo`, owner-only
   `TorpedoCount` / `TorpedoReadyTime`.
 - Aim assist: `AHCJShipCharacter::HitSphere` (query only, blocks WorldDynamic = projectiles, no overlap events).
-- Boost meter: simulated in `UHCJShipMovementComponent::UpdateCharacterStateBeforeMovement` on owning client and
-  server; carried in the saved moves; not replicated.
+- Boost meter: simulated in `UHCJShipMovementComponent::UpdateCharacterStateBeforeMovement` on the owning client
+  (`HCJBalance::StepBoost`); the server follows the client's "this move was boosted" flag and keeps its own meter as
+  the limit (`StepBoostFollow`); carried in the saved moves; not replicated.
+
+## Ship types, warp drive, cloak, tractor beam
+- `Ship/HCJShipTypes.h` (plain C++, tested): `EHCJShipType` (interceptor, fighter, gunship, scout, cruiser) and the ONE
+  table `FHCJShipTypeDef` (flight model, hull, shield facing, fore armour, phaser / bolt scales, torpedoes, cloak, warp,
+  tractor numbers, hull mesh range, size). `HCJShipTypes::Sanitize*` validate a client's choice, `PickHullMesh`,
+  `PickBotType`, `GetStat` (hangar bars). Code, not config: prediction needs identical numbers on client and server.
+- Choice: `UHCJUserSettings::ShipType / ShipVariant / ShipSkin` (hangar page of `SHCJMenu`; preview actor in
+  `AHCJPlayerController::UpdateHangarPreview`) -> `AHCJPlayerController::ServerSetShipChoice` (reliable; once per
+  controller and from the hangar) -> `AHCJGameMode::SetShipChoice` (validates; a ship still under its spawn shield is
+  changed in place) -> `AHCJPlayerState::ShipType / ShipVariant / ShipSkin` (replicated; scoreboard, player colour) ->
+  `AHCJGameMode::RestartPlayer` -> `AHCJShipCharacter::ServerInitShipType` -> replicated `ShipType / ShipVariant /
+  ShipSkin` on the ship -> `ApplyShipType` on every machine (movement component, capsule / hit sphere / bubble size,
+  `UHCJHealthComponent::ChangeMaxValues`, look). Bots: `AHCJGameMode::SpawnBot` (`-HCJBotType=<n>`, `-HCJClassic`).
+- `Ship/HCJShipSystems.h` (plain C++, tested): `FHCJWarpDrive` (`Step` for a ship that decides for itself, `StepFollow`
+  for the server's copy of a remote client's drive, `Cancel`), `HCJWarp::ShouldDropOutAtEdge`; `FHCJCloakDevice`
+  (meter, lock, reveal), `HCJCloak::*`; `HCJTractor::CanHold / ComputePull / ShouldBreak`. `HCJBalance::StepBoostFollow`
+  is the same idea for the boost meter.
+- Warp lives in `UHCJShipMovementComponent`: key = `FLAG_Custom_1`, "flown at warp" = `FLAG_Custom_2` (set in the saved
+  move's `PostUpdate`), the drive's state is kept in every saved move; `UpdateCharacterStateBeforeMovement` steps it,
+  `CalcVelocity` gives the fixed warp velocity, `ControlledCharacterMove` makes the thrust the nose around the jump,
+  `ShouldWarpDropOut` (sector edge, sphere sweep against WorldStatic), `HandleImpact` -> `ConsumeWarpImpact` (server:
+  damage). The ship: `WarpStateRep` (everybody, effects), `WarpCancelCount` (owner: `ServerCancelWarp` -> the
+  prediction stops too), `ServerTickSystems`.
+- Tractor beam: `AHCJShipCharacter::TractorTarget` on the holder and `TractorHolder` on the victim (both replicated to
+  everybody; no RPC but the key, `ServerSetTractor`). The victim's `UHCJShipMovementComponent::SetTractor` (from
+  `OnRep_TractorHolder`, server and clients) slows it (`GetMaxSpeed`) and pulls it in `PhysFlying`
+  (`HCJTractor::ComputePull`); the owning client uses the holder's replicated position - small corrections while held.
+  It drains the holder's `PhaserBank`. `ServerTickSystems` starts, keeps and breaks it; `ServerReleaseTractor`.
+- Cloak: `FHCJCloakDevice` on the server (`ServerSetCloak`), `EHCJPowerup::Cloak` + `CloakRevealed` in `PowerupFlags`
+  (everybody), `CloakEnergyRep` (owner). `IsCloakHidden()` is what every "can it be seen" test asks (HUD markers, radar,
+  target lock, phaser assist, missiles, torpedoes, turrets, bots, the player state's sector). Shields:
+  `UHCJHealthComponent::SetShieldsSuppressed`. Weapons: `ServerWeaponsBlocked` / `AreWeaponsOffline`. Look:
+  `ApplyCloakLook` swaps every hull material for `UHCJAssetSettings::CloakMaterial` (`CloakSkinState`: another ship's
+  shimmer, the own ship half transparent, revealed flicker); `bCloakLook` keeps glint, engine glow, trail and sounds off.
+- Looks (`TickSystemEffects`, every machine that draws, nothing extra replicated): warp streak quad on the own camera
+  (`WarpStreakMaterial`), FOV kick, engine flare while charging, long trail at warp, `UHCJEffectsDirector::PlayWarpFlash`
+  where a ship jumps and drops out; the tractor beam quad (the phaser beam material in blue-white).
+- HUD: `AHCJHUD::DrawSystems` (lines above the crosshair), the WARP / CLOAK / TRACTOR rows of `DrawLoadout`, the type in
+  `DrawTargetPanel` / `DrawScoreboard` / `DrawKillFeed` (`AHCJGameState::MulticastKillEvent` carries both types in one
+  byte), hints `EHCJHint::TractorCaught / Warp / Cloak / Tractor`.
+- Bots: `AHCJBotController::ThinkSystems` / `TickSystems` (chances in `FHCJBotSkill`).
+- Game mode statistics (`Systems t=` log line): warps, cloaks, reveals, tractor holds / breaks, kills / deaths by ship type.
+- Development: `-HCJQuitAfter=<s>` (the process ends by itself), `-HCJBotsOnly` (the local player has no ship: a headless
+  bot match as a plain standalone game, no network), `-HCJClassic`, `-HCJBotType=<n>`, `HCJMenuCmd warp | cloak | tractor |
+  ship | enemyship | enemywarp | enemycloak | enemytractor | hangar`.
 
 ## Shield facings
 - `Ship/HCJShieldFacings.h` (plain C++, tested): `EHCJShieldFacing` (fore, aft, port, starboard) and `namespace

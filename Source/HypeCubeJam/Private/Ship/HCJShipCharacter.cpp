@@ -59,6 +59,19 @@ namespace
 
 	/** Seconds between two shield hit events of one ship (a scatter blast or a pulse stream is one flare, not ten). */
 	constexpr float ShieldHitInterval = 0.08f;
+
+	/** Hull points a ship loses when it runs into something at warp. */
+	constexpr float WarpImpactDamage = 22.0f;
+	/** The colour of warp and tractor effects. */
+	const FLinearColor WarpColor(0.55f, 0.8f, 1.0f, 1.0f);
+	const FLinearColor TractorColor(0.45f, 0.75f, 1.0f, 1.0f);
+
+	/** "The own ship" for looks: the pawn of the first local player (a bot on a listen host is locally controlled too). */
+	bool IsLocalPlayersShip(const AHCJShipCharacter& Ship)
+	{
+		const APlayerController* Pilot = Cast<APlayerController>(Ship.GetController());
+		return Pilot != nullptr && Pilot->IsLocalController();
+	}
 }
 
 AHCJShipCharacter::AHCJShipCharacter(const FObjectInitializer& ObjectInitializer)
@@ -179,9 +192,11 @@ void AHCJShipCharacter::BeginPlay()
 	if (HealthComponent != nullptr)
 	{
 		// Before the component begins play; config of the game, so the same numbers on every machine.
+		// (A client already has the replicated type here; the server stamps it right after the spawn: ServerInitShipType.)
 		const UHCJGameplaySettings& Gameplay = UHCJGameplaySettings::Get();
-		HealthComponent->SetMaxValues(HealthComponent->GetMaxHealth(), Gameplay.ShieldFacingCapacity * HCJShield::NumFacings);
-		HealthComponent->SetShieldRegen(Gameplay.ShieldRegenDelay, Gameplay.ShieldRegenRate);
+		const FHCJShipTypeDef& TypeDef = GetTypeDef();
+		HealthComponent->SetMaxValues(TypeDef.MaxHull, TypeDef.ShieldFacing * HCJShield::NumFacings);
+		HealthComponent->SetShieldRegen(Gameplay.ShieldRegenDelay, TypeDef.ShieldRegenRate);
 #if !UE_BUILD_SHIPPING
 		// Measurement aid for headless bot matches (see the development notes): the single shield of the builds
 		// before the facings (50 points, 15 per second after 4 s), to compare kill rates with the same binary.
@@ -247,10 +262,13 @@ void AHCJShipCharacter::BeginPlay()
 		SetupShipVisuals();
 	}
 
+	ApplyShipType();
 	UpdateShipColor();
 	UpdateCameraMode();
 	// A ship that arrives with power-ups already running (late join, coming into range).
 	ApplyPowerupState();
+	OnRep_TractorHolder();
+	WarpPhaseLook = WarpStateRep;
 
 	// A late joiner can receive a ship that is already dead (it lingers for DeathLingerSeconds): no explosion for it.
 	if (bIsDead)
@@ -277,6 +295,11 @@ void AHCJShipCharacter::Tick(float DeltaSeconds)
 	bSpawnShield = IsSpawnProtected();
 	ServerApplyPendingTeleport();
 	ServerTickPowerups();
+	ServerTickSystems(DeltaSeconds);
+	if (bIsDead)
+	{
+		return;
+	}
 	ServerTickPhaser(DeltaSeconds);
 	ServerTickWeapon();
 	ServerTickBounds(DeltaSeconds);
@@ -298,6 +321,14 @@ void AHCJShipCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	DOREPLIFETIME(AHCJShipCharacter, PhaserTarget);
 	DOREPLIFETIME_CONDITION(AHCJShipCharacter, PhaserChargeRep, COND_OwnerOnly);
 	DOREPLIFETIME_CONDITION(AHCJShipCharacter, BaseWeaponType, COND_OwnerOnly);
+	DOREPLIFETIME(AHCJShipCharacter, ShipType);
+	DOREPLIFETIME(AHCJShipCharacter, ShipVariant);
+	DOREPLIFETIME(AHCJShipCharacter, ShipSkin);
+	DOREPLIFETIME(AHCJShipCharacter, WarpStateRep);
+	DOREPLIFETIME_CONDITION(AHCJShipCharacter, WarpCancelCount, COND_OwnerOnly);
+	DOREPLIFETIME(AHCJShipCharacter, TractorTarget);
+	DOREPLIFETIME(AHCJShipCharacter, TractorHolder);
+	DOREPLIFETIME_CONDITION(AHCJShipCharacter, CloakEnergyRep, COND_OwnerOnly);
 }
 
 EHCJWeapon AHCJShipCharacter::GetFireWeapon() const
@@ -373,9 +404,11 @@ void AHCJShipCharacter::ServerTickPhaser(float DeltaSeconds)
 {
 	UWorld* World = GetWorld();
 	const UHCJGameplaySettings& Gameplay = UHCJGameplaySettings::Get();
-	const bool bWantsBeam = bWantsToFire && GetWeapon() == EHCJWeapon::Phaser && GetController() != nullptr;
-	const bool bBeam = PhaserBank.Step(bWantsBeam, DeltaSeconds, Gameplay.PhaserDrainSeconds, Gameplay.PhaserRechargeDelay, Gameplay.PhaserRechargeSeconds,
-		Gameplay.PhaserRelockLevel);
+	const FHCJShipTypeDef& TypeDef = GetTypeDef();
+	const bool bWantsBeam = bWantsToFire && GetWeapon() == EHCJWeapon::Phaser && GetController() != nullptr && !ServerWeaponsBlocked();
+	// (The table's recharge time is for the configured 5 s; a changed config scales every type alike.)
+	const bool bBeam = PhaserBank.Step(bWantsBeam, DeltaSeconds, Gameplay.PhaserDrainSeconds, Gameplay.PhaserRechargeDelay,
+		Gameplay.PhaserRechargeSeconds * (TypeDef.PhaserRechargeSeconds / 5.0f), Gameplay.PhaserRelockLevel);
 	PhaserChargeRep = HCJPhaser::PackCharge(PhaserBank.Charge, PhaserBank.bLocked);
 	if (!bBeam)
 	{
@@ -390,10 +423,6 @@ void AHCJShipCharacter::ServerTickPhaser(float DeltaSeconds)
 	}
 
 	SpawnProtectionEndTime = 0.0f;
-	if (IsCloaked())
-	{
-		ServerSetPowerup(EHCJPowerup::Cloak, 0.0f);
-	}
 
 	const FHCJWeaponDef& Def = Gameplay.GetWeapon(EHCJWeapon::Phaser);
 	const float Range = FMath::Max(Def.BeamRange, 100.0f);
@@ -413,7 +442,7 @@ void AHCJShipCharacter::ServerTickPhaser(float DeltaSeconds)
 		for (TActorIterator<AHCJShipCharacter> It(World); It; ++It)
 		{
 			AHCJShipCharacter* Other = *It;
-			if (Other == this || Other->IsDead() || Other->IsCloaked() || FVector::DistSquared(Other->GetActorLocation(), Start) > FMath::Square(static_cast<double>(Range) + 200.0))
+			if (Other == this || Other->IsDead() || Other->IsCloakHidden() || FVector::DistSquared(Other->GetActorLocation(), Start) > FMath::Square(static_cast<double>(Range) + 200.0))
 			{
 				continue;
 			}
@@ -471,7 +500,7 @@ void AHCJShipCharacter::ServerTickPhaser(float DeltaSeconds)
 		return;
 	}
 	const float Damage = Def.Damage * Seconds * HCJPhaser::RangeScale(Length, Range, Gameplay.PhaserFullDamageFraction, Gameplay.PhaserEdgeScale)
-		* (HasPowerup(EHCJPowerup::Quad) ? Gameplay.QuadDamageMultiplier : 1.0f);
+		* (HasPowerup(EHCJPowerup::Quad) ? Gameplay.QuadDamageMultiplier : 1.0f) * TypeDef.PhaserDamageScale;
 	if (AHCJUniverse* Universe = Cast<AHCJUniverse>(HitActor))
 	{
 		Universe->ServerDamageAsteroid(Hit.GetComponent(), Hit.Item, Damage * Gameplay.PhaserRockDamageScale, GetController());
@@ -581,6 +610,12 @@ void AHCJShipCharacter::ServerFireTorpedo_Implementation()
 	{
 		return;
 	}
+	if (ServerWeaponsBlocked())
+	{
+		// A fire attempt drops the cloak; the tubes work a moment later.
+		bWantsCloak = false;
+		return;
+	}
 	const UHCJGameplaySettings& Gameplay = UHCJGameplaySettings::Get();
 	const FHCJWeaponDef& Def = Gameplay.GetWeapon(EHCJWeapon::Torpedo);
 	FHCJTorpedoBay Bay;
@@ -595,10 +630,6 @@ void AHCJShipCharacter::ServerFireTorpedo_Implementation()
 	LastTorpedoFireTime = static_cast<float>(World->GetTimeSeconds());
 
 	SpawnProtectionEndTime = 0.0f;
-	if (IsCloaked())
-	{
-		ServerSetPowerup(EHCJPowerup::Cloak, 0.0f);
-	}
 
 	const FVector AimDirection = GetAimRotation().Vector();
 	const FTransform SpawnTransform(AimDirection.Rotation(), GetMuzzleLocation());
@@ -693,8 +724,16 @@ bool AHCJShipCharacter::ServerGiveItem(EHCJPickupItem Item)
 		ServerSetPowerup(EHCJPowerup::Quad, Gameplay.QuadSeconds);
 		return true;
 	case EHCJPickupItem::Cloak:
-		ServerSetPowerup(EHCJPowerup::Cloak, Gameplay.CloakSeconds);
+	{
+		// A full cloak meter, and for a while it does not drain. Wasted on a full meter.
+		if (!Cloak.Refill())
+		{
+			return false;
+		}
+		CloakFreeEndTime = static_cast<float>(GetWorld()->GetTimeSeconds()) + HCJCloak::PadFreeSeconds;
+		CloakEnergyRep = HCJCloak::PackEnergy(Cloak.Energy, Cloak.bLocked);
 		return true;
+	}
 	default:
 		return false;
 	}
@@ -731,7 +770,8 @@ void AHCJShipCharacter::ServerTickPowerups()
 	for (int32 Index = 0; Index < UE_ARRAY_COUNT(PowerupEndTime); ++Index)
 	{
 		const uint8 Bit = static_cast<uint8>(1 << Index);
-		if ((PowerupFlags & Bit) != 0 && Now >= PowerupEndTime[Index])
+		// (The cloak bit is the cloaking device's, not a timed power-up: ServerTickSystems.)
+		if (Bit != EHCJPowerup::Cloak && (PowerupFlags & Bit) != 0 && Now >= PowerupEndTime[Index])
 		{
 			ServerSetPowerup(Bit, 0.0f);
 		}
@@ -753,18 +793,98 @@ void AHCJShipCharacter::ApplyPowerupState()
 		ShipMovement->SetOverdrive(!bIsDead && HasPowerup(EHCJPowerup::Overdrive), Rules.OverdriveSpeedMultiplier, Rules.OverdriveAccelerationMultiplier);
 	}
 
-	// Cloak: other machines do not draw the ship at all; its pilot keeps seeing it.
-	const bool bHide = IsCloaked() && !bIsDead && !IsLocallyControlled();
-	if (bHide != bCloakLook && GetNetMode() != NM_DedicatedServer)
+	// Cloak: other machines draw a faint shimmer (or nothing without the material); its pilot sees it half transparent.
+	const bool bCloakedNow = IsCloaked() && !bIsDead;
+	if (bWasCloakedLook && !bCloakedNow && GetWorld() != nullptr)
 	{
-		bCloakLook = bHide;
+		LocalDecloakTime = static_cast<float>(GetWorld()->GetTimeSeconds());
+	}
+	if (bCloakedNow != bWasCloakedLook && GetNetMode() != NM_DedicatedServer && bVisualsReady && !bIsDead)
+	{
+		const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
+		UE_LOG(LogHCJ, Verbose, TEXT("Cloak: %s%s %s"), *GetName(), IsLocalPlayersShip(*this) ? TEXT(" (own ship)") : TEXT(""), bCloakedNow ? TEXT("cloaks") : TEXT("decloaks"));
+		UHCJAssetSettings::PlaySoundAt(this, Settings.ShieldCollapseSounds, TEXT("cloak sound"), GetActorLocation(), Settings.ShieldCollapseVolume, 0.04f,
+			EHCJSoundGroup::World, bCloakedNow ? 0.55f : 1.5f);
+	}
+	bWasCloakedLook = bCloakedNow;
+	if (UHCJShipMovementComponent* ShipMovement = GetShipMovement())
+	{
+		// No warp while cloaked (server and owning client alike).
+		ShipMovement->SetWarpBlocked(bCloakedNow);
+	}
+	ApplyCloakLook();
+}
+
+void AHCJShipCharacter::ApplyCloakLook()
+{
+	if (GetNetMode() == NM_DedicatedServer || !bVisualsReady)
+	{
+		return;
+	}
+	const bool bCloakedNow = IsCloaked() && !bIsDead;
+	const bool bOwn = IsLocalPlayersShip(*this);
+	const int32 NewState = !bCloakedNow ? 0 : bOwn ? 2 : IsCloakRevealed() ? 3 : 1;
+	// Hidden from this machine's markers, glints, trails and sounds.
+	bCloakLook = NewState == 1;
+	if (NewState == CloakSkinState)
+	{
+		return;
+	}
+	const bool bWasSkinned = CloakSkinState > 0;
+	CloakSkinState = NewState;
+
+	if (CloakMaterial == nullptr)
+	{
+		// No cloak material: another ship's cloaked hull is simply not drawn.
 		for (UStaticMeshComponent* Body : { HullMesh.Get(), WingMesh.Get(), EngineMesh.Get() })
 		{
 			if (Body != nullptr)
 			{
-				Body->SetVisibility(!bHide && !bIsDead, false);
+				Body->SetVisibility(NewState != 1 && !bIsDead, false);
 			}
 		}
+		return;
+	}
+
+	const bool bSkinned = NewState > 0;
+	if (bSkinned == bWasSkinned)
+	{
+		return;
+	}
+	for (UStaticMeshComponent* Body : { HullMesh.Get(), WingMesh.Get(), EngineMesh.Get() })
+	{
+		if (Body == nullptr)
+		{
+			continue;
+		}
+		Body->SetCastShadow(!bSkinned);
+		if (bSkinned)
+		{
+			for (int32 Slot = 0; Slot < Body->GetNumMaterials(); ++Slot)
+			{
+				Body->SetMaterial(Slot, CloakMaterial);
+			}
+		}
+		else if (Body == HullMesh || !bUsingShipMesh)
+		{
+			for (int32 Slot = 0; Slot < Body->GetNumMaterials(); ++Slot)
+			{
+				Body->SetMaterial(Slot, HullMaterial);
+			}
+		}
+		else
+		{
+			// A thruster: the mesh's own materials, and the glow instance in its slot.
+			Body->EmptyOverrideMaterials();
+			if (ThrusterGlowSlot != INDEX_NONE && ThrusterGlowMaterial != nullptr)
+			{
+				Body->SetMaterial(ThrusterGlowSlot, ThrusterGlowMaterial);
+			}
+		}
+	}
+	if (HullMesh != nullptr)
+	{
+		HullMesh->SetOverlayMaterial(bSkinned ? nullptr : RimMaterial.Get());
 	}
 }
 
@@ -866,6 +986,14 @@ float AHCJShipCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Dama
 	const AHCJProjectile* CauserProjectile = Cast<AHCJProjectile>(DamageCauser);
 	const bool bTorpedo = bDirected && CauserProjectile != nullptr && CauserProjectile->IsTorpedo();
 	const EHCJShieldFacing HitFacing = HCJShield::SelectFacing(LocalHitDirection);
+	// Fore armour of the heavy hulls: a hit on the fore facing does less.
+	const float FacingScale = (bDirected && HitFacing == EHCJShieldFacing::Fore) ? GetTypeDef().ForeDamageScale : 1.0f;
+	// A hit gives a cloaked ship away for a moment, and stops a warp drive that is spooling up.
+	Cloak.Reveal(HCJCloak::HitRevealSeconds);
+	if (const UHCJShipMovementComponent* ShipMovement = GetShipMovement(); ShipMovement != nullptr && ShipMovement->GetWarpDrive().Phase == EHCJWarpPhase::Charging)
+	{
+		ServerCancelWarp(TEXT("hit while charging"));
+	}
 	const float FacingBefore = bDirected ? HealthComponent->GetFacingFraction(HealthComponent->GetNumFacings() > 1 ? static_cast<int32>(HitFacing) : 0) : 0.0f;
 
 	// May run Die() synchronously through OnDepleted.
@@ -875,15 +1003,20 @@ float AHCJShipCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Dama
 	{
 		const UHCJGameplaySettings& Gameplay = UHCJGameplaySettings::Get();
 		const float FullDamage = FMath::Max(Gameplay.GetWeapon(EHCJWeapon::Torpedo).Damage, 1.0f);
-		Applied = HealthComponent->ApplyTorpedoOnFacing(Gameplay.TorpedoShieldDamage * ActualDamage / FullDamage, ActualDamage, HitFacing, EventInstigator, DamageCauser, &ShieldHit);
+		Applied = HealthComponent->ApplyTorpedoOnFacing(Gameplay.TorpedoShieldDamage * ActualDamage / FullDamage, ActualDamage * FacingScale, HitFacing, EventInstigator, DamageCauser, &ShieldHit);
 		UE_LOG(LogHCJ, Verbose, TEXT("Torpedo: %s took %.0f of %.0f on its %s facing (%.0f %% before): %.1f to the shield, %.1f to the hull, hull now %.0f"), *GetName(), ActualDamage, FullDamage,
 			HCJShield::FacingName(HitFacing), FacingBefore * 100.0f, ShieldHit.ToShield, ShieldHit.ToHull, HealthComponent->GetHealth());
 	}
 	else
 	{
 		Applied = bDirected
-			? HealthComponent->ApplyDamageOnFacing(ActualDamage, HitFacing, EventInstigator, DamageCauser, &ShieldHit)
+			? HealthComponent->ApplyDamageOnFacing(ActualDamage * FacingScale, HitFacing, EventInstigator, DamageCauser, &ShieldHit)
 			: HealthComponent->ApplyDamage(ActualDamage, EventInstigator, DamageCauser, &ShieldHit);
+	}
+	if (TractorTarget != nullptr)
+	{
+		// Enough of this and the beam lets go (ServerTickSystems).
+		TractorDamageTaken += Applied;
 	}
 
 	if (AHCJPlayerController* Shooter = Cast<AHCJPlayerController>(EventInstigator); Shooter != nullptr && Shooter != VictimController
@@ -945,12 +1078,19 @@ void AHCJShipCharacter::HandleHealthChanged(UHCJHealthComponent* Component)
 	const float Now = static_cast<float>(World->GetTimeSeconds());
 	// A ship that just came into view (or was just spawned) is being filled in, not hit.
 	const bool bSettled = GetGameTimeSinceCreation() > 0.5f;
+	// Three or four facings gone in one update is a cloak going up (its shields are switched off), not a collapse under fire.
+	int32 NumNewlyDown = 0;
+	for (int32 Facing = 0; Facing < HCJShield::NumFacings; ++Facing)
+	{
+		NumNewlyDown += (Component->GetFacingShield(Facing) <= 0.0f && SeenFacingShield[Facing] > 0.0f) ? 1 : 0;
+	}
+	const bool bSwitchedOff = NumNewlyDown >= 3 || IsCloaked();
 	for (int32 Facing = 0; Facing < HCJShield::NumFacings; ++Facing)
 	{
 		const float Strength = Component->GetFacingShield(Facing);
 		const float Before = SeenFacingShield[Facing];
 		SeenFacingShield[Facing] = Strength;
-		if (!bSettled || Strength >= Before - 0.01f)
+		if (!bSettled || Strength >= Before - 0.01f || bSwitchedOff)
 		{
 			continue;
 		}
@@ -1109,7 +1249,7 @@ void AHCJShipCharacter::SetBoosting(bool bNewBoosting)
 bool AHCJShipCharacter::IsBoosting() const
 {
 	const UHCJShipMovementComponent* ShipMovement = GetShipMovement();
-	return ShipMovement != nullptr && ShipMovement->WantsToBoost();
+	return ShipMovement != nullptr && (ShipMovement->WantsToBoost() || ShipMovement->IsBoostActive());
 }
 
 void AHCJShipCharacter::SetFiring(bool bNewFiring)
@@ -1242,6 +1382,26 @@ void AHCJShipCharacter::Die(AController* Killer, AActor* Causer)
 	TorpedoCount = 0;
 	PhaserBeam = 0;
 	PhaserTarget = nullptr;
+	// Beams let go, the cloak drops, the drive stops.
+	if (TractorTarget != nullptr)
+	{
+		ServerReleaseTractor(TEXT("the holder was destroyed"), false);
+	}
+	if (AHCJShipCharacter* Holder = GetTractorHolder())
+	{
+		Holder->ServerReleaseTractor(TEXT("the held ship was destroyed"), false);
+	}
+	TractorHolder = nullptr;
+	Cloak = FHCJCloakDevice();
+	bWantsCloak = false;
+	bWantsTractor = false;
+	WarpStateRep = 0;
+	if (UHCJShipMovementComponent* ShipMovement = GetShipMovement())
+	{
+		ShipMovement->SetWantsToWarp(false);
+		ShipMovement->ResetWarp();
+		ShipMovement->SetTractor(nullptr, 0.0f);
+	}
 	ApplyPowerupState();
 
 	AController* VictimController = GetController();
@@ -1300,6 +1460,8 @@ void AHCJShipCharacter::ServerApplyPendingTeleport()
 	bHasPendingTeleport = false;
 
 	const int32 FromSector = GetCurrentSector();
+	// A ship that flies into a portal at warp comes out of it at boost speed.
+	ServerCancelWarp(TEXT("portal"));
 	TeleportTo(GetActorLocation() + PendingTeleportDelta, GetActorRotation(), false, true);
 	ForceNetUpdate();
 
@@ -1319,7 +1481,7 @@ void AHCJShipCharacter::ServerApplyPendingTeleport()
 
 void AHCJShipCharacter::ServerTickWeapon()
 {
-	if (!bWantsToFire || GetController() == nullptr)
+	if (!bWantsToFire || GetController() == nullptr || ServerWeaponsBlocked())
 	{
 		return;
 	}
@@ -1338,11 +1500,6 @@ void AHCJShipCharacter::ServerTickWeapon()
 	const FHCJWeaponDef& Def = GetFireWeaponDef();
 	NextFireTime = Now + FMath::Max(Def.FireInterval, 0.02f);
 	SpawnProtectionEndTime = 0.0f;
-	if (IsCloaked())
-	{
-		// Firing gives the ship away.
-		ServerSetPowerup(EHCJPowerup::Cloak, 0.0f);
-	}
 	ServerFireProjectile();
 
 	FHCJWeaponState State;
@@ -1418,7 +1575,7 @@ void AHCJShipCharacter::ServerFireProjectile()
 			ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 		if (Projectile != nullptr)
 		{
-			Projectile->InitWeapon(Weapon, bQuad, bQuad ? Gameplay.QuadDamageMultiplier : 1.0f);
+			Projectile->InitWeapon(Weapon, bQuad, (bQuad ? Gameplay.QuadDamageMultiplier : 1.0f) * GetTypeDef().BoltDamageScale);
 			Projectile->FinishSpawning(SpawnTransform);
 			bFired = true;
 		}
@@ -1472,6 +1629,13 @@ void AHCJShipCharacter::ApplyDeadState()
 		}
 	}
 	bPhaserLook = false;
+	for (UStaticMeshComponent* Part : { WarpStreakMesh.Get(), TractorBeamMesh.Get() })
+	{
+		if (Part != nullptr)
+		{
+			Part->SetVisibility(false);
+		}
+	}
 
 	SetActorEnableCollision(false);
 	for (UStaticMeshComponent* Part : { BeaconMesh.Get(), EngineGlowMesh.Get(), EngineTrailMesh.Get() })
@@ -1505,7 +1669,7 @@ void AHCJShipCharacter::UpdateCameraMode()
 		if (Body != nullptr)
 		{
 			Body->SetOwnerNoSee(bFirstPerson);
-			if (bCloakLook)
+			if (bCloakLook && CloakMaterial == nullptr)
 			{
 				// A new hull (ApplyShipLook) of a cloaked ship stays hidden.
 				Body->SetVisibility(false, false);
@@ -1573,7 +1737,8 @@ void AHCJShipCharacter::ApplyShipLook()
 
 	const AHCJPlayerState* ShipPlayerState = GetPlayerState<AHCJPlayerState>();
 	const int32 PlayerId = ShipPlayerState != nullptr ? ShipPlayerState->GetPlayerId() : INDEX_NONE;
-	if (bUsingShipMesh && PlayerId == LookPlayerId)
+	const int32 TypeKey = (static_cast<int32>(ShipType) << 16) | (static_cast<int32>(ShipVariant) << 8) | ShipSkin;
+	if (bUsingShipMesh && PlayerId == LookPlayerId && TypeKey == LookTypeKey)
 	{
 		return;
 	}
@@ -1584,8 +1749,10 @@ void AHCJShipCharacter::ApplyShipLook()
 		return;
 	}
 
-	// Hull: a hash of the player id, so the same player flies the same hull on every machine.
-	const int32 Variant = UHCJAssetSettings::PickShipVariant(PlayerId, Settings.ShipMeshes.Num());
+	// Hull: one of the hulls of the ship's type - the one its player chose, else a hash of the player id - so the
+	// same ship is the same hull on every machine.
+	const FHCJShipTypeDef& TypeDef = GetTypeDef();
+	const int32 Variant = HCJShipTypes::PickHullMesh(ShipType, ShipVariant, PlayerId, Settings.ShipMeshes.Num());
 	UStaticMesh* ShipMesh = UHCJAssetSettings::Load<UStaticMesh>(Settings.ShipMeshes[Variant], TEXT("ship body"));
 	const FBox ShipBounds = ShipMesh != nullptr ? ShipMesh->GetBoundingBox() : FBox(ForceInit);
 	if (ShipMesh == nullptr || !ShipBounds.IsValid || ShipBounds.GetSize().GetMax() < 1.0)
@@ -1594,9 +1761,10 @@ void AHCJShipCharacter::ApplyShipLook()
 	}
 	bUsingShipMesh = true;
 	LookPlayerId = PlayerId;
+	LookTypeKey = TypeKey;
 
-	// Uniform scale to the configured length; the centre of the bounding box sits on the capsule centre.
-	const double Scale = Settings.ShipMeshLength / ShipBounds.GetSize().GetMax();
+	// Uniform scale to the configured length (times the size of the type); the centre of the bounding box sits on the capsule centre.
+	const double Scale = Settings.ShipMeshLength * TypeDef.Scale / ShipBounds.GetSize().GetMax();
 	HullMesh->SetStaticMesh(ShipMesh);
 	HullMesh->EmptyOverrideMaterials();
 	HullMesh->SetRelativeScale3D(FVector(Scale));
@@ -1610,7 +1778,8 @@ void AHCJShipCharacter::ApplyShipLook()
 		SkinColors.Add(Skin.Color);
 	}
 	const FLinearColor PlayerColor = ShipPlayerState != nullptr ? ShipPlayerState->GetPlayerColor() : UnownedHullColor;
-	const int32 SkinIndex = UHCJAssetSettings::PickNearestSkin(PlayerColor, SkinColors);
+	// The paint its player chose, else the one nearest the player colour.
+	const int32 SkinIndex = Settings.ShipSkins.IsValidIndex(ShipSkin) ? static_cast<int32>(ShipSkin) : UHCJAssetSettings::PickNearestSkin(PlayerColor, SkinColors);
 	UMaterialInterface* SkinMaterial = SkinIndex != INDEX_NONE
 		? UHCJAssetSettings::Load<UMaterialInterface>(Settings.ShipSkins[SkinIndex].Material, TEXT("ship skin")) : nullptr;
 	UMaterialInterface* BaseMaterial = SkinMaterial != nullptr ? SkinMaterial : HullMesh->GetMaterial(0);
@@ -1639,11 +1808,13 @@ void AHCJShipCharacter::ApplyShipLook()
 	}
 	ThrusterGlowMaterial = nullptr;
 	const int32 GlowSlot = ThrusterMesh != nullptr ? ThrusterMesh->GetMaterialIndex(Settings.ThrusterGlowSlot) : INDEX_NONE;
+	ThrusterGlowSlot = INDEX_NONE;
 	if (GlowSlot != INDEX_NONE)
 	{
 		if (UMaterialInterface* GlowBase = WingMesh->GetMaterial(GlowSlot))
 		{
 			ThrusterGlowMaterial = UMaterialInstanceDynamic::Create(GlowBase, this);
+			ThrusterGlowSlot = GlowSlot;
 			WingMesh->SetMaterial(GlowSlot, ThrusterGlowMaterial);
 			EngineMesh->SetMaterial(GlowSlot, ThrusterGlowMaterial);
 		}
@@ -1652,8 +1823,14 @@ void AHCJShipCharacter::ApplyShipLook()
 	BaseHullRotation = HullMesh->GetRelativeRotation().Quaternion();
 	BaseHullLocation = HullMesh->GetRelativeLocation();
 
-	// The new components state must respect the death / camera state already applied.
+	// The new components state must respect the death / camera / cloak state already applied.
 	UpdateCameraMode();
+	if (HullMesh != nullptr && RimMaterial != nullptr)
+	{
+		HullMesh->SetOverlayMaterial(RimMaterial);
+	}
+	CloakSkinState = 0;
+	ApplyCloakLook();
 }
 
 void AHCJShipCharacter::SetupShipVisuals()
@@ -1723,6 +1900,13 @@ void AHCJShipCharacter::SetupShipVisuals()
 		RimMaterial->SetScalarParameterValue(TEXT("Brightness"), 0.0f);
 		RimMaterial->SetScalarParameterValue(TEXT("Floor"), Settings.ShipAmbientFloor);
 		HullMesh->SetOverlayMaterial(RimMaterial);
+	}
+
+	// Cloak: one translucent material instance that replaces every material of the hull while the ship is cloaked.
+	if (UMaterialInterface* CloakBase = UHCJAssetSettings::Load<UMaterialInterface>(Settings.CloakMaterial, TEXT("cloak shimmer")))
+	{
+		CloakMaterial = UMaterialInstanceDynamic::Create(CloakBase, this);
+		CloakMaterial->SetScalarParameterValue(TEXT("Phase"), static_cast<float>(GetUniqueID() % 61));
 	}
 
 	// Engine glow and engine trail: two free-standing quads (world space), driven by TickShipEffects.
@@ -1925,15 +2109,20 @@ void AHCJShipCharacter::TickShipEffects()
 		const bool bHighlight = UHCJUserSettings::Get().bEnemyHighlight;
 		const float Distance = static_cast<float>(FVector::Dist(ViewLocation, Location));
 		const FVector ToView = Distance > 1.0f ? (ViewLocation - Location) / Distance : FVector::UpVector;
-		const float HullLength = bUsingShipMesh ? Settings.ShipMeshLength : 200.0f;
+		const float HullLength = (bUsingShipMesh ? Settings.ShipMeshLength : 200.0f) * GetTypeDef().Scale;
 		const float DeltaSeconds = World != nullptr ? World->GetDeltaSeconds() : 0.0f;
+		// Warp: the engine flares up while the drive spools, and the trail stretches at warp.
+		const EHCJWarpPhase WarpPhase = bIsDead ? EHCJWarpPhase::Idle : GetWarpPhase();
+		const bool bWarpNow = WarpPhase == EHCJWarpPhase::Active;
+		const float WarpGlow = bWarpNow ? 1.0f : WarpPhase == EHCJWarpPhase::Charging
+			? FMath::Clamp((static_cast<float>(World != nullptr ? World->GetTimeSeconds() : 0.0) - WarpPhaseLookTime) / 1.6f, 0.0f, 1.0f) : 0.0f;
 
 		const AHCJPlayerState* ShipPlayerState = GetPlayerState<AHCJPlayerState>();
 		const FLinearColor PlayerColor = ShipPlayerState != nullptr ? ShipPlayerState->GetPlayerColor() : UnownedHullColor;
 		FLinearColor EnemyColor = FMath::Lerp(Settings.EnemyGlowColor, PlayerColor, FMath::Clamp(Settings.EnemyColorMix, 0.0f, 1.0f));
 		EnemyColor.A = 1.0f;
 		// Everybody else is an enemy (free-for-all); the own ship shows its own colour.
-		const FLinearColor GlowColor = bOwn ? FLinearColor(PlayerColor.R, PlayerColor.G, PlayerColor.B, 1.0f) : EnemyColor;
+		const FLinearColor GlowColor = FMath::Lerp(bOwn ? FLinearColor(PlayerColor.R, PlayerColor.G, PlayerColor.B, 1.0f) : EnemyColor, WarpColor, WarpGlow);
 
 		if (RimMaterial != nullptr)
 		{
@@ -1990,9 +2179,9 @@ void AHCJShipCharacter::TickShipEffects()
 		{
 			if (bEngineShown)
 			{
-				const float Edge = FMath::Lerp(Settings.EngineGlowSize, Settings.EngineGlowBoostSize, Throttle) * (bOwn ? 0.4f : 1.0f);
+				const float Edge = FMath::Lerp(Settings.EngineGlowSize, Settings.EngineGlowBoostSize, Throttle) * (bOwn ? 0.4f : 1.0f) * (1.0f + 0.5f * WarpGlow);
 				EngineGlowMaterial->SetVectorParameterValue(TEXT("Color"), GlowColor);
-				EngineGlowMaterial->SetScalarParameterValue(TEXT("Brightness"), Settings.EngineGlowBrightness * FMath::Lerp(0.55f, 1.0f, Throttle) * (bOwn ? 0.14f : 1.0f));
+				EngineGlowMaterial->SetScalarParameterValue(TEXT("Brightness"), Settings.EngineGlowBrightness * FMath::Lerp(0.55f, 1.0f, Throttle) * (bOwn ? 0.14f : 1.0f) * (1.0f + (bOwn ? 1.5f : 0.8f) * WarpGlow));
 				EngineGlowMesh->SetWorldLocation(Tail + ToView * 40.0f);
 				EngineGlowMesh->SetWorldScale3D(FVector(Edge / 100.0f));
 				AHCJTorpedoBlast::FaceLocalView(EngineGlowMesh);
@@ -2006,7 +2195,7 @@ void AHCJShipCharacter::TickShipEffects()
 		if (EngineTrailMesh != nullptr)
 		{
 			// The far end follows the tail with a lag: its distance is about speed x EngineTrailSeconds, also through turns.
-			if (!bHasTrailEnd || FVector::DistSquared(Tail, TrailEnd) > FMath::Square(8000.0))
+			if (!bHasTrailEnd || FVector::DistSquared(Tail, TrailEnd) > FMath::Square(20000.0))
 			{
 				TrailEnd = Tail;
 				bHasTrailEnd = true;
@@ -2015,16 +2204,16 @@ void AHCJShipCharacter::TickShipEffects()
 			FVector Along = TrailEnd - Tail;
 			// The own trail points at the chase camera right behind the ship: it is kept short, thin and dim, or it would
 			// lie across the whole screen.
-			Along = Along.GetClampedToMaxSize(bOwn ? 0.8 * HullLength : 4000.0);
+			Along = Along.GetClampedToMaxSize(bOwn ? 0.8 * HullLength * (bWarpNow ? 1.5 : 1.0) : (bWarpNow ? 14000.0 : 4000.0));
 			const double Length = Along.Size();
 			const bool bTrail = bEngineShown && Length > 60.0;
 			if (bTrail)
 			{
 				const FVector Middle = Tail + Along * 0.5;
 				EngineTrailMaterial->SetVectorParameterValue(TEXT("Color"), GlowColor);
-				EngineTrailMaterial->SetScalarParameterValue(TEXT("Brightness"), Settings.EngineTrailBrightness * (bOwn ? 0.3f : 1.0f));
+				EngineTrailMaterial->SetScalarParameterValue(TEXT("Brightness"), Settings.EngineTrailBrightness * (bOwn ? 0.3f : 1.0f) * (bWarpNow ? 2.5f : 1.0f));
 				EngineTrailMesh->SetWorldLocationAndRotation(Middle, FRotationMatrix::MakeFromXZ(Along, ViewLocation - Middle).Rotator());
-				EngineTrailMesh->SetWorldScale3D(FVector(Length / 100.0, Settings.EngineTrailWidth * (bOwn ? 0.55 : 1.0) / 100.0, 1.0));
+				EngineTrailMesh->SetWorldScale3D(FVector(Length / 100.0, Settings.EngineTrailWidth * (bOwn ? 0.55 : (bWarpNow ? 1.6 : 1.0)) / 100.0, 1.0));
 			}
 			if (EngineTrailMesh->IsVisible() != bTrail)
 			{
@@ -2048,6 +2237,9 @@ void AHCJShipCharacter::TickShipEffects()
 		TickPhaserEffects(EffectNow, EffectDelta);
 	}
 
+	// Warp streaks and flash, tractor beam, cloak shimmer.
+	TickSystemEffects(EffectNow, EffectDelta);
+
 	// Bank into turns: looks only, on every machine, from how fast the ship's heading changes.
 	if (HullMesh != nullptr && bUsingShipMesh && EffectDelta > UE_KINDA_SMALL_NUMBER)
 	{
@@ -2066,7 +2258,9 @@ void AHCJShipCharacter::TickShipEffects()
 	if (const AHCJPlayerController* Pilot = Cast<AHCJPlayerController>(GetController()); Pilot != nullptr && Pilot->IsLocalController() && Camera != nullptr && CameraBoom != nullptr)
 	{
 		const float BoostAlpha = FMath::Clamp((Speed - CruiseSpeed) / FMath::Max(CruiseSpeed * 0.8f, 1.0f), 0.0f, 1.0f);
-		Camera->SetFieldOfView(FMath::FInterpTo(Camera->FieldOfView, 95.0f + 10.0f * BoostAlpha, EffectDelta, 4.0f));
+		// Wider under boost, much wider at warp (it snaps back when the ship drops out).
+		const bool bAtWarp = GetWarpPhase() == EHCJWarpPhase::Active;
+		Camera->SetFieldOfView(FMath::FInterpTo(Camera->FieldOfView, bAtWarp ? 128.0f : 95.0f + 10.0f * BoostAlpha, EffectDelta, bAtWarp ? 7.0f : 4.0f));
 
 		const float HitAge = EffectNow - Pilot->GetLastDamageTime();
 		const float Shake = (HitAge >= 0.0f && HitAge < 0.35f) ? (1.0f - HitAge / 0.35f) * FMath::Clamp(Pilot->GetLastDamageAmount() / 25.0f, 0.3f, 1.0f) : 0.0f;
@@ -2283,6 +2477,744 @@ void AHCJShipCharacter::TickPhaserEffects(float Now, float DeltaSeconds)
 			{
 				Sparks->SetVariableVec3(Settings.ImpactDirectionParameter, -Normal);
 			}
+		}
+	}
+}
+
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Ship type
+// ---------------------------------------------------------------------------------------------------------------------
+
+void AHCJShipCharacter::ServerInitShipType(uint8 InType, uint8 InVariant, uint8 InSkin)
+{
+	if (!HasAuthority() || bIsDead)
+	{
+		return;
+	}
+	ShipType = HCJShipTypes::SanitizeType(InType);
+	ShipVariant = HCJShipTypes::SanitizeVariant(ShipType, InVariant);
+	ShipSkin = HCJShipTypes::SanitizeSkin(InSkin, UHCJAssetSettings::Get().ShipSkins.Num());
+	ApplyShipType();
+
+	// A fresh ship of that type: stock, bank, cloak, drive.
+	const UHCJGameplaySettings& Gameplay = UHCJGameplaySettings::Get();
+	TorpedoCount = static_cast<uint8>(HCJTorpedo::IsEnabled() ? FMath::Clamp(GetTypeDef().Torpedoes, 0, Gameplay.TorpedoMaxStock) : 0);
+	TorpedoReadyTime = 0.0f;
+	PhaserBank = FHCJPhaserBank();
+	PhaserChargeRep = HCJPhaser::PackCharge(PhaserBank.Charge, PhaserBank.bLocked);
+	Cloak = FHCJCloakDevice();
+	CloakEnergyRep = HCJCloak::PackEnergy(Cloak.Energy, Cloak.bLocked);
+	if (UHCJShipMovementComponent* ShipMovement = GetShipMovement())
+	{
+		ShipMovement->ResetWarp();
+	}
+	UE_LOG(LogHCJ, Verbose, TEXT("Ship type: %s is a %s (hull %d, paint %d)"), *GetName(), GetTypeDef().Name, ShipVariant, ShipSkin);
+	ForceNetUpdate();
+}
+
+void AHCJShipCharacter::OnRep_ShipLook()
+{
+	UE_LOG(LogHCJ, Verbose, TEXT("Ship type (client): %s%s is a %s (hull %d, paint %d)"), *GetName(), IsLocalPlayersShip(*this) ? TEXT(" (own ship)") : TEXT(""), GetTypeDef().Name,
+		ShipVariant, ShipSkin);
+	ApplyShipType();
+}
+
+void AHCJShipCharacter::ApplyShipType()
+{
+	const FHCJShipTypeDef& Def = GetTypeDef();
+	const UHCJGameplaySettings& Gameplay = UHCJGameplaySettings::Get();
+	const int32 TypeKey = ShipType;
+	if (TypeKey != AppliedTypeKey)
+	{
+		AppliedTypeKey = TypeKey;
+
+		// Flight: the same numbers on the owning client and on the server, so prediction and server agree.
+		if (UHCJShipMovementComponent* ShipMovement = GetShipMovement())
+		{
+			ShipMovement->SetFlightModel(Def.CruiseSpeed, Def.Acceleration, Def.Braking, Def.BoostDrainSeconds, Def.BoostRechargeSeconds);
+			FHCJWarpParams WarpParams;
+			WarpParams.MaxSeconds = Def.WarpSeconds;
+			WarpParams.Cooldown = Def.WarpCooldown;
+			WarpParams.ExitSpeed = Def.CruiseSpeed * ShipMovement->BoostSpeedMultiplier;
+			ShipMovement->SetWarpParams(WarpParams);
+		}
+
+		// Size: movement collision, hit sphere and shield bubble alike, on every machine.
+		const float Radius = HCJ::ShipCollisionRadius * Def.Scale;
+		if (UCapsuleComponent* Capsule = GetCapsuleComponent(); Capsule != nullptr && !FMath::IsNearlyEqual(Capsule->GetUnscaledCapsuleRadius(), Radius, 0.01f))
+		{
+			Capsule->SetCapsuleSize(Radius, Radius);
+		}
+		if (HitSphere != nullptr && Gameplay.AimAssistRadius > HCJ::ShipCollisionRadius)
+		{
+			HitSphere->SetSphereRadius(Gameplay.AimAssistRadius * Def.Scale);
+		}
+		if (ShieldBubble != nullptr)
+		{
+			ShieldBubble->SetRelativeScale3D(UHCJAssetSettings::Get().ShieldBubbleRadii * Def.Scale / 50.0);
+		}
+
+		// Hull and shields (not with the single-shield measurement aid, which set its own).
+		if (HealthComponent != nullptr && HealthComponent->GetNumFacings() > 1)
+		{
+			HealthComponent->SetShieldRegen(Gameplay.ShieldRegenDelay, Def.ShieldRegenRate);
+			const float MaxShield = Def.ShieldFacing * HCJShield::NumFacings;
+			if (!FMath::IsNearlyEqual(HealthComponent->GetMaxHealth(), Def.MaxHull) || !FMath::IsNearlyEqual(HealthComponent->GetMaxShield(), MaxShield))
+			{
+				HealthComponent->ChangeMaxValues(Def.MaxHull, MaxShield);
+				for (int32 Facing = 0; Facing < HCJShield::NumFacings; ++Facing)
+				{
+					SeenFacingShield[Facing] = HealthComponent->GetFacingShield(Facing);
+				}
+			}
+		}
+	}
+	// The hull and the paint follow type, hull choice and paint choice.
+	ApplyShipLook();
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Warp drive
+// ---------------------------------------------------------------------------------------------------------------------
+
+void AHCJShipCharacter::SetWarping(bool bNewWarping)
+{
+	if (GetLocalRole() == ROLE_SimulatedProxy)
+	{
+		return;
+	}
+	if (UHCJShipMovementComponent* ShipMovement = GetShipMovement())
+	{
+		ShipMovement->SetWantsToWarp(bNewWarping && !bIsDead);
+	}
+}
+
+EHCJWarpPhase AHCJShipCharacter::GetWarpPhase() const
+{
+	const UHCJShipMovementComponent* ShipMovement = GetShipMovement();
+	if (ShipMovement != nullptr && !bIsDead && (HasAuthority() || GetLocalRole() == ROLE_AutonomousProxy))
+	{
+		return ShipMovement->GetWarpDrive().Phase;
+	}
+	return bIsDead ? EHCJWarpPhase::Idle : static_cast<EHCJWarpPhase>(WarpStateRep);
+}
+
+float AHCJShipCharacter::GetWarpMeter() const
+{
+	const UHCJShipMovementComponent* ShipMovement = GetShipMovement();
+	if (ShipMovement == nullptr)
+	{
+		return 0.0f;
+	}
+	const FHCJWarpDrive& Drive = ShipMovement->GetWarpDrive();
+	const FHCJWarpParams& Params = ShipMovement->GetWarpParams();
+	switch (Drive.Phase)
+	{
+	case EHCJWarpPhase::Charging: return Drive.GetChargeFraction(Params);
+	case EHCJWarpPhase::Active: return Drive.GetEnergyFraction(Params);
+	case EHCJWarpPhase::Cooldown: return Drive.GetCooldownFraction(Params);
+	default: return 0.0f;
+	}
+}
+
+float AHCJShipCharacter::GetWarpCooldownSeconds() const
+{
+	const UHCJShipMovementComponent* ShipMovement = GetShipMovement();
+	return (ShipMovement != nullptr && ShipMovement->GetWarpDrive().Phase == EHCJWarpPhase::Cooldown) ? FMath::Max(ShipMovement->GetWarpDrive().Time, 0.0f) : 0.0f;
+}
+
+void AHCJShipCharacter::ServerCancelWarp(const TCHAR* Why)
+{
+	UHCJShipMovementComponent* ShipMovement = GetShipMovement();
+	if (!HasAuthority() || ShipMovement == nullptr || !ShipMovement->GetWarpDrive().IsBusy())
+	{
+		return;
+	}
+	const bool bWasActive = ShipMovement->GetWarpDrive().Phase == EHCJWarpPhase::Active;
+	ShipMovement->CancelWarp(bWasActive ? ShipMovement->GetWarpParams().Cooldown : ShipMovement->GetWarpParams().AbortCooldown);
+	++WarpCancelCount;
+	UE_LOG(LogHCJ, Verbose, TEXT("Warp: the drive of %s was stopped %s (%s)"), *GetName(), bWasActive ? TEXT("at warp") : TEXT("while charging"), Why);
+	if (AHCJGameMode* GameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>())
+	{
+		GameMode->NotifyWarpCancelled();
+	}
+}
+
+void AHCJShipCharacter::OnRep_WarpCancel()
+{
+	// The server stopped the drive: so does the prediction (it would otherwise jump and be pulled back).
+	if (UHCJShipMovementComponent* ShipMovement = GetShipMovement())
+	{
+		const bool bWasActive = ShipMovement->GetWarpDrive().Phase == EHCJWarpPhase::Active;
+		ShipMovement->CancelWarp(bWasActive ? ShipMovement->GetWarpParams().Cooldown : ShipMovement->GetWarpParams().AbortCooldown);
+	}
+}
+
+void AHCJShipCharacter::OnRep_WarpState(uint8 OldState)
+{
+	// Sounds and flash are driven by TickSystemEffects from GetWarpPhase(), which on the owning client is its own
+	// prediction; this is the log evidence that the state of another ship arrived.
+	if (GetNetMode() == NM_DedicatedServer || OldState == WarpStateRep)
+	{
+		return;
+	}
+	static const TCHAR* Names[] = { TEXT("idle"), TEXT("charging"), TEXT("at warp"), TEXT("cooling down") };
+	UE_LOG(LogHCJ, Verbose, TEXT("Warp: drive of %s%s %s -> %s"), *GetName(), IsLocalPlayersShip(*this) ? TEXT(" (own ship)") : TEXT(""),
+		Names[FMath::Min<int32>(OldState, 3)], Names[FMath::Min<int32>(WarpStateRep, 3)]);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Cloaking device
+// ---------------------------------------------------------------------------------------------------------------------
+
+void AHCJShipCharacter::ToggleCloak()
+{
+	SetCloaking(HasAuthority() ? !(bWantsCloak || Cloak.bCloaked) : !IsCloaked());
+}
+
+void AHCJShipCharacter::SetCloaking(bool bNewCloaking)
+{
+	if (bIsDead)
+	{
+		return;
+	}
+	if (HasAuthority())
+	{
+		ServerSetCloak_Implementation(bNewCloaking);
+	}
+	else if (IsLocallyControlled())
+	{
+		ServerSetCloak(bNewCloaking);
+	}
+}
+
+void AHCJShipCharacter::ServerSetCloak_Implementation(bool bNewCloaking)
+{
+	// Raising it needs charge; the meter and the drop are ServerTickSystems.
+	bWantsCloak = bNewCloaking && !bIsDead && (Cloak.bCloaked || Cloak.CanEngage());
+}
+
+float AHCJShipCharacter::GetCloakEnergy() const
+{
+	if (HasAuthority())
+	{
+		return Cloak.Energy;
+	}
+	float Energy = 0.0f;
+	bool bLocked = false;
+	HCJCloak::UnpackEnergy(CloakEnergyRep, Energy, bLocked);
+	return Energy;
+}
+
+bool AHCJShipCharacter::IsCloakLocked() const
+{
+	return HasAuthority() ? Cloak.bLocked : (CloakEnergyRep & 0x80) != 0;
+}
+
+bool AHCJShipCharacter::ServerWeaponsBlocked() const
+{
+	const UWorld* World = GetWorld();
+	const UHCJShipMovementComponent* ShipMovement = GetShipMovement();
+	return Cloak.bCloaked || (World != nullptr && !HCJCloak::CanFire(false, static_cast<float>(World->GetTimeSeconds()) - DecloakTime))
+		|| (ShipMovement != nullptr && ShipMovement->GetWarpDrive().IsBusy());
+}
+
+bool AHCJShipCharacter::AreWeaponsOffline() const
+{
+	if (HasAuthority())
+	{
+		return ServerWeaponsBlocked();
+	}
+	const UWorld* World = GetWorld();
+	const EHCJWarpPhase Phase = GetWarpPhase();
+	return IsCloaked() || Phase == EHCJWarpPhase::Charging || Phase == EHCJWarpPhase::Active
+		|| (World != nullptr && static_cast<float>(World->GetTimeSeconds()) - LocalDecloakTime < HCJCloak::WeaponDelay);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Tractor beam
+// ---------------------------------------------------------------------------------------------------------------------
+
+void AHCJShipCharacter::SetTractoring(bool bNewTractoring)
+{
+	const bool bEffective = bNewTractoring && !bIsDead;
+	if (HasAuthority())
+	{
+		bWantsTractor = bEffective;
+	}
+	else if (IsLocallyControlled() && bLocalWantsTractor != bEffective)
+	{
+		bLocalWantsTractor = bEffective;
+		ServerSetTractor(bEffective);
+	}
+}
+
+void AHCJShipCharacter::ServerSetTractor_Implementation(bool bNewTractoring)
+{
+	bWantsTractor = bNewTractoring && !bIsDead;
+}
+
+bool AHCJShipCharacter::HasClearLineTo(const AHCJShipCharacter& Other) const
+{
+	const UWorld* World = GetWorld();
+	if (World == nullptr)
+	{
+		return false;
+	}
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(HCJTractorSight), false, this);
+	Params.AddIgnoredActor(&Other);
+	return !World->LineTraceTestByObjectType(GetActorLocation(), Other.GetActorLocation(), FCollisionObjectQueryParams(ECC_WorldStatic), Params);
+}
+
+void AHCJShipCharacter::ServerReleaseTractor(const TCHAR* Why, bool bBroken)
+{
+	AHCJShipCharacter* Held = TractorTarget;
+	if (!HasAuthority() || Held == nullptr)
+	{
+		return;
+	}
+	TractorTarget = nullptr;
+	if (IsValid(Held) && Held->TractorHolder == this)
+	{
+		Held->TractorHolder = nullptr;
+		Held->OnRep_TractorHolder();
+		Held->ForceNetUpdate();
+	}
+	const UWorld* World = GetWorld();
+	TractorReadyTime = (World != nullptr ? static_cast<float>(World->GetTimeSeconds()) : 0.0f) + (bBroken ? HCJTractor::BreakCooldown : 0.5f);
+	UE_LOG(LogHCJ, Verbose, TEXT("Tractor: %s lets go of %s (%s)"), *GetName(), *GetNameSafe(Held), Why);
+	if (AHCJGameMode* GameMode = World != nullptr ? World->GetAuthGameMode<AHCJGameMode>() : nullptr)
+	{
+		GameMode->NotifyTractorRelease(bBroken);
+	}
+	OnRep_TractorTarget();
+	ForceNetUpdate();
+}
+
+void AHCJShipCharacter::OnRep_TractorTarget()
+{
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+	const AHCJShipCharacter* Held = GetTractorTarget();
+	UE_LOG(LogHCJ, Verbose, TEXT("Tractor: beam of %s%s %s%s"), *GetName(), IsLocalPlayersShip(*this) ? TEXT(" (own ship)") : TEXT(""),
+		Held != nullptr ? TEXT("holds ") : TEXT("off"), Held != nullptr ? *Held->GetName() : TEXT(""));
+	const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
+	UHCJAssetSettings::PlaySoundAt(this, Held != nullptr ? Settings.PhaserStartSounds : Settings.PhaserStopSounds, TEXT("tractor beam sound"), GetActorLocation(),
+		Settings.PhaserCueVolume, 0.04f, EHCJSoundGroup::Fire, Held != nullptr ? 0.6f : 0.5f);
+}
+
+void AHCJShipCharacter::OnRep_TractorHolder()
+{
+	AHCJShipCharacter* Holder = GetTractorHolder();
+	if (UHCJShipMovementComponent* ShipMovement = GetShipMovement())
+	{
+		// The pull is the holder's (its type); the movement simulation applies it on the server and in the owner's prediction.
+		ShipMovement->SetTractor(Holder, Holder != nullptr ? Holder->GetTypeDef().TractorPullSpeed : 0.0f);
+	}
+	if (GetNetMode() != NM_DedicatedServer && IsLocalPlayersShip(*this))
+	{
+		UE_LOG(LogHCJ, Verbose, TEXT("Tractor: the own ship is %s%s"), Holder != nullptr ? TEXT("caught by the beam of ") : TEXT("free"), Holder != nullptr ? *Holder->GetName() : TEXT(""));
+	}
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Server tick of the three systems
+// ---------------------------------------------------------------------------------------------------------------------
+
+void AHCJShipCharacter::ServerTickSystems(float DeltaSeconds)
+{
+	UWorld* World = GetWorld();
+	UHCJShipMovementComponent* ShipMovement = GetShipMovement();
+	if (World == nullptr || ShipMovement == nullptr)
+	{
+		return;
+	}
+	const float Now = static_cast<float>(World->GetTimeSeconds());
+	const FHCJShipTypeDef& Def = GetTypeDef();
+	AHCJGameMode* GameMode = World->GetAuthGameMode<AHCJGameMode>();
+	const bool bBot = Cast<APlayerController>(GetController()) == nullptr;
+
+	// ---- warp drive: the movement simulation runs it; here its consequences ----
+	if (ShipMovement->ConsumeWarpImpact())
+	{
+		++WarpCancelCount;
+		UE_LOG(LogHCJ, Verbose, TEXT("Warp: %s ran into something at warp"), *GetName());
+		if (GameMode != nullptr)
+		{
+			GameMode->NotifyWarpImpact();
+		}
+		if (HealthComponent != nullptr)
+		{
+			HealthComponent->ApplyDamage(WarpImpactDamage, nullptr, nullptr);
+		}
+		if (bIsDead)
+		{
+			return;
+		}
+	}
+	const uint8 NewWarpState = static_cast<uint8>(ShipMovement->GetWarpDrive().Phase);
+	if (NewWarpState != WarpStateRep)
+	{
+		const uint8 OldState = WarpStateRep;
+		WarpStateRep = NewWarpState;
+		if (ShipMovement->GetWarpDrive().Phase == EHCJWarpPhase::Active)
+		{
+			SpawnProtectionEndTime = 0.0f;
+			if (GameMode != nullptr)
+			{
+				GameMode->NotifyWarp(bBot);
+			}
+		}
+		OnRep_WarpState(OldState);
+		ForceNetUpdate();
+	}
+
+	// ---- held by a beam whose holder is gone ----
+	if (TractorHolder != nullptr && (!IsValid(TractorHolder) || TractorHolder->IsDead() || TractorHolder->TractorTarget != this))
+	{
+		TractorHolder = nullptr;
+		OnRep_TractorHolder();
+		ForceNetUpdate();
+	}
+
+	// ---- cloaking device ----
+	if (Cloak.bCloaked && (bWantsToFire || bWantsTractor))
+	{
+		// Firing is not possible while cloaked: the attempt drops the cloak, weapons work a moment later.
+		bWantsCloak = false;
+	}
+	if (ShipMovement->GetWarpDrive().IsBusy() && !Cloak.bCloaked)
+	{
+		bWantsCloak = false;
+	}
+	const bool bWasCloaked = Cloak.bCloaked;
+	const bool bNowCloaked = Cloak.Step(bWantsCloak, DeltaSeconds, Def.CloakSeconds, Def.CloakRechargeSeconds, HCJCloak::RelockLevel, Now < CloakFreeEndTime);
+	if (!bNowCloaked)
+	{
+		// Dropped or ran dry: the pilot has to raise it again.
+		bWantsCloak = false;
+	}
+	CloakEnergyRep = HCJCloak::PackEnergy(Cloak.Energy, Cloak.bLocked);
+	if (bNowCloaked != bWasCloaked)
+	{
+		if (bNowCloaked)
+		{
+			PowerupFlags |= EHCJPowerup::Cloak;
+			if (GameMode != nullptr)
+			{
+				GameMode->NotifyCloak(bBot);
+			}
+		}
+		else
+		{
+			PowerupFlags &= ~(EHCJPowerup::Cloak | EHCJPowerup::CloakRevealed);
+			DecloakTime = Now;
+		}
+		// Shields are down while cloaked and come up from nothing afterwards.
+		if (HealthComponent != nullptr)
+		{
+			HealthComponent->SetShieldsSuppressed(bNowCloaked);
+		}
+		ApplyPowerupState();
+		ForceNetUpdate();
+	}
+	if (bNowCloaked)
+	{
+		if (Now >= NextCloakProximityTime)
+		{
+			NextCloakProximityTime = Now + 0.2f;
+			const FVector Location = GetActorLocation();
+			for (TActorIterator<AHCJShipCharacter> It(World); It; ++It)
+			{
+				if (*It != this && !It->IsDead() && FVector::DistSquared(It->GetActorLocation(), Location) < FMath::Square(static_cast<double>(HCJCloak::ProximityRange)))
+				{
+					Cloak.Reveal(HCJCloak::ProximityRevealSeconds);
+					break;
+				}
+			}
+		}
+		if (TractorHolder != nullptr)
+		{
+			Cloak.Reveal(HCJCloak::ProximityRevealSeconds);
+		}
+		const bool bRevealed = Cloak.IsRevealed();
+		if (bRevealed != HasPowerup(EHCJPowerup::CloakRevealed))
+		{
+			PowerupFlags = bRevealed ? (PowerupFlags | EHCJPowerup::CloakRevealed) : (PowerupFlags & ~EHCJPowerup::CloakRevealed);
+			if (bRevealed && GameMode != nullptr)
+			{
+				GameMode->NotifyCloakRevealed();
+			}
+			ApplyPowerupState();
+			ForceNetUpdate();
+		}
+	}
+
+	// ---- tractor beam (the holder's side) ----
+	if (AHCJShipCharacter* Held = TractorTarget)
+	{
+		const TCHAR* Why = TEXT("released");
+		bool bBroken = false;
+		bool bKeep = bWantsTractor && IsValid(Held) && !Held->IsDead() && Held->TractorHolder == this && GetController() != nullptr;
+		if (bKeep && (PhaserBank.bLocked || PhaserBank.Charge <= 0.0f))
+		{
+			bKeep = false;
+			Why = TEXT("phaser bank empty");
+		}
+		if (bKeep && (ShipMovement->GetWarpDrive().IsBusy() || Cloak.bCloaked))
+		{
+			bKeep = false;
+			Why = TEXT("warp or cloak");
+		}
+		if (bKeep && !HCJTractor::CanHold(GetActorLocation(), GetAimRotation().Vector(), Held->GetActorLocation(), Def.TractorRange, true))
+		{
+			bKeep = false;
+			bBroken = true;
+			Why = TEXT("out of range or out of the cone");
+		}
+		if (bKeep && Now >= NextTractorSightTime)
+		{
+			NextTractorSightTime = Now + 0.15f;
+			if (!HasClearLineTo(*Held))
+			{
+				bKeep = false;
+				bBroken = true;
+				Why = TEXT("rock in between");
+			}
+		}
+		if (bKeep)
+		{
+			if (const UHCJShipMovementComponent* HeldMovement = Held->GetShipMovement(); HeldMovement != nullptr && HeldMovement->IsBoostActive())
+			{
+				Held->TractorBoostSeconds += DeltaSeconds;
+			}
+			if (HCJTractor::ShouldBreak(Held->TractorBoostSeconds, TractorDamageTaken))
+			{
+				bKeep = false;
+				bBroken = true;
+				Why = Held->TractorBoostSeconds >= HCJTractor::BreakBoostSeconds ? TEXT("the held ship boosted free") : TEXT("the holder was hit");
+			}
+		}
+		if (bKeep)
+		{
+			// The beam feeds on the phaser bank.
+			PhaserBank.Charge = FMath::Max(0.0f, PhaserBank.Charge - DeltaSeconds / FMath::Max(Def.TractorDrainSeconds, 0.5f));
+			PhaserBank.IdleSeconds = 0.0f;
+			if (PhaserBank.Charge <= 0.0f)
+			{
+				PhaserBank.bLocked = true;
+			}
+			if (GameMode != nullptr)
+			{
+				GameMode->NotifyTractorSeconds(DeltaSeconds);
+			}
+		}
+		else
+		{
+			ServerReleaseTractor(Why, bBroken);
+		}
+	}
+	else if (bWantsTractor && Now >= TractorReadyTime && GetController() != nullptr && !ServerWeaponsBlocked() && !PhaserBank.bLocked && PhaserBank.Charge > 0.05f)
+	{
+		// The locked target when the beam can reach it, else the nearest ship in the cone.
+		const FVector Location = GetActorLocation();
+		const FVector Forward = GetAimRotation().Vector();
+		const auto CanCatch = [this, &Location, &Forward, &Def](const AHCJShipCharacter* Other)
+		{
+			return IsValid(Other) && Other != this && !Other->IsDead() && Other->TractorHolder == nullptr && !Other->IsSpawnProtected()
+				&& HCJTractor::CanHold(Location, Forward, Other->GetActorLocation(), Def.TractorRange, false) && HasClearLineTo(*Other);
+		};
+		AHCJShipCharacter* Candidate = LockTarget.Get();
+		if (!CanCatch(Candidate))
+		{
+			Candidate = nullptr;
+			double BestDistSq = TNumericLimits<double>::Max();
+			for (TActorIterator<AHCJShipCharacter> It(World); It; ++It)
+			{
+				const double DistSq = FVector::DistSquared(It->GetActorLocation(), Location);
+				if (DistSq < BestDistSq && !It->IsCloakHidden() && CanCatch(*It))
+				{
+					BestDistSq = DistSq;
+					Candidate = *It;
+				}
+			}
+		}
+		if (Candidate != nullptr)
+		{
+			TractorTarget = Candidate;
+			TractorDamageTaken = 0.0f;
+			NextTractorSightTime = Now + 0.15f;
+			SpawnProtectionEndTime = 0.0f;
+			Candidate->TractorHolder = this;
+			Candidate->TractorBoostSeconds = 0.0f;
+			// A beam reveals a cloaked ship and stops a warp drive.
+			Candidate->Cloak.Reveal(HCJCloak::ProximityRevealSeconds);
+			Candidate->ServerCancelWarp(TEXT("caught by a tractor beam"));
+			Candidate->OnRep_TractorHolder();
+			Candidate->ForceNetUpdate();
+			UE_LOG(LogHCJ, Verbose, TEXT("Tractor: %s catches %s at %.0f uu"), *GetName(), *Candidate->GetName(), FVector::Dist(Location, Candidate->GetActorLocation()));
+			if (GameMode != nullptr)
+			{
+				GameMode->NotifyTractorHold(bBot);
+			}
+			OnRep_TractorTarget();
+			ForceNetUpdate();
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Looks of the three systems (every machine that draws)
+// ---------------------------------------------------------------------------------------------------------------------
+
+void AHCJShipCharacter::TickSystemEffects(float Now, float DeltaSeconds)
+{
+	const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
+	const bool bOwn = IsLocalPlayersShip(*this);
+	const FVector Location = GetActorLocation();
+
+	// ---- warp: cues when the phase changes on this machine ----
+	const EHCJWarpPhase Phase = bIsDead ? EHCJWarpPhase::Idle : GetWarpPhase();
+	if (static_cast<uint8>(Phase) != WarpPhaseLook)
+	{
+		const EHCJWarpPhase Old = static_cast<EHCJWarpPhase>(WarpPhaseLook);
+		WarpPhaseLook = static_cast<uint8>(Phase);
+		WarpPhaseLookTime = Now;
+		if (!bIsDead && !bCloakLook)
+		{
+			if (Phase == EHCJWarpPhase::Charging)
+			{
+				UHCJAssetSettings::PlaySoundAt(this, Settings.PhaserStartSounds, TEXT("warp charge sound"), Location, Settings.PhaserCueVolume, 0.0f, EHCJSoundGroup::World, 0.45f);
+			}
+			else if (Phase == EHCJWarpPhase::Active || Old == EHCJWarpPhase::Active)
+			{
+				// The flash where the ship jumps and where it drops out, for everybody who looks.
+				const bool bEntry = Phase == EHCJWarpPhase::Active;
+				// (Not for the own ship: its camera sits inside the flare, which would white out the view. Its pilot gets the streaks.)
+				if (UHCJEffectsDirector* Effects = bOwn ? nullptr : UHCJEffectsDirector::Get(this))
+				{
+					Effects->PlayWarpFlash(Location, false);
+				}
+				UHCJAssetSettings::PlaySoundAt(this, Settings.PortalSounds, TEXT("warp sound"), Location, Settings.PortalVolume, 0.03f, EHCJSoundGroup::World, bEntry ? 1.6f : 0.7f);
+				UE_LOG(LogHCJ, Verbose, TEXT("Warp: %s%s %s%s"), *GetName(), bOwn ? TEXT(" (own ship)") : TEXT(""), bEntry ? TEXT("jumps to warp") : TEXT("drops out of warp"), bOwn ? TEXT("") : TEXT(" (flash shown)"));
+			}
+		}
+	}
+
+	// ---- warp: streaks in front of the own camera ----
+	if (bOwn && (Phase == EHCJWarpPhase::Charging || Phase == EHCJWarpPhase::Active) && WarpStreakMesh == nullptr && Camera != nullptr)
+	{
+		UStaticMesh* Plane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+		UMaterialInterface* StreakBase = UHCJAssetSettings::Load<UMaterialInterface>(Settings.WarpStreakMaterial, TEXT("warp streaks"));
+		if (Plane != nullptr && StreakBase != nullptr)
+		{
+			WarpStreakMaterial = UMaterialInstanceDynamic::Create(StreakBase, this);
+			WarpStreakMaterial->SetVectorParameterValue(TEXT("Color"), WarpColor);
+			WarpStreakMesh = NewObject<UStaticMeshComponent>(this, TEXT("WarpStreakMesh"));
+			WarpStreakMesh->SetupAttachment(Camera);
+			WarpStreakMesh->SetStaticMesh(Plane);
+			WarpStreakMesh->SetMaterial(0, WarpStreakMaterial);
+			WarpStreakMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			WarpStreakMesh->SetGenerateOverlapEvents(false);
+			WarpStreakMesh->SetCastShadow(false);
+			WarpStreakMesh->SetReceivesDecals(false);
+			// 80 uu in front of the lens, turned to it, wide enough for the widest view.
+			WarpStreakMesh->SetRelativeLocationAndRotation(FVector(80.0, 0.0, 0.0), FRotator(90.0, 0.0, 0.0));
+			WarpStreakMesh->SetRelativeScale3D(FVector(2.4, 3.8, 1.0));
+			WarpStreakMesh->SetVisibility(false);
+			WarpStreakMesh->RegisterComponent();
+		}
+	}
+	if (WarpStreakMesh != nullptr)
+	{
+		const float Strength = !bOwn ? 0.0f : Phase == EHCJWarpPhase::Active ? 1.0f
+			: Phase == EHCJWarpPhase::Charging ? 0.3f * FMath::Clamp((Now - WarpPhaseLookTime) / 1.6f, 0.0f, 1.0f) : 0.0f;
+		const bool bShow = Strength > 0.01f;
+		if (bShow)
+		{
+			WarpStreakMaterial->SetScalarParameterValue(TEXT("Strength"), Strength);
+		}
+		if (WarpStreakMesh->IsVisible() != bShow)
+		{
+			WarpStreakMesh->SetVisibility(bShow);
+		}
+	}
+
+	// ---- tractor beam: a quad from the holder to the ship it holds ----
+	const AHCJShipCharacter* Held = bIsDead ? nullptr : GetTractorTarget();
+	if (Held != nullptr && TractorBeamMesh == nullptr)
+	{
+		UStaticMesh* Plane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+		UMaterialInterface* BeamBase = UHCJAssetSettings::Load<UMaterialInterface>(Settings.PhaserBeamMaterial, TEXT("tractor beam"));
+		if (Plane != nullptr && BeamBase != nullptr)
+		{
+			TractorBeamMaterial = UMaterialInstanceDynamic::Create(BeamBase, this);
+			TractorBeamMaterial->SetVectorParameterValue(TEXT("Color"), TractorColor);
+			TractorBeamMaterial->SetScalarParameterValue(TEXT("Brightness"), Settings.PhaserBeamBrightness * 0.8f);
+			TractorBeamMaterial->SetScalarParameterValue(TEXT("Phase"), static_cast<float>(GetUniqueID() % 71));
+			TractorBeamMesh = NewObject<UStaticMeshComponent>(this, TEXT("TractorBeamMesh"));
+			TractorBeamMesh->SetupAttachment(GetCapsuleComponent());
+			TractorBeamMesh->SetUsingAbsoluteLocation(true);
+			TractorBeamMesh->SetUsingAbsoluteRotation(true);
+			TractorBeamMesh->SetUsingAbsoluteScale(true);
+			TractorBeamMesh->SetStaticMesh(Plane);
+			TractorBeamMesh->SetMaterial(0, TractorBeamMaterial);
+			TractorBeamMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			TractorBeamMesh->SetGenerateOverlapEvents(false);
+			TractorBeamMesh->SetCastShadow(false);
+			TractorBeamMesh->SetReceivesDecals(false);
+			TractorBeamMesh->SetVisibility(false);
+			TractorBeamMesh->RegisterComponent();
+		}
+	}
+	if (TractorBeamMesh != nullptr)
+	{
+		const bool bShow = Held != nullptr;
+		if (bShow)
+		{
+			// Both ends as this machine draws the ships (the smoothed mesh of a ship flown elsewhere).
+			const auto DrawnLocation = [](const AHCJShipCharacter& Ship)
+			{
+				return (Ship.GetController() == nullptr && Ship.GetMesh() != nullptr) ? Ship.GetMesh()->GetComponentLocation() : Ship.GetActorLocation();
+			};
+			const FVector Start = DrawnLocation(*this) + GetActorForwardVector() * (0.3f * MuzzleOffset);
+			const FVector End = DrawnLocation(*Held);
+			const FVector Along = End - Start;
+			const double Length = Along.Size();
+			FVector ViewLocation = Start;
+			FRotator ViewRotation = FRotator::ZeroRotator;
+			if (const APlayerController* LocalController = GEngine != nullptr ? GEngine->GetFirstLocalPlayerController(GetWorld()) : nullptr)
+			{
+				LocalController->GetPlayerViewPoint(ViewLocation, ViewRotation);
+			}
+			if (Length > 1.0)
+			{
+				const FVector Middle = (Start + End) * 0.5;
+				TractorBeamMesh->SetWorldLocationAndRotation(Middle, FRotationMatrix::MakeFromXZ(Along, ViewLocation - Middle).Rotator());
+				// Wider than a phaser beam, and it breathes.
+				const double Width = Settings.PhaserBeamWidth * (2.2 + 0.5 * FMath::Sin(Now * 9.0f));
+				TractorBeamMesh->SetWorldScale3D(FVector(Length / 100.0, Width / 100.0, 1.0));
+				TractorBeamMaterial->SetScalarParameterValue(TEXT("Length"), static_cast<float>(Length));
+			}
+		}
+		if (TractorBeamMesh->IsVisible() != bShow)
+		{
+			TractorBeamMesh->SetVisibility(bShow);
+		}
+	}
+
+	// ---- cloak: who sees what (the revealed bit and the local controller can change without a flag change) ----
+	if (IsCloaked() || CloakSkinState != 0)
+	{
+		ApplyCloakLook();
+		if (CloakMaterial != nullptr && CloakSkinState > 0)
+		{
+			// Another ship: a faint shimmer. The own ship: half transparent. Revealed: a strong flicker.
+			const float Opacity = CloakSkinState == 2 ? 0.5f : CloakSkinState == 3 ? (FMath::Frac(Now * 13.0f) < 0.5f ? 0.85f : 0.3f) : 0.1f;
+			CloakMaterial->SetScalarParameterValue(TEXT("Opacity"), Opacity);
 		}
 	}
 }

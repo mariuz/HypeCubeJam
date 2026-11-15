@@ -1,5 +1,7 @@
 #include "Game/HCJUserSettings.h"
 
+#include "Ship/HCJShipTypes.h"
+
 void UHCJUserSettings::Sanitize()
 {
 	MouseSensitivity = FMath::Clamp(MouseSensitivity, 0.2f, 3.0f);
@@ -10,6 +12,9 @@ void UHCJUserSettings::Sanitize()
 	Dimension = FMath::Clamp(Dimension, 3, 5);
 	BotDifficulty = FMath::Clamp(BotDifficulty, 0, 2);
 	MusicSet = FMath::Clamp(MusicSet, 0, 1);
+	ShipType = HCJShipTypes::SanitizeType(ShipType);
+	ShipVariant = (ShipVariant >= 0 && ShipVariant < HCJShipTypes::Get(ShipType).NumHulls) ? ShipVariant : -1;
+	ShipSkin = (ShipSkin >= 0 && ShipSkin < 64) ? ShipSkin : -1;
 	PlayerName = PlayerName.TrimStartAndEnd().Left(20);
 	if (PlayerName.IsEmpty())
 	{

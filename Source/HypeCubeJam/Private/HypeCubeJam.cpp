@@ -34,6 +34,7 @@ namespace
 	 *   -HCJAutoFly            the local ship turns slowly, holds fire and alternates cruise / boost, so that
 	 *                          bolts, muzzle flashes, trails and impacts are in the pictures.
 	 *   -HCJAutoTorpedo        with -HCJAutoFly: it also fires a photon torpedo whenever one is loaded.
+ *   -HCJAutoWarp           with -HCJAutoFly: it also holds the warp key for six seconds of every twenty.
 	 *   -HCJOrbit              the chase camera looks at the local ship from another side after every picture
 	 *                          (behind, right, front, left, ...), to check the facing of the ship mesh.
 	 *   -HCJCaptureCmd="..."   console command run once, together with the third picture (e.g. "ListTextures").
@@ -60,13 +61,16 @@ namespace
 	 *   -HCJTour               listen server / standalone only: after every picture (every second one with
 	 *                          -HCJSkyCam) the local ship is moved to a spawn point of the next sector, so one
 	 *                          run shows the sky of many sectors. -HCJTourStart=<sector id> picks the first one.
-	 * Does nothing without a local player (dedicated server, commandlets).
+	 *   -HCJQuitAfter=<s>      the process quits by itself after <s> seconds (also a dedicated server, also without -HCJCapture).
+ * Does nothing without a local player (dedicated server, commandlets).
 	 */
 	struct FHCJCapture
 	{
 		float Interval = 0.0f;
 		bool bAutoFly = false;
 		bool bAutoTorpedo = false;
+		bool bAutoWarp = false;
+		double AutoFlyTime = 0.0;
 		bool bOrbit = false;
 		bool bTour = false;
 		bool bSkyCam = false;
@@ -153,6 +157,12 @@ namespace
 						Ship->FireTorpedo();
 					}
 					Ship->SetBoosting(bBoost);
+					if (bAutoWarp)
+					{
+						// The warp key for six seconds of every twenty: a charge, a full jump, then the cooldown.
+						AutoFlyTime += DeltaSeconds;
+						Ship->SetWarping(FMath::Fmod(AutoFlyTime, 20.0) < 6.0);
+					}
 					Ship->AddThrustInput(FVector(bBoost ? 1.0 : 0.3, 0.0, 0.0));
 					// Circle inside the asteroid field: turn steadily, and head back for the middle when far out.
 					const AHCJUniverse* Universe = AHCJUniverse::Get(World);
@@ -278,6 +288,23 @@ public:
 		});
 
 #if !UE_BUILD_SHIPPING
+		// -HCJQuitAfter=<seconds>: an unattended run (bot match, capture, host + client test) ends by itself, so nothing has to stop it from outside.
+		float QuitAfter = 0.0f;
+		if (FParse::Value(FCommandLine::Get(), TEXT("HCJQuitAfter="), QuitAfter) && QuitAfter > 0.0f)
+		{
+			QuitTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Left = QuitAfter](float DeltaSeconds) mutable
+			{
+				Left -= DeltaSeconds;
+				if (Left > 0.0f)
+				{
+					return true;
+				}
+				UE_LOG(LogHCJ, Log, TEXT("Quitting: the time given with -HCJQuitAfter is up"));
+				FPlatformMisc::RequestExit(false);
+				return false;
+			}));
+		}
+
 		float Interval = 0.0f;
 		if (FParse::Value(FCommandLine::Get(), TEXT("HCJCapture="), Interval) && Interval > 0.0f)
 		{
@@ -285,6 +312,7 @@ public:
 			Capture->Interval = Interval;
 			Capture->bAutoFly = FParse::Param(FCommandLine::Get(), TEXT("HCJAutoFly"));
 			Capture->bAutoTorpedo = FParse::Param(FCommandLine::Get(), TEXT("HCJAutoTorpedo"));
+			Capture->bAutoWarp = FParse::Param(FCommandLine::Get(), TEXT("HCJAutoWarp"));
 			Capture->bOrbit = FParse::Param(FCommandLine::Get(), TEXT("HCJOrbit"));
 			Capture->bTour = FParse::Param(FCommandLine::Get(), TEXT("HCJTour"));
 			Capture->bSkyCam = FParse::Param(FCommandLine::Get(), TEXT("HCJSkyCam"));
@@ -322,10 +350,16 @@ public:
 			FTSTicker::GetCoreTicker().RemoveTicker(CaptureTicker);
 			CaptureTicker.Reset();
 		}
+		if (QuitTicker.IsValid())
+		{
+			FTSTicker::GetCoreTicker().RemoveTicker(QuitTicker);
+			QuitTicker.Reset();
+		}
 	}
 
 private:
 	FTSTicker::FDelegateHandle CaptureTicker;
+	FTSTicker::FDelegateHandle QuitTicker;
 };
 
 IMPLEMENT_PRIMARY_GAME_MODULE(FHypeCubeJamModule, HypeCubeJam, "HypeCubeJam");

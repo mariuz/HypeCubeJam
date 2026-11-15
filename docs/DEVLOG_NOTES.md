@@ -1026,8 +1026,195 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
       the new glow, watched the intro with a keyboard in hand, flown through a portal to see the flash, or seen the
       planets' bands move.
 
+## 15 Nov 2026 (tenth session) - ship types, warp drive, cloaking device, tractor beam
+25. "Add warp drive like in star trek", "add tractor beam like in star trek", "add cloaking device like in star trek", "add ship
+    selection menu with different ship types". Four things in one session. Keys: hold Z warp, C cloak, hold R tractor beam
+    (R still asks for a respawn when the ship is gone; T, F, V and Ctrl were taken).
+    - **Ship types.** Five rows of one table in code (`Ship/HCJShipTypes.h`: interceptor, fighter, gunship, scout, cruiser);
+      the fighter is the ship the game had. Per type: size (0.85 to 1.3: hull mesh, movement collision, hit sphere and
+      shield bubble alike, on every machine), cruise speed, acceleration, braking, boost meter, hull, shield facing and its
+      regeneration, fore armour, phaser and bolt scales, phaser refill, torpedoes, cloak meter, warp jump and cooldown,
+      tractor reach / pull / drain. Decision: code, not config - the owning client predicts its movement with these
+      numbers, and a table compiled into both ends cannot differ between them. Decision: the gunship's "strong fore shield"
+      is fore armour (hits on the fore facing x 0.9), not a larger fore facing: the facings share one capacity in the
+      health component and in the replicated word, and a multiplier in `TakeDamage` is three lines.
+      Each type owns eight of the forty Star Sparrow hulls (meshes 1-8, 9-16, ...). **Nobody looked at the forty hulls to
+      sort them by character**: the groups are the file order. A player picks type, hull (or "surprise me") and one of the
+      ten paints (or "by pilot colour"); a chosen paint is also the player's colour on the HUD (black and grey lifted).
+    - Path of a choice: `GameUserSettings.ini` -> `ServerSetShipChoice` (reliable; once per controller and from the hangar)
+      -> `AHCJGameMode::SetShipChoice`, which validates it (unknown type = fighter, unknown hull / paint = pick for me;
+      tested) -> player state (replicated: scoreboard) -> the next ship the server spawns (`ServerInitShipType`), or at once
+      a ship that is still under its spawn shield -> type, hull and paint replicated on the ship -> `ApplyShipType` on every
+      machine. `ProjectVersion` went from 0.1.0 to 0.2.0: replicated properties and one multicast changed, so builds
+      before this one are a different network version (FIND GAMES lists them as not joinable; a join by address between an
+      old and a new build was not tried).
+    - Hangar: a page of the one Slate menu at the left of the screen (type, hull, paint, description, six bars, the
+      numbers) and a LIVE preview: a local actor with the hull mesh and paint, placed in front of the camera every frame,
+      turning 28 degrees a second. Reached from the title menu (the page shows "Your ship: <type>") and from the Esc menu
+      ("your next ship").
+    - **Warp drive.** Hold Z: 1.6 s charge, then a straight line at 150 m/s (boost is 47-70 m/s) for as long as the key
+      is held, 2.2-3 s at most, then 6-16 s of cooldown by type (2 s after a stopped charge). No weapons while the drive
+      is busy; a hit while it charges stops it; not while cloaked, not while held by a tractor beam. Decision on rock:
+      the drive drops out BEFORE impact - each move at warp sweeps a sphere 0.3 s ahead against static geometry and ends
+      the jump at boost speed; it also drops out 225 m from the sector origin when heading outwards (the safe radius is
+      260 m). A ship that still hits something (another ship) loses 22 hull points. A portal entered at warp works: the
+      server stops the drive in the tick of the teleport and the ship comes out at boost speed.
+      - Netcode: the drive is part of the character movement simulation, like the boost meter. The key is a bit of every
+        move, "this move was flown at warp" another, written after the client simulated the move; the client's saved moves
+        keep the drive's state for combined moves and replays. The server steps its own copy and takes the START and the
+        END of a jump from the client's bit, provided its own charge is complete to within 0.25 s and the jump is not more
+        than 0.25 s over the longest. Direction: the thrust vector of the first move (the movement component makes it the
+        nose), which the server receives with the move; from then on the velocity is fixed. When the server stops the
+        drive, a counter replicated to the owner stops the prediction too.
+      - The boost meter was changed to the same scheme (the bit now says "this move WAS boosted", the server's meter is
+        the limit with a grace of 8 % of a meter). Reason: before, both ends ran the whole meter rule and could disagree
+        about a move when it ran dry or unlocked - the burst of corrections of items 21 and 23. **That burst did not occur
+        today with either build**, so the change is covered by a unit test (server and client call 120 s of moves alike
+        with delta times 0.5 % apart) but not by a live before / after: packaged, host + client, boost held 15 s at a
+        time: previous build 1 correction in 106 s, this build 3 in 110 s (none with boost on).
+    - **Cloaking device.** C toggles. Meter 8-20 s by type, refill 16-22 s, locked from empty to 20 %. Decision (the
+      Star Trek rule): shields are DOWN while cloaked - all four facings drop to nothing and regenerate at once, from
+      nothing, after the decloak - and weapons are off: a fire attempt drops the cloak, weapons work 1 s later. No warp
+      while cloaked. Revealed (still cloaked, but seen and targeted by all; the hull flickers): 1.2 s after a hit, while
+      an enemy is within 15 m, while a tractor beam holds it. Hidden from: hull (a faint shimmer instead), glint, rim,
+      engine glow and trail, engine sound, brackets and arrows, radar, map mark, target lock, lead circle, phaser aim
+      assist, homing missiles and torpedoes, station turrets, bots beyond 25 m. The old pickup is now a CLOAK cell: full
+      meter, no drain for 8 s. One test (`IsCloakHidden`) is asked everywhere; the Cloak bit of the power-up flags stays
+      the replicated state, with a second bit for "revealed" and one byte of meter for the owner.
+    - **Tractor beam.** Hold R: the locked target, else the nearest ship in the cone, within 60-85 m and 50 degrees of the
+      nose, nothing solid in between. The victim flies at 0.55 of its speed and is pulled towards the holder (10-19 m/s,
+      not closer than 13 m). Decision: it feeds on the holder's phaser bank (3 s from a full bank, 5 s on the cruiser),
+      the holder may fire. It lets go when the victim boosted 0.9 s, the holder took 22 damage while holding, rock gets
+      in between (checked every 0.15 s), range x 1.15 or the wide cone are left, or the bank is empty; then 2 s (torn
+      free) before it can be used again. It reveals a cloaked ship and stops a warp drive.
+      - Netcode: no RPC but the key. The holder's `TractorTarget` and the victim's `TractorHolder` are replicated to
+        everybody; the victim's movement component slows it and applies the pull after the normal step, as it does the
+        drift of a black hole - on the server and in the owning client's prediction. The client pulls towards the
+        holder's REPLICATED position, which lags the server's: corrections while held, see below.
+      - Cut: the beam does not pull pickups.
+    - Bots: warp on a long clear way to a portal (rolled once per trip: 0.35 / 0.7 / 0.95 on easy / normal / hard) and to
+      get away with a low hull (0.15 / 0.5 / 0.8), key held only with the nose within 6 degrees of the goal, let go 32 m
+      short of it; cloak for an approach from afar or a retreat (0.03 / 0.1 / 0.2 per second), dropped 45 m from the
+      target, when revealed or after 8-12 s; tractor beam on a target in reach, three times as readily on one that runs
+      or is nearly done; caught in one, they boost away from the holder (0.4 / 0.8 / 1). A target that cloaks gets 1.2 s
+      of fire at where it was. Bots are a mix of types in a fixed order.
+    - Looks, all from what was in the project plus two materials built by `docs/tools/make_trek_materials.py` (Custom
+      nodes, no texture): `M_HCJ_Cloak` (translucent: rim shimmer, crawling bands, a little refraction) and
+      `M_HCJ_WarpStreaks` (additive radial streaks on a quad 0.8 m in front of the own camera). Warp: blue-white engine
+      flare while charging, view widened from 95 to 128 degrees, long trail, a blue-white flare where another ship jumps
+      and where it drops out (the explosion flare quad). Tractor beam: the phaser beam material in blue-white, 2.2-2.7
+      times as wide. Sounds: existing waves at other pitches (phaser start at 0.45 for the charge, the portal sound at
+      1.6 / 0.7 for jump / drop-out, the shield chime at 0.55 / 1.5 for cloak / decloak, phaser start / stop at 0.6 / 0.5
+      for the beam). Nothing was imported.
+    - HUD: WARP / CLOAK / TRACTOR rows (key, state, bar) in the WEAPON panel; under the own ship the lines WARP CHARGING
+      (with a bar), WARP, CLOAKED, CLOAK REVEALED, DECLOAKING - weapons in n s, TRACTOR LOCK - name and distance, CAUGHT IN
+      TRACTOR BEAM - [Shift] BOOST TO BREAK FREE; the type of the ship in the target panel (with "IN YOUR BEAM", "HOLDS
+      YOU", "CLOAK REVEALED", "CHARGING WARP"), a SHIP column on the scoreboard, "(INT)" style tags in the kill feed
+      (the kill event carries both types in one byte); four hints (caught in a beam; once each: warp, cloak, tractor);
+      three rows and two lines on the F1 page and the CONTROLS page.
+    - Problems found and fixed:
+      - `float line = ...` in the streak material: `line` is a keyword of the shader language. The material failed to
+        compile ("Default Material will be used in game") and the quad in front of the camera was drawn with the default
+        material - **the whole view black with a grey grid for the length of a warp**. Seen in a picture; renamed.
+      - The flare of the own jump whited out the lower half of the screen (the camera sits in it): no flare for the own
+        ship, which has the streaks.
+      - Raising the cloak made the shield bubble flicker in four places, played the collapse chime and triggered the
+        "FORE SHIELD DOWN" hint: three or four facings gone in one update are now taken as "switched off".
+      - The lines of the systems were first drawn above the crosshair, on top of the label of the target: moved under
+        the own ship.
+      - The first cloak picture showed "CLOAK REVEALED": the two parked ships were 12.5 m apart, inside the 15 m of the
+        reveal rule. (The rule worked; the scene was wrong.)
+      - The first bot match had the idle ship of the local player in it (9 ships; the fighter's deaths were its).
+        `-HCJBotsOnly` keeps the local player without a ship.
+    - **How the bot matches were run this time**: not as a dedicated server but as a standalone game without any network -
+      `UnrealEditor-Cmd <project> "/Engine/Maps/Entry?Seed=1234?FragLimit=0?TimeLimit=0?Bots=8?Difficulty=n" -game -nullrhi
+      -nosound -HCJBotsOnly -HCJNoEOS -HCJNoIntro -HCJQuitAfter=<s>` (the dedicated-server command line of the earlier
+      sessions was not permitted to run in this session's sandbox). 8 bots, seed 1234, no limits; game time 288-410 s per
+      match because the processes start slowly when four to eight run at once. "Classic" = the same binary with
+      `-HCJClassic`: all bots fighters, none uses warp, cloak or tractor beam - the game before this session.
+    - Balance. Kills / deaths by type, easy bots, pooled over the matches of a batch (K/D in brackets); the table was
+      changed between batches:
+
+      | batch (matches) | interceptor | fighter | gunship | scout | cruiser | kills / min | time to kill |
+      |---|---|---|---|---|---|---|---|
+      | 1: first table (2) | 36/46 (0.78) | 25/24 (1.04) | 23/9 (2.56) | 29/58 (0.50) | 40/24 (1.67) | 16.0, 15.8 | 3.61, 4.75 s |
+      | 2 (3) | 44/71 (0.62) | 37/28 (1.32) | 36/22 (1.64) | 61/57 (1.07) | 60/69 (0.87) | 13.9-18.6 | 3.62-4.08 s |
+      | 3 (5) | 120/93 (1.29) | 57/58 (0.98) | 43/54 (0.80) | 101/119 (0.85) | 93/106 (0.88) | 13.4-17.0 | 2.93-5.07 s |
+      | 4 (4) | 90/91 (0.99) | 40/43 (0.93) | 50/38 (1.32) | 92/89 (1.03) | 64/90 (0.71) | 13.7-17.1 | 3.57-4.69 s |
+      | 5 (5) | 94/121 (0.78) | 46/49 (0.94) | 59/44 (1.34) | 105/120 (0.88) | 106/98 (1.08) | 14.2-15.3 | 3.66-4.43 s |
+      | 6 (5) | 104/118 (0.88) | 41/57 (0.72) | 49/57 (0.86) | 119/123 (0.97) | 114/87 (1.31) | 13.7-17.1 | 3.30-5.10 s |
+      | **7: final table (5)** | 148/146 (1.01) | 55/70 (0.79) | 75/62 (1.21) | 140/153 (0.92) | 129/134 (0.96) | 14.4-18.2 (mean 16.2) | 3.86-4.56 s (mean 4.20) |
+      | classic, same binary (3, one each in batches 1, 2, 6) | - | all | - | - | - | 18.8, 14.8, 18.0 | 3.62, 3.77, 3.87 s |
+
+      Final table, normal bots (2 matches, 260 kills): interceptor 73/70 (1.04), fighter 43/32 (1.34), gunship 35/22
+      (1.59), scout 54/84 (0.64), cruiser 55/59 (0.93); 18.5 and 20.4 kills per minute, time to kill 2.98 and 2.78 s.
+      Hard (1 match): 1.10, 1.50, 1.47, 0.73, 0.81; 18.4 kills per minute, 2.50 s.
+      Read: on EASY the final table is inside +-25 % of the mean of the five ratios (0.98): interceptor +3 %, fighter
+      -19 %, gunship +24 %, scout -6 %, cruiser -2 %. That is the last of seven batches and the gunship (one bot of
+      eight, 60-75 kills and deaths per batch) is at the edge; one batch cannot tell 1.2 from 1.0 for it - the fighter,
+      whose numbers never changed, ran from 0.72 to 1.32 between batches. On NORMAL and HARD it is NOT inside: the scout
+      is 30-40 % below the others in every batch that had normal bots (0.60, 0.65, 0.75-0.84, 0.75, 0.64), gunship and
+      fighter above. Not retuned: what the scout is good at (cloak, warp, boost) a bot hardly uses to win a fight.
+      Batch 7 ran while the package was being built (all eight cores busy), which lowers the bots' tick rate; its
+      kill rates are not to be compared with the others.
+      Kill rate and time to kill against the classic bots of the same batches: 16.2 (and 15.5 in batch 6) against
+      14.8-18.8 per minute, 4.1-4.2 s against 3.6-3.9 s. Inside the spread between matches; the fights last a little
+      longer (heavier hulls, ships that warp away).
+    - What the bots do with the systems (final table, per match of 395-410 s): easy - 22-41 warps (2-7 of them stopped
+      by the server: a hit while charging, a tractor beam, the portal the bot flew into), 4-10 cloaks (0-1 reveals), 28-38
+      tractor holds (13-19 torn free, 7-16 bots boosted free); normal - 65-73 warps, 23-24 cloaks, 42-43 holds; hard - 78
+      warps, 43 cloaks (9 reveals), 65 holds (37 torn free, 41 bots boosted free). Collisions at warp: 0 in all matches
+      of the session (the look-ahead drops the drive first). Kills by weapon, easy, batch 6 (427 kills): phaser 23 %,
+      torpedo 22 %, missiles 21 %, pulse 13 %, rail 8 %, scatter 7 %, blaster 7 %. No error line in any bot match log.
+    - Netcode, packaged build, listen host + one client on one PC (loopback, ports 7791-7794, two windows of 800x450,
+      `-LogCmds="LogHCJ Verbose"`, both end by themselves with `-HCJQuitAfter`); evidence is the client's log:
+      - Checksums: layout 3976D716 on both in every run; pads D547574B on both.
+      - Types: the host started with type 0 and the client with type 4, hull 2, paint 5 (`-ini:GameUserSettings:`
+        overrides); host log `Ship choice: User asked for type 4, hull 2, paint 5 -> Cruiser, hull 2, paint 5`, client
+        log for each of its five ships `Ship type (client): ... (own ship) is a Cruiser (hull 2, paint 5)`; its
+        corrections show the cruiser's speeds (705 = 0.3 x 2350).
+      - Seeing other ships (run 2: the host's ship is put behind the client's by a development command every 10 s and
+        uses beam, cloak and warp in turn): the client logged 11 times `Tractor: beam of ... holds ...`, 8 times `the own
+        ship is caught by the beam of ...`, 2 cloaks and 1 decloak of other ships, 1 other ship going to warp and 2 warp
+        flashes shown. In a plain match with normal bots (run 1, 100 s) it saw 1 other ship at warp and 2 flashes, no
+        cloak and no beam: ships are only known in the client's own sector.
+      - Movement corrections of the client per run of 100-110 s, autopilot without boost: 3 (run 1; the previous build
+        the same day: 2). While the client's own ship warps (run 3, `-HCJAutoWarp`: 3 jumps, 3 more charges stopped by
+        hits): 0 corrections at warp, 0 while charging, 1 in the cooldown (33 uu), 6 in the run. While held by a beam
+        (run 2: 8 holds of up to 5 s by a cruiser): 10 corrections in all while held - mostly 2 uu, some of 30 uu, one of
+        120 uu - of 17 in that run (the host's ship is teleported next to the client's every 10 s). So: a jump costs
+        nothing, a tractor beam costs one or two small corrections per hold.
+    - Frame rate, packaged, 1280x720, listen host with 7 bots, seed 1234, capture autopilot, `-HCJNoEOS -HCJNoIntro`, 8 s
+      averages over 80-88 s, the build before this session (a copy of its packaged folder) and the new one in turn:
+      before 121-134 fps (mean 127; at the start of the session), after 74-101 (92; the first run of the new package),
+      after 77-94 (85), before 80-101 (90), after 93-118 (104), before 86-115 (99). The machine was a fifth slower
+      for BOTH builds after four hours of builds and bot matches (other programs took a fifth of the processor in the
+      idle check); in the alternated runs the two builds are in the same range (before 90 and 99, after 85 and 104).
+      A run with the first number's conditions was not repeated for the new build.
+    - 66 automation tests, all passing (new: `HypeCubeJam.Systems.WarpStateMachine`, `.WarpFollow`, `.BoostFollow`,
+      `.TractorPull`, `.CloakDevice`, `HypeCubeJam.ShipTypes.Table`, `.ServerValidation`).
+    - Development aids: `-HCJQuitAfter=<s>`, `-HCJBotsOnly`, `-HCJClassic`, `-HCJBotType=<0..4>`, `-HCJAutoWarp`,
+      `HCJParkEnemy <uu> <right> <up> <which ship>`, `HCJMenuCmd warp <0|1> | cloak | tractor <0|1> | ship <type>[,<hull>[,
+      <paint>]] | hangar | enemyship <type>,<hull>,<paint>,<which> | enemywarp <0|1>[,<which>] | enemycloak [<which>] |
+      enemytractor <0|1>[,<which>] | holdplayer [0]`, the `Systems t=` status line, verbose `Warp:` / `Cloak:` /
+      `Tractor:` / `Ship type` lines, warp phase and "tractor held" in the `Correction` line.
+    - Pictures (packaged build, 1280x720, standalone game, scenes set up with development commands, bots held still,
+      the own ship idle): `Media/59_warp_charging.png` and `60_warp_streaks.png` (the own ship 0.05 s before and after
+      the jump; **game slowed to 0.05**), `61_other_ship_warp_flash.png` (a parked cruiser jumping, **slowed to 0.05**),
+      `62_tractor_beam_holder_view.png` and `63_caught_in_tractor_beam_warning.png` (**slowed to 0.4**),
+      `64_cloaked_ship_shimmer_next_to_uncloaked.png` (a cloaked cruiser at 29 m left of an interceptor at 26 m; real
+      time), `65_own_ship_cloaked.png` (real time), `66_hangar_interceptor.png`, `67_hangar_cruiser.png`,
+      `68_hangar_gunship.png` (the hangar from the Esc menu), `69_hangar_title_menu_scout.png` (from the title menu),
+      `70_two_ship_types_in_match.png` (a cruiser and an interceptor in front of the own fighter),
+      `71_scoreboard_ship_types.png`, `72_help_page_new_keys.png`. Effects were not lengthened. In 64 the shimmer is
+      faint: a dark blue outline against the Milky Way; against black sky it is harder to see still.
+    - Packaged: 1068 packages in the cook (1039 cooked, 29 skipped for the platform; 1066 before: the two materials).
+      Zip `Packaged/mariuz_HypeCubeJam.zip`: 583.6 MB (882.3 MB unpacked, 48 files; 583.5 MB / 48 files before).
+    - Judged from logs, bot matches and still pictures only. Nobody has flown a warp jump, held a ship with the beam
+      while shooting it, hunted a cloaked ship or clicked through the hangar; nobody has heard any of the new sounds.
+
 ## Measurements
-- Automation tests: 9 at the start, 59 now, all passing (added: the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
+- Automation tests: 9 at the start, 66 now, all passing (added: ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station
   placement, lead aim).
 - Frame rate (editor binary, -game, 8 s averages): 101-128 fps with basic shapes (`-HCJNoAssets`), 98-129 fps
@@ -1038,6 +1225,23 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
   also with basic shapes only.
 
 ## Not done / open
+- Item 25 (ship types, warp drive, cloak, tractor beam) was judged from logs, bot matches and still pictures.
+  - Ship types are balanced for EASY bots only (kills / deaths inside +-25 % of the mean in the last batch, gunship at
+    the edge). On normal and hard the scout is 30-40 % below the others; not retuned. How the types feel to a pilot
+    (speed, the fore armour, a 30 % bigger cruiser) is untested.
+  - The eight hulls of each type are the file order of the pack; nobody sorted the forty hulls by how they look.
+  - The fix for the boost-meter corrections could not be shown in a run: the burst did not occur with the build before
+    either (1 correction in 106 s; the new build 3 in 110 s).
+  - A ship held by a tractor beam gets one or two small movement corrections per hold on its owner's machine.
+  - The frame-rate comparison was made on a machine that had become a fifth slower during the session; the two builds
+    were only compared in alternated runs (same range), not at the session's first number.
+  - The tractor beam does not pull pickups (cut).
+  - The cloak shimmer is faint by design; whether it is too faint or too easy to see in motion is not known. The own
+    cloaked ship is a light blue ghost that covers the view ahead as much as the normal hull does.
+  - Warp, cloak and tractor sounds are existing waves at other pitches; nobody has heard them.
+  - A client that joins gets its type on its FIRST ship only if the choice arrives before the spawn shield ends (it did
+    in every run here); otherwise from its second ship.
+  - Bot matches of this session ran as a standalone game without network instead of a dedicated server.
 - The "Sci-Fi Space Station" model in `SourceAssets/SciFiSpaceStation` is not used (see item 14).
 - Item 24 (bigger ships, enemy glow, station model, intro, portals, planets) was judged from logs and still pictures.
   - The station model fits only half of the collision shape: the beam along Y, the mast and their panels are still

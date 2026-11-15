@@ -46,6 +46,8 @@ protected:
 	void DrawCrosshair(const AHCJShipCharacter& Ship);
 	void DrawVitals(const AHCJShipCharacter& Ship);
 	void DrawFlightInfo(const AHCJShipCharacter& Ship);
+	/** Warp drive, cloak and tractor beam: the lines above the crosshair (WARP CHARGING, CLOAKED, TRACTOR LOCK, CAUGHT IN TRACTOR BEAM). */
+	void DrawSystems(const AHCJShipCharacter& Ship);
 	/** Bottom right: weapon and ammunition, running power-ups with their seconds; centre: the last pickup for a moment. */
 	void DrawLoadout(const AHCJShipCharacter& Ship, const AHCJPlayerController* Controller);
 	/** Markers (diamond, item name, distance) over the pickup pads near the local ship that hold an item. */

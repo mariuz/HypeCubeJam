@@ -29,6 +29,16 @@ struct HYPECUBEJAM_API FHCJBotSkill
 	 */
 	float PhaserConeDeg = 4.0f;
 	float PhaserReserve = 0.0f;
+	/**
+	 * Ship systems, as chances: to warp on a long way to a portal / to flee by warp when the hull is low (rolled once
+	 * per trip / per retreat), to raise the cloak for an approach or a retreat and to use the tractor beam on a target
+	 * in reach (rolled once a second), and to boost free when a beam catches the bot (rolled once per catch).
+	 */
+	float WarpTravelChance = 0.5f;
+	float WarpFleeChance = 0.3f;
+	float CloakChance = 0.1f;
+	float TractorChance = 0.08f;
+	float BreakFreeChance = 0.7f;
 
 	/** The row for Difficulty (0 easy, 1 normal, 2 hard; clamped). */
 	static FHCJBotSkill Get(int32 Difficulty);
@@ -75,4 +85,14 @@ namespace HCJBalance
 	 * with the same inputs by the owning client's prediction and the server.
 	 */
 	HYPECUBEJAM_API bool StepBoost(float& Energy, bool& bLocked, bool bWantsBoost, float DeltaSeconds, float DrainSeconds, float RechargeSeconds, float RelockLevel);
+
+	/**
+	 * The server's side of the boost meter for a ship flown by a remote client. The client's own meter decides which
+	 * moves are boosted and says so in every move (bClientBoosting), so the two never disagree about a move because
+	 * their meters differ by a frame; the server's meter only limits it: boost is refused once the server's meter is
+	 * Grace below empty, or while it is locked and more than Grace short of the relock level. Returns whether this
+	 * move is boosted.
+	 */
+	HYPECUBEJAM_API bool StepBoostFollow(float& Energy, bool& bLocked, bool bClientBoosting, float DeltaSeconds, float DrainSeconds, float RechargeSeconds,
+		float RelockLevel, float Grace = 0.08f);
 }

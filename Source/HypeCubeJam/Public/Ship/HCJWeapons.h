@@ -59,6 +59,8 @@ namespace EHCJPowerup
 	inline constexpr uint8 Overdrive = 1 << 0;
 	inline constexpr uint8 Quad = 1 << 1;
 	inline constexpr uint8 Cloak = 1 << 2;
+	/** With Cloak: the cloaked ship is revealed for the moment (a hit, an enemy very close, a tractor beam). Not a power-up of its own. */
+	inline constexpr uint8 CloakRevealed = 1 << 3;
 }
 
 /** How a weapon behaves. Server values decide; clients use them only for looks and to simulate their copy of a bolt. */

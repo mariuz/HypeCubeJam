@@ -260,7 +260,7 @@ void AHCJTurret::ServerThink()
 	for (TActorIterator<AHCJShipCharacter> It(World); It; ++It)
 	{
 		AHCJShipCharacter* Ship = *It;
-		if (Ship->IsDead() || Ship->IsCloaked() || Ship->IsSpawnProtected())
+		if (Ship->IsDead() || Ship->IsCloakHidden() || Ship->IsSpawnProtected())
 		{
 			continue;
 		}

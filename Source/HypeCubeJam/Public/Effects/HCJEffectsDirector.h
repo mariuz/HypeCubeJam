@@ -44,6 +44,8 @@ public:
 
 	/** A ship blew up at Location while flying with Velocity: flare, hull debris, shake. Color: its player colour. */
 	void PlayShipExplosion(const FVector& Location, const FVector& Velocity, const FLinearColor& Color);
+	/** A ship jumped to warp or dropped out of it at Location: a blue-white flare (smaller and dimmer for the own ship, which sits in it). */
+	void PlayWarpFlash(const FVector& Location, bool bOwnShip);
 	/** A torpedo went off: flare, shake, a push for the debris around. */
 	void PlayTorpedoBlast(const FVector& Location);
 	/** A rock of that bounding radius was destroyed (bSplit: it broke into pieces that stay): flare, rock chunks, dust, sound, shake. */

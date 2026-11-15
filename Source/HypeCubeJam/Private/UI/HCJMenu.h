@@ -22,7 +22,9 @@ enum class EHCJMenuPage : uint8
 	/** FIND GAMES: the lobbies advertised through Epic Online Services, refresh, join. */
 	Lobbies,
 	/** LEADERBOARDS: top kills and wins of Epic Online Services, with the local player's row. */
-	Leaderboards
+	Leaderboards,
+	/** HANGAR: ship type, hull and paint, with the stats of the type; the hull turns in the world next to the page. */
+	Hangar
 };
 
 /**
@@ -57,6 +59,7 @@ private:
 	TSharedRef<SWidget> BuildControls();
 	TSharedRef<SWidget> BuildLobbies();
 	TSharedRef<SWidget> BuildLeaderboards();
+	TSharedRef<SWidget> BuildHangar();
 	/** Title, "Online services unavailable" and why, BACK: what the online pages show when there is no service. */
 	TSharedRef<SWidget> BuildOnlineUnavailable(const FString& Title, const FString& InStatus);
 	/** One leaderboard: title, column heads, rows (the local player's row in the accent colour) or why there are none. */

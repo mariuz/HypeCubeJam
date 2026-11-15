@@ -101,7 +101,7 @@ adds portal jumps and bot state changes. For a headless run use `-nullrhi`.
 
 Controls: W/S/A/D thrust, Space/E up, Ctrl/Q down, mouse aim, left mouse fire, right mouse (or X) photon torpedo,
 Shift boost, G drop pickup weapon, T next target, F nearest enemy, middle mouse holds the target, V camera, Tab scoreboard, F1 controls overlay,
-H hints on / off, R/Enter/fire respawn, Esc menu.
+H hints on / off, hold Z warp drive, C cloak on / off, hold R tractor beam (R/Enter/fire respawn when destroyed), Esc menu.
 
 ## Menu and HUD
 
@@ -110,12 +110,13 @@ canvas (`AHCJHUD`, in `HCJHUD.cpp` and `HCJHUDReadability.cpp`) with the engine'
 Menu sizes follow the engine's DPI scaling of viewport widgets, HUD sizes `HCJUi::ComputeUIScale` (1 at 1920x1080,
 0.67 at 1280x720; text never below 0.8).
 
-- Title menu: PLAY (host with bots - one click), bots 0-15, hypercube 3D-5D, bot difficulty, seed, pilot name, JOIN
+- Title menu: PLAY (host with bots - one click), HANGAR (ship type, hull and paint with a turning 3D preview and stat
+  bars; see "Ship types, warp drive, cloak, tractor beam"), bots 0-15, hypercube 3D-5D, bot difficulty, seed, pilot name, JOIN
   by address, FIND GAMES and LEADERBOARDS (see "Online"), SETTINGS (mouse sensitivity, music / effects /
   interface volume), QUIT. The choices are kept in the
   user's `GameUserSettings.ini` (`UHCJUserSettings`). The host has no ship while in the menu and does not count as
   a combatant; PLAY starts a fresh match (`AHCJGameMode::StartMatchFromMenu`).
-- Esc in a match: RESUME, SETTINGS, CONTROLS, LEAVE TO MENU, QUIT GAME. The match is not paused (it is a network
+- Esc in a match: RESUME, HANGAR (the next ship), SETTINGS, CONTROLS, LEAVE TO MENU, QUIT GAME. The match is not paused (it is a network
   game). A client that leaves, loses the host or fails to connect ends up in the title menu with a line saying why.
   Every page has a line of key caps (Enter = the big button, Esc = back, F1 = controls); CONTROLS is a two-column
   page of all keys and of what the HUD marks mean; SETTINGS also has "In-game hints On / Off".
@@ -350,6 +351,96 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
   which a bot breaks off, stops firing and boosts for a repair pad in its sector. The default is easy.
 - Looks only: the hull banks into turns, the chase camera lags a little and widens under boost, a short camera
   shake and an edge flash when hit, hull lights brighter with thrust, debris bursts in the death explosion.
+
+## Ship types, warp drive, cloak, tractor beam
+
+Four additions in the manner of Star Trek. The rules are plain C++ with tests (`Ship/HCJShipTypes.h`,
+`Ship/HCJShipSystems.h`); `AHCJShipCharacter` and `UHCJShipMovementComponent` run them. Keys: hold **Z** warp, **C** cloak,
+hold **R** tractor beam.
+
+**Ship types.** One table (`HCJShipTypes`, code not config: client prediction needs the same flight numbers on both
+ends). Each type owns eight of the forty Star Sparrow hulls; a pilot picks type, hull and one of ten paints in the
+HANGAR (title menu, and under Esc for the next ship), stored in `GameUserSettings.ini`. The choice goes to the server
+(`ServerSetShipChoice`), which validates it (an unknown type is the fighter), keeps it in the player state and stamps
+it on every ship it spawns; type, hull and paint are replicated on the ship and applied on every machine - flight
+model, hull and shield capacity, size of movement collision / hit sphere / shield bubble, stock of torpedoes, look.
+
+| | Interceptor | Fighter | Gunship | Scout | Cruiser |
+|---|---|---|---|---|---|
+| size (fighter = 1) | 0.85 | 1 | 1.12 | 0.9 | 1.3 |
+| cruise / boost, m/s | 35 / 70 | 30 / 60 | 26 / 52 | 33 / 66 | 23.5 / 47 |
+| acceleration, m/s2 | 80 | 60 | 50 | 70 | 42 |
+| boost meter, s (refill) | 3.5 (6) | 3.5 (7) | 3 (8) | 5.5 (6) | 3 (8) |
+| hull | 93 | 100 | 110 | 97 | 144 |
+| shield facing (x 4), regeneration per s | 23, 8 | 26, 8 | 24, 8 | 22, 8 | 34, 10 |
+| hits on the fore facing | x 1 | x 1 | x 0.9 | x 1 | x 1 |
+| phaser damage, bank refill s | x 1.05, 3.4 | x 1, 5 | x 1.1, 6 | x 0.97, 4 | x 1, 5 |
+| bolts and pickup weapons | x 1 | x 1 | x 1.1 | x 0.9 | x 1 |
+| torpedoes on a fresh ship | 2 | 4 | 6 | 3 | 4 |
+| cloak meter, s (refill) | 10 (20) | 12 (20) | 10 (22) | 20 (16) | 8 (22) |
+| warp: longest jump s, cooldown s | 2.5, 10 | 2.5, 12 | 2.2, 14 | 3, 6 | 2.2, 16 |
+| tractor: reach m, pull m/s, s from a full bank | 60, 11, 3 | 65, 12, 3 | 65, 13, 3 | 60, 10, 3 | 85, 19, 5 |
+
+The fighter is the ship the game had before. Bots fly a mix (fighter, interceptor, cruiser, scout, gunship in turn);
+their aim turns 1.2 to 0.75 times as fast by type. Scoreboard, kill feed and target panel show the type.
+
+**Warp drive.** Hold Z: 1.6 s of charge, then the ship flies in a straight line (the direction of its nose when the
+jump starts) at 150 m/s for as long as the key is held, at most the jump time of its type; then the cooldown (2 s
+after a charge that was stopped). No weapons while the drive charges or runs; a hit while it charges stops it; no
+warp while cloaked or held by a tractor beam. Decision on rock: the drive DROPS OUT before impact - every move
+at warp sweeps a sphere 0.3 s ahead against static geometry (rock, stations, turrets) and stops the jump with the
+ship at boost speed - and it drops out 225 m from the sector origin when heading outwards. A ship that still runs into
+something (another ship) loses 22 hull points. A portal entered at warp works: the ship comes out at boost speed.
+- Netcode: the drive is part of the movement simulation. The key is one bit of every move (`FLAG_Custom_1`), "this
+  move was flown at warp" another (`FLAG_Custom_2`); the owning client predicts the jump and keeps the drive's state
+  in its saved moves; the server steps its own copy and lets the client's bit decide the exact move a jump starts and
+  ends on, within 0.25 s of its own charge and of the longest jump (`FHCJWarpDrive::StepFollow`) - so the two do not
+  disagree about a move, and a warp without charge or during the cooldown is refused. The direction is the thrust
+  vector of the first move, which the server gets with the move. When the server stops a drive (hit, tractor beam,
+  collision, portal) the owner is told through a counter and stops its prediction.
+- The boost meter now works the same way (the bit says "this move WAS boosted"; the server's meter is only the limit):
+  that removed the bursts of corrections the meter caused whenever it ran dry or unlocked (see the notes).
+- Looks: the engine flares blue-white while charging; at warp the view widens to 128 degrees, star streaks run
+  outwards on a quad in front of the own camera (`M_HCJ_WarpStreaks`), the trail stretches; every machine shows a
+  blue-white flare where a ship jumps and where it drops out. Sounds are existing ones at other pitches.
+
+**Cloaking device.** C toggles it. The server runs a meter (`FHCJCloakDevice`): it drains while cloaked, refills slowly,
+and when it ran dry it is locked until 20 %. Cloaked: other machines draw the hull with `M_HCJ_Cloak` (translucent, a
+faint rim shimmer with a little refraction) and nothing else of the ship - no glint, engine glow, trail, engine
+sound - and the HUD has no bracket, arrow, radar blip, map mark, lock or lead circle for it; phaser aim assist,
+homing missiles, torpedoes, station turrets and bots ignore it (bots still notice one within 25 m, and fire at
+where it was for a moment). Its pilot sees the own ship half transparent. Star Trek rules: shields are DOWN while
+cloaked (all four facings drop to nothing and regenerate at once, from nothing, after the decloak) and weapons are off
+- pulling the trigger drops the cloak, and weapons work 1 s later. REVEALED for a moment (the hull flickers, everybody
+sees and can target it): 1.2 s after a hit, while an enemy is within 15 m, while a tractor beam holds it. The CLOAK
+pad fills the meter and stops the drain for 8 s.
+
+**Tractor beam.** Hold R. The server takes the locked target (else the nearest ship in the cone) when it is within
+the reach of the ship's type, within 50 degrees of the nose and not behind rock, and publishes who holds whom: the
+holder's `TractorTarget` (the blue-white beam every machine draws) and the victim's `TractorHolder`. A held ship flies
+at 0.55 of its speed and is pulled towards the holder, down to 13 m, by its own movement simulation - on the server
+and in its owner's prediction (`HCJTractor::ComputePull`, a function of the two positions like the drift of a black
+hole). The beam feeds on the holder's phaser bank and lets go when the victim has boosted for 0.9 s, when the holder
+took 22 points of damage while holding, when rock gets in between, when the victim leaves 1.15 x the reach or the
+wider cone, or when the bank is empty; torn free, it cannot be used for 2 s. It reveals a cloaked ship and stops a
+warp drive. The holder can fire phasers and torpedoes while holding. Pads are NOT pulled (cut).
+- The owning client of a held ship uses the holder's replicated position for the pull, which lags the server's:
+  small corrections while held (measured in the notes).
+
+- Bots (`AHCJBotController::ThinkSystems`, chances per difficulty in `FHCJBotSkill`): warp on a long clear way to a
+  portal (0.35 / 0.7 / 0.95 of the trips) and away from the attacker, or to a repair pad, when the hull is low (0.15 /
+  0.5 / 0.8); cloak for an approach from afar or a retreat (0.03 / 0.1 / 0.2 per second while the reason holds), dropped
+  inside 45 m of the target or when revealed; tractor beam on a target in reach, three times as readily on one that
+  runs or is nearly done (0.03 / 0.1 / 0.2 per second); caught in one, they boost away from the holder (0.4 / 0.8 / 1).
+- HUD: WARP / CLOAK / TRACTOR rows with a bar each in the WEAPON panel; under the own ship the lines WARP CHARGING,
+  WARP, CLOAKED, CLOAK REVEALED, DECLOAKING, TRACTOR LOCK and CAUGHT IN TRACTOR BEAM - [Shift] BOOST TO BREAK FREE;
+  four hints (caught, and once each what warp, cloak and tractor beam do); rows on the F1 page and the CONTROLS page.
+- Statistics: the `Systems t=` log line (warps, cloaks, reveals, tractor holds / torn free, kills / deaths by type).
+- Development: `-HCJClassic` (bots fly fighters and use none of the systems: the game before, for comparisons),
+  `-HCJBotType=<0..4>`, `-HCJBotsOnly` (the local player has no ship; with `-game -nullrhi` a headless bot match
+  without any network), `-HCJQuitAfter=<s>`, `-HCJAutoWarp`, `HCJMenuCmd warp <0|1> | cloak | tractor <0|1> | ship
+  <type>[,<hull>[,<paint>]] | hangar | enemyship .. | enemywarp .. | enemycloak .. | enemytractor .. | holdplayer`.
+- Materials: `docs/tools/make_trek_materials.py` builds `M_HCJ_Cloak` and `M_HCJ_WarpStreaks`.
 
 ## Phasers
 

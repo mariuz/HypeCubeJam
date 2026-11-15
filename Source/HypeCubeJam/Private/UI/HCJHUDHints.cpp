@@ -53,7 +53,7 @@ namespace
 	{
 		static const TCHAR* Names[] = { TEXT("None"), TEXT("Move"), TEXT("Fire"), TEXT("Boost"), TEXT("Target"), TEXT("BlackHole"), TEXT("LowHull"), TEXT("NewItem"),
 			TEXT("Turrets"), TEXT("BoostEmpty"), TEXT("Wormhole"), TEXT("Portal"), TEXT("Pickup"), TEXT("EmptySector"), TEXT("Goal"), TEXT("ShieldDown"), TEXT("TorpedoChance"),
-			TEXT("PhaserEmpty"), TEXT("RockBreak") };
+			TEXT("PhaserEmpty"), TEXT("RockBreak"), TEXT("TractorCaught"), TEXT("Warp"), TEXT("Cloak"), TEXT("Tractor") };
 		const int32 Index = static_cast<int32>(Hint);
 		return Index >= 0 && Index < static_cast<int32>(UE_ARRAY_COUNT(Names)) ? Names[Index] : TEXT("?");
 	}
@@ -429,6 +429,25 @@ void AHCJHUD::UpdateHints(const AHCJShipCharacter* Ship, const AHCJGameState& Ga
 			}
 		}
 
+		// The ship systems: caught by a beam (the way out); once each, what warp, cloak and tractor beam are for.
+		if (Ship->GetTractorHolder() != nullptr)
+		{
+			Input.ActiveMask |= FHCJHintDirector::Bit(EHCJHint::TractorCaught);
+		}
+		if (EnemiesInSector == 0 && SectorClearSince >= 0.0f && WorldNow - SectorClearSince > 6.0f && Ship->GetWarpPhase() == EHCJWarpPhase::Idle && !Ship->IsCloaked())
+		{
+			Input.ActiveMask |= FHCJHintDirector::Bit(EHCJHint::Warp);
+		}
+		if (EnemiesInSector > 0 && !Ship->IsCloaked() && !Ship->IsCloakLocked() && Ship->GetCloakEnergy() > 0.9f && !Ship->IsFiring())
+		{
+			Input.ActiveMask |= FHCJHintDirector::Bit(EHCJHint::Cloak);
+		}
+		if (const AHCJShipCharacter* Locked = Controller != nullptr ? Controller->GetTarget() : nullptr; Locked != nullptr && Ship->GetTractorTarget() == nullptr
+			&& FVector::DistSquared(Locked->GetActorLocation(), ShipLocation) < FMath::Square(static_cast<double>(Ship->GetTypeDef().TractorRange) * 0.9))
+		{
+			Input.ActiveMask |= FHCJHintDirector::Bit(EHCJHint::Tractor);
+		}
+
 		// Nobody here for a while, and the route table knows where they are (set by DrawPortalLabels this frame).
 		if (EnemiesInSector == 0)
 		{
@@ -538,6 +557,21 @@ void AHCJHUD::UpdateHints(const AHCJShipCharacter* Ship, const AHCJGameState& Ga
 		break;
 	case EHCJHint::BoostEmpty:
 		HintText = TEXT("BOOST EMPTY: it unlocks again at 25 %. Short bursts keep a reserve");
+		break;
+	case EHCJHint::TractorCaught:
+		HintText = TEXT("CAUGHT IN A TRACTOR BEAM: hold [Shift] to boost free, or shoot the ship that holds you");
+		break;
+	case EHCJHint::Warp:
+		HintText = TEXT("WARP DRIVE: point the nose where you want to go and hold [Z]. It charges, then jumps you far ahead");
+		HintSubText = TEXT("Straight line only, no weapons, and it drops out before rock or when you let go. A hit while it charges stops it");
+		break;
+	case EHCJHint::Cloak:
+		HintText = TEXT("CLOAK: [C] hides you from eyes, radar and locks while the CLOAK meter lasts (bottom right)");
+		HintSubText = TEXT("Cloaked you have no shields and no weapons. A hit or an enemy within 15 m reveals you; firing drops the cloak");
+		break;
+	case EHCJHint::Tractor:
+		HintText = TEXT("TRACTOR BEAM: hold [R] to hold your target in place - then shoot it. It feeds on the phaser bank");
+		HintSubText = TEXT("It lets go when the target boosts free, when you are hit hard, or when rock gets in between");
 		break;
 	case EHCJHint::Wormhole:
 		HintText = FString::Printf(TEXT("WORMHOLE: fly into it for a shortcut to sector %s"), *SectorName(WormholeDest));

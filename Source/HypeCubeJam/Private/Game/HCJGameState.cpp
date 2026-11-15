@@ -143,7 +143,7 @@ void AHCJGameState::ShowCenterMessage(const FString& Text, const FString& SubTex
 	CenterMessage.LocalTime = World ? static_cast<float>(World->GetTimeSeconds()) : 0.0f;
 }
 
-void AHCJGameState::MulticastKillEvent_Implementation(const FString& KillerName, const FString& VictimName, const FString& Cause)
+void AHCJGameState::MulticastKillEvent_Implementation(const FString& KillerName, const FString& VictimName, const FString& Cause, uint8 ShipTypes)
 {
 	const UWorld* World = GetWorld();
 	const float Now = World ? static_cast<float>(World->GetTimeSeconds()) : 0.0f;
@@ -158,6 +158,8 @@ void AHCJGameState::MulticastKillEvent_Implementation(const FString& KillerName,
 	Entry.KillerName = KillerName;
 	Entry.VictimName = VictimName;
 	Entry.Cause = Cause;
+	Entry.KillerType = ShipTypes & 0x0F;
+	Entry.VictimType = ShipTypes >> 4;
 	Entry.LocalTime = Now;
 	Entry.bLocalKiller = !LocalName.IsEmpty() && KillerName == LocalName;
 	Entry.bLocalVictim = !LocalName.IsEmpty() && VictimName == LocalName;

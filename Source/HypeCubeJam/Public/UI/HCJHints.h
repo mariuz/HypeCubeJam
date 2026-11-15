@@ -46,6 +46,14 @@ enum class EHCJHint : uint8
 	PhaserEmpty,
 	/** The own beam is on a rock (the first time only): rocks can be broken. */
 	RockBreak,
+	/** Held by a tractor beam: boost to break free. */
+	TractorCaught,
+	/** Nobody to fight here and the warp drive is ready (once): what the drive does. */
+	Warp,
+	/** An enemy is around and the cloak is charged (once): what the cloak does. */
+	Cloak,
+	/** The locked target is inside the reach of the tractor beam (once): what the beam does. */
+	Tractor,
 
 	Count
 };

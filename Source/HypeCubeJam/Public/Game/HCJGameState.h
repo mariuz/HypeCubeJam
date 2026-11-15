@@ -30,6 +30,9 @@ struct FHCJKillFeedEntry
 	FString Cause;
 	/** Local GetWorld()->GetTimeSeconds() when the event arrived. */
 	float LocalTime = 0.0f;
+	/** EHCJShipType of the killer's and the victim's ship; 15 = none / unknown. */
+	uint8 KillerType = 15;
+	uint8 VictimType = 15;
 	/** The local player is the killer / the victim (rows are highlighted). */
 	bool bLocalKiller = false;
 	bool bLocalVictim = false;
@@ -123,7 +126,14 @@ public:
 	 * (capped at MaxKillFeedEntries, oldest dropped). KillerName empty = environment death / suicide.
 	 */
 	UFUNCTION(NetMulticast, Reliable)
-	void MulticastKillEvent(const FString& KillerName, const FString& VictimName, const FString& Cause);
+	void MulticastKillEvent(const FString& KillerName, const FString& VictimName, const FString& Cause, uint8 ShipTypes);
+
+	/** The ShipTypes byte of MulticastKillEvent: killer's type in the low nibble, victim's in the high one; 15 = none. */
+	static uint8 PackKillTypes(int32 KillerType, int32 VictimType)
+	{
+		const auto Nibble = [](int32 Type) { return static_cast<uint8>((Type >= 0 && Type < 15) ? Type : 15); };
+		return static_cast<uint8>(Nibble(KillerType) | (Nibble(VictimType) << 4));
+	}
 
 	/** Local: shows a big centre line on this machine's HUD for a few seconds (replaces the one before). */
 	void ShowCenterMessage(const FString& Text, const FString& SubText, const FLinearColor& Color);

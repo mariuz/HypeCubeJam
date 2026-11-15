@@ -72,6 +72,14 @@ public:
 	UPROPERTY(Config)
 	bool bEnemyHighlight = true;
 
+	/** Hangar: ship type (EHCJShipType), hull within the type and paint; -1 = let the game pick hull / paint. */
+	UPROPERTY(Config)
+	int32 ShipType = 1;
+	UPROPERTY(Config)
+	int32 ShipVariant = 0;
+	UPROPERTY(Config)
+	int32 ShipSkin = -1;
+
 	/** The controls overlay was shown once on this machine. */
 	UPROPERTY(Config)
 	bool bHelpSeen = false;

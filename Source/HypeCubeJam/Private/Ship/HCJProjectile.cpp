@@ -328,7 +328,7 @@ AActor* AHCJProjectile::FindTorpedoTarget() const
 {
 	const AHCJShipCharacter* Shooter = Cast<AHCJShipCharacter>(GetInstigator());
 	AHCJShipCharacter* Locked = Shooter != nullptr ? Shooter->GetLockTarget() : nullptr;
-	if (!IsValid(Locked) || Locked == Shooter || Locked->IsDead() || Locked->IsCloaked())
+	if (!IsValid(Locked) || Locked == Shooter || Locked->IsDead() || Locked->IsCloakHidden())
 	{
 		return nullptr;
 	}
@@ -339,7 +339,7 @@ AActor* AHCJProjectile::FindTorpedoTarget() const
 bool AHCJProjectile::TorpedoKeepsTarget() const
 {
 	const AHCJShipCharacter* TargetShip = Cast<AHCJShipCharacter>(HomingTarget);
-	if (!IsValid(TargetShip) || TargetShip->IsDead() || TargetShip->IsCloaked())
+	if (!IsValid(TargetShip) || TargetShip->IsDead() || TargetShip->IsCloakHidden())
 	{
 		return false;
 	}
@@ -557,7 +557,7 @@ AActor* AHCJProjectile::FindHomingTarget() const
 	if (const AHCJShipCharacter* Shooter = Cast<AHCJShipCharacter>(GetInstigator()))
 	{
 		AHCJShipCharacter* Locked = Shooter->GetLockTarget();
-		if (IsValid(Locked) && !Locked->IsDead() && !Locked->IsCloaked())
+		if (IsValid(Locked) && !Locked->IsDead() && !Locked->IsCloakHidden())
 		{
 			const FVector ToLocked = Locked->GetActorLocation() - Location;
 			if (ToLocked.SizeSquared() <= MaxDistanceSq && FVector::DotProduct(ToLocked.GetSafeNormal(), Forward) > 0.0)
@@ -572,7 +572,7 @@ AActor* AHCJProjectile::FindHomingTarget() const
 	for (TActorIterator<AHCJShipCharacter> It(World); It; ++It)
 	{
 		AHCJShipCharacter* Ship = *It;
-		if (Ship == GetInstigator() || Ship->IsDead() || Ship->IsCloaked())
+		if (Ship == GetInstigator() || Ship->IsDead() || Ship->IsCloakHidden())
 		{
 			continue;
 		}

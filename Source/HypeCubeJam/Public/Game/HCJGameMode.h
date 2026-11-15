@@ -7,6 +7,7 @@
 #include "Templates/SubclassOf.h"
 #include "Hypercube/HCJMatchConfig.h"
 #include "Ship/HCJWeapons.h"
+#include "Ship/HCJShipTypes.h"
 #include "HCJGameMode.generated.h"
 
 class AHCJBotController;
@@ -149,6 +150,24 @@ public:
 	/** The shockwave of an explosion pushed NumShips ships. */
 	void NotifyShockwave(int32 NumShips) { ++MatchStats.Shockwaves; MatchStats.ShockwavePushes += NumShips; }
 	void NotifyWormholeJump() { ++MatchStats.WormholeJumps; }
+	/** Warp drive, cloak and tractor beam (the "Systems" log line). */
+	void NotifyWarp(bool bBot) { ++MatchStats.Warps; MatchStats.BotWarps += bBot ? 1 : 0; }
+	void NotifyWarpCancelled() { ++MatchStats.WarpCancels; }
+	void NotifyWarpImpact() { ++MatchStats.WarpImpacts; }
+	void NotifyCloak(bool bBot) { ++MatchStats.Cloaks; MatchStats.BotCloaks += bBot ? 1 : 0; }
+	void NotifyCloakRevealed() { ++MatchStats.CloakReveals; }
+	void NotifyTractorHold(bool bBot) { ++MatchStats.TractorHolds; MatchStats.BotTractorHolds += bBot ? 1 : 0; }
+	void NotifyTractorRelease(bool bBroken) { MatchStats.TractorBreaks += bBroken ? 1 : 0; }
+	void NotifyTractorSeconds(float Seconds) { MatchStats.TractorSeconds += Seconds; }
+	void NotifyBotBrokeFree() { ++MatchStats.BotTractorEscapes; }
+
+	/**
+	 * SERVER: a player's choice of ship (type, hull, paint; anything invalid becomes the fighter / "pick for me").
+	 * Stored in its player state for the next ship; a ship that is still under its spawn shield is changed at once.
+	 */
+	void SetShipChoice(AController* Controller, int32 Type, int32 Variant, int32 Skin);
+	/** Bots fly fighters and leave warp, cloak and tractor beam alone (-HCJClassic: the game before the ship systems, for comparisons). */
+	static bool IsClassicBots();
 	void NotifyTurretShot() { ++MatchStats.TurretShots; }
 	/** A station turret was destroyed (by Killer, may be null): small score for the killer, kill feed line. */
 	void NotifyTurretDestroyed(AController* Killer);
@@ -388,6 +407,22 @@ protected:
 		int32 RocksSplit = 0;
 		int32 Shockwaves = 0;
 		int32 ShockwavePushes = 0;
+		/** Warp jumps (of those by bots), drives stopped by the server, collisions at warp; cloaks raised, reveals; tractor holds, torn free, seconds held. */
+		int32 Warps = 0;
+		int32 BotWarps = 0;
+		int32 WarpCancels = 0;
+		int32 WarpImpacts = 0;
+		int32 Cloaks = 0;
+		int32 BotCloaks = 0;
+		int32 CloakReveals = 0;
+		int32 TractorHolds = 0;
+		int32 BotTractorHolds = 0;
+		int32 TractorBreaks = 0;
+		int32 BotTractorEscapes = 0;
+		float TractorSeconds = 0.0f;
+		/** Credited kills and all deaths by EHCJShipType. */
+		int32 KillsByType[HCJShipTypes::NumTypes] = {};
+		int32 DeathsByType[HCJShipTypes::NumTypes] = {};
 	};
 	FMatchStats MatchStats;
 	float NextStatusLogTime = 0.0f;

@@ -68,6 +68,10 @@ void UHCJHealthComponent::TickComponent(float DeltaTime, ELevelTick TickType, FA
 		return;
 	}
 
+	if (bShieldsSuppressed)
+	{
+		return;
+	}
 	const float Now = static_cast<float>(World->GetTimeSeconds());
 	const float FacingMax = GetFacingMax();
 	const bool bDepleted = IsDepleted();
@@ -216,6 +220,53 @@ void UHCJHealthComponent::ResetToFull()
 	OnHealthChanged.Broadcast(this);
 }
 
+void UHCJHealthComponent::ChangeMaxValues(float InMaxHealth, float InMaxShield)
+{
+	SetMaxValues(InMaxHealth, InMaxShield);
+	const AActor* OwnerActor = GetOwner();
+	if (OwnerActor == nullptr || !HasBegunPlay())
+	{
+		return;
+	}
+	if (OwnerActor->HasAuthority())
+	{
+		if (!IsDepleted())
+		{
+			ResetToFull();
+		}
+	}
+	else
+	{
+		HCJShield::Unpack(PackedShield, GetFacingMax(), MakeArrayView(FacingShield, NumFacings));
+		OnHealthChanged.Broadcast(this);
+	}
+}
+
+void UHCJHealthComponent::SetShieldsSuppressed(bool bSuppressed)
+{
+	const AActor* OwnerActor = GetOwner();
+	const UWorld* World = GetWorld();
+	if (OwnerActor == nullptr || World == nullptr || !OwnerActor->HasAuthority() || bSuppressed == bShieldsSuppressed)
+	{
+		return;
+	}
+	bShieldsSuppressed = bSuppressed;
+	if (bSuppressed)
+	{
+		SetAllFacings(0.0f);
+		OnHealthChanged.Broadcast(this);
+	}
+	else
+	{
+		// Up again from nothing, at once: the usual delay after a hit does not apply.
+		const float Now = static_cast<float>(World->GetTimeSeconds());
+		for (float& Time : LastFacingDamageTime)
+		{
+			Time = Now - ShieldRegenDelay - 1.0f;
+		}
+	}
+}
+
 void UHCJHealthComponent::SetMaxValues(float InMaxHealth, float InMaxShield)
 {
 	MaxHealth = FMath::Max(InMaxHealth, 1.0f);
@@ -254,6 +305,10 @@ float UHCJHealthComponent::AddShield(float Amount, float OverchargeFactor)
 {
 	const AActor* OwnerActor = GetOwner();
 	if (OwnerActor == nullptr || !OwnerActor->HasAuthority() || IsDepleted() || !(Amount > 0.0f))
+	{
+		return 0.0f;
+	}
+	if (bShieldsSuppressed)
 	{
 		return 0.0f;
 	}

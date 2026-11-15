@@ -377,6 +377,17 @@ void UHCJEffectsDirector::PlayShipExplosion(const FVector& Location, const FVect
 	UE_LOG(LogHCJ, Verbose, TEXT("Effects: ship explosion at %s, %d debris pieces and %d flares alive"), *Location.ToCompactString(), Debris.NumActive(), GetNumFlares());
 }
 
+void UHCJEffectsDirector::PlayWarpFlash(const FVector& Location, bool bOwnShip)
+{
+	const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
+	if (!EnsureReady() || !UHCJAssetSettings::IsNearLocalView(this, Location, Settings.EffectMaxDistance * 2.0f))
+	{
+		return;
+	}
+	SpawnFlare(Location, Settings.ShipFlareSize * (bOwnShip ? 0.5f : 1.1f), FLinearColor(0.5f, 0.75f, 1.0f));
+	UE_LOG(LogHCJ, Verbose, TEXT("Effects: warp flash at %s, %d flares alive"), *Location.ToCompactString(), GetNumFlares());
+}
+
 void UHCJEffectsDirector::PlayTorpedoBlast(const FVector& Location)
 {
 	const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();

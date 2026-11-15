@@ -25,6 +25,10 @@ namespace
 		/* TorpedoChance */ { 8.0f, 1, 0.0f, 65, false },
 		/* PhaserEmpty */ { 7.0f, 2, 90.0f, 52, false },
 		/* RockBreak   */ { 7.0f, 1, 0.0f, 28, false },
+		/* TractorCaught */ { 6.0f, 3, 40.0f, 80, true },
+		/* Warp        */ { 8.0f, 1, 0.0f, 18, false },
+		/* Cloak       */ { 8.0f, 1, 0.0f, 14, false },
+		/* Tractor     */ { 8.0f, 1, 0.0f, 16, false },
 	};
 
 	const EHCJHint OnboardingSteps[] = { EHCJHint::Move, EHCJHint::Fire, EHCJHint::Boost, EHCJHint::Target };
@@ -316,7 +320,7 @@ const TCHAR* HCJHints::GetItemHint(int32 Item)
 		TEXT("SHIELD CELL: recharges your weakest shield facings first, above their normal maximum."),
 		TEXT("OVERDRIVE: faster flight and harder acceleration while the timer runs."),
 		TEXT("QUAD DAMAGE: every shot hits four times as hard while the timer runs."),
-		TEXT("CLOAK: enemies cannot see or lock you. Firing ends it."),
+		TEXT("CLOAK CELL: the cloak meter is full and does not drain for a few seconds.   [C] raises the cloak"),
 		TEXT("SCATTER CANNON: a cone of pellets. Deadly up close, weak at range.   [G] back to the phaser"),
 		TEXT("RAIL SHOT: one very fast, heavy bolt. Hardly any lead needed.   [G] back to the phaser"),
 		TEXT("HOMING MISSILES steer for your locked target: [T] next, [F] nearest.   [G] back to the phaser"),
