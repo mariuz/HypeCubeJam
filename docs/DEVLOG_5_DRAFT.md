@@ -21,6 +21,6 @@ In a packaged Easy match with an autopilot the voice spoke 10 lines in 198 secon
 - "Aft shield down" and "Port shield down" were never spoken in any test run; they share code with the two that were.
 - The eleven review findings were minor and are fixed, most of them checked by reading the code only.
 - Online play between two different players on two PCs is still untested, and internet play still needs UDP port 7777 forwarded on the host.
-- The browser build is still 0.17.0 and has none of this.
+- The browser build (https://mariuz.github.io/HypeCubeJam/) is now 0.19.0 too, bots only. Its menu and a match were checked in Chrome; its sound and the voice were not.
 
 Made by one person directing AI coding agents (Claude Code with Unreal Engine 5.9). New credit: voice by the Flite speech synthesiser, Carnegie Mellon University. Source: https://github.com/mariuz/HypeCubeJam

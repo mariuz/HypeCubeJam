@@ -58,7 +58,7 @@
    "net": "none"
   },
   "hcj_click_play": {
-   "about": "Shipping stages (no exec=): the start click, a click on PLAY in the title menu at 1920x1080, then shots of the match; W held for a while",
+   "about": "Shipping stages (no exec=): the start click, a click on PLAY in the title menu at 1920x1080 (y 425 since the Difficulty row sits above it, build 0.18.0 on; 365 before), then shots of the match; W held for a while",
    "args": "{harness} {time_origin}",
    "stop_after_ready": 100,
    "stop_after": 0,
@@ -67,7 +67,7 @@
     "--input-anchor",
     "READY",
     "--input",
-    "2:click=960,540;7:shot=title;9:click=960,365;30:shot=match_a;35:down=KeyW;55:shot=match_b;56:up=KeyW;58:key=Tab;90:shot=match_c"
+    "2:click=960,540;7:shot=title;9:click=960,425;30:shot=match_a;35:down=KeyW;55:shot=match_b;56:up=KeyW;58:key=Tab;90:shot=match_c"
    ],
    "expect": {
     "ready": true
@@ -85,7 +85,7 @@
     "--input-anchor",
     "READY",
     "--input",
-    "2:click=960,540;9:click=960,365;300:shot=soak_5min;600:shot=soak_10min"
+    "2:click=960,540;9:click=960,425;300:shot=soak_5min;600:shot=soak_10min"
    ],
    "expect": {
     "ready": true
