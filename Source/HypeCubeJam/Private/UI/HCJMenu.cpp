@@ -28,6 +28,8 @@ namespace
 	const FLinearColor MenuPanel(0.0f, 0.02f, 0.05f, 0.85f);
 	const FLinearColor MenuButton(0.25f, 0.6f, 0.85f, 1.0f);
 	const FLinearColor MenuButtonPrimary(0.1f, 1.6f, 1.3f, 1.0f);
+	/** The frame of the entry that has the focus of the pad / the arrow keys. */
+	const FLinearColor MenuFocus(1.0f, 0.85f, 0.1f, 1.0f);
 
 	const TCHAR* DifficultyName(int32 Difficulty)
 	{
@@ -71,6 +73,14 @@ void SHCJMenu::SetPage(EHCJMenuPage NewPage, const FString& InNotice)
 	// A rebuild destroys the button that had the keyboard: keep Esc / Enter / F1 working afterwards.
 	const bool bHadFocus = HasAnyUserFocusOrFocusedDescendants();
 
+	const bool bSamePage = bBuilt && NewPage == Page;
+	bBuilt = true;
+	NavItems.Reset();
+	if (const AHCJPlayerController* Controller = Owner.Get())
+	{
+		// A pad in the hand: the focus frame is there from the start.
+		bNavVisible |= Controller->IsPadPrompts();
+	}
 	Page = NewPage;
 	TSharedRef<SWidget> Content = Page == EHCJMenuPage::Settings ? BuildSettings()
 		: Page == EHCJMenuPage::Controls ? BuildControls()
@@ -80,6 +90,7 @@ void SHCJMenu::SetPage(EHCJMenuPage NewPage, const FString& InNotice)
 		: Page == EHCJMenuPage::Hangar ? BuildHangar()
 		: Page == EHCJMenuPage::QuickPlay ? BuildQuickPlay()
 		: Page == EHCJMenuPage::Connecting ? BuildConnecting() : BuildMain();
+	SortNavItems(Content);
 	// The hangar stands at the left and leaves the world clear: the hull turns there, next to the page.
 	const bool bHangar = Page == EHCJMenuPage::Hangar;
 
@@ -106,10 +117,207 @@ void SHCJMenu::SetPage(EHCJMenuPage NewPage, const FString& InNotice)
 		]
 	];
 
+	// The focus: kept on a page that was only rebuilt; else PLAY on the title page, the first row of the pages that
+	// are lists of settings, and the big button elsewhere.
+	if (bSamePage)
+	{
+		NavIndex = FMath::Clamp(NavIndex, 0, FMath::Max(NavItems.Num() - 1, 0));
+	}
+	else
+	{
+		NavIndex = 0;
+		const bool bList = Page == EHCJMenuPage::Settings || Page == EHCJMenuPage::Hangar;
+		for (int32 Index = 0; Index < NavItems.Num() && !bList; ++Index)
+		{
+			if (Page == EHCJMenuPage::Main ? NavItems[Index].Label.StartsWith(TEXT("PLAY")) : NavItems[Index].bPrimary)
+			{
+				NavIndex = Index;
+				break;
+			}
+		}
+	}
+
 	if (bHadFocus && FSlateApplication::IsInitialized())
 	{
 		FSlateApplication::Get().SetKeyboardFocus(AsShared(), EFocusCause::SetDirectly);
 	}
+}
+
+bool SHCJMenu::IsControllerEnabled() const
+{
+	return HCJPad::IsKeyAllowed(true, UHCJUserSettings::Get().bController);
+}
+
+FString SHCJMenu::GetNavLabel() const
+{
+	return NavItems.IsValidIndex(NavIndex) ? NavItems[NavIndex].Label : FString();
+}
+
+TSharedRef<SWidget> SHCJMenu::AddNavItem(const FString& Label, TSharedRef<SWidget> Content, TFunction<void()> Activate, TFunction<void(int32)> Step, bool bPrimary)
+{
+	const int32 Index = NavItems.Num();
+	const TSharedRef<int32> Order = MakeShared<int32>(Index);
+	const bool bButton = static_cast<bool>(Activate);
+	// A frame of two units round the entry: clear until it has the focus. (The frame is a child of this widget and
+	// dies with the page, so the plain pointer is safe.)
+	TSharedRef<SWidget> Frame = SNew(SBorder)
+		.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+		.Padding(FMargin(2.0f))
+		// (A button covers the inside of its frame; a stepper or slider row does not, so its frame is a faint band
+		// that the label and the value stay readable on.)
+		.BorderBackgroundColor_Lambda([this, Order, bButton]()
+		{
+			return FSlateColor(bNavVisible && NavIndex == *Order ? (bButton ? MenuFocus : MenuFocus.CopyWithNewOpacity(0.3f)) : FLinearColor::Transparent);
+		})
+		[
+			Content
+		];
+	FNavItem& Item = NavItems.AddDefaulted_GetRef();
+	Item.Label = Label;
+	Item.Activate = MoveTemp(Activate);
+	Item.Step = MoveTemp(Step);
+	Item.bPrimary = bPrimary;
+	Item.Frame = Frame;
+	Item.Order = Order;
+	return Frame;
+}
+
+void SHCJMenu::SortNavItems(const TSharedRef<SWidget>& Root)
+{
+	// Depth first through the children, in slot order: where each entry's frame comes in the tree.
+	TMap<const SWidget*, int32> Place;
+	TArray<TSharedRef<SWidget>> Stack;
+	Stack.Add(Root);
+	while (Stack.Num() > 0)
+	{
+		const TSharedRef<SWidget> Widget = Stack.Pop(EAllowShrinking::No);
+		Place.Add(&Widget.Get(), Place.Num());
+		FChildren* Children = Widget->GetAllChildren();
+		for (int32 Index = Children != nullptr ? Children->Num() - 1 : -1; Index >= 0; --Index)
+		{
+			Stack.Add(Children->GetChildAt(Index));
+		}
+	}
+	const auto PlaceOf = [&Place](const FNavItem& Item)
+	{
+		const TSharedPtr<SWidget> Frame = Item.Frame.Pin();
+		const int32* Found = Frame.IsValid() ? Place.Find(Frame.Get()) : nullptr;
+		return Found != nullptr ? *Found : MAX_int32;
+	};
+	NavItems.StableSort([&PlaceOf](const FNavItem& A, const FNavItem& B) { return PlaceOf(A) < PlaceOf(B); });
+	for (int32 Index = 0; Index < NavItems.Num(); ++Index)
+	{
+		if (NavItems[Index].Order.IsValid())
+		{
+			*NavItems[Index].Order = Index;
+		}
+	}
+}
+
+void SHCJMenu::GoBack()
+{
+	if (Page == EHCJMenuPage::Settings || Page == EHCJMenuPage::Controls || Page == EHCJMenuPage::Lobbies || Page == EHCJMenuPage::Leaderboards || Page == EHCJMenuPage::Hangar)
+	{
+		if (Page == EHCJMenuPage::Hangar)
+		{
+			if (AHCJPlayerController* Controller = Owner.Get()) { Controller->MenuApplyShip(); }
+		}
+		UHCJUserSettings::Get().Save();
+		SetPage(SettingsReturnPage);
+	}
+	else if (Page == EHCJMenuPage::QuickPlay)
+	{
+		if (AHCJPlayerController* Controller = Owner.Get()) { Controller->MenuCancelQuickPlay(); }
+	}
+	else if (AHCJPlayerController* Controller = Owner.Get())
+	{
+		// (Also the CONNECTING page, as Esc always did there; its CANCEL button has the focus for A.)
+		Controller->MenuEscape();
+	}
+}
+
+void SHCJMenu::Navigate(EHCJMenuNav Action)
+{
+	bNavVisible = true;
+	if (Action == EHCJMenuNav::Back)
+	{
+		GoBack();
+		return;
+	}
+	if (NavItems.Num() == 0)
+	{
+		return;
+	}
+	NavIndex = FMath::Clamp(NavIndex, 0, NavItems.Num() - 1);
+	switch (Action)
+	{
+	case EHCJMenuNav::Up:
+		NavIndex = HCJPad::StepFocus(NavIndex, NavItems.Num(), -1);
+		break;
+	case EHCJMenuNav::Down:
+		NavIndex = HCJPad::StepFocus(NavIndex, NavItems.Num(), +1);
+		break;
+	case EHCJMenuNav::Left:
+	case EHCJMenuNav::Right:
+	{
+		const int32 Direction = Action == EHCJMenuNav::Left ? -1 : +1;
+		if (NavItems[NavIndex].Step)
+		{
+			NavItems[NavIndex].Step(Direction);
+		}
+		else
+		{
+			NavIndex = HCJPad::StepFocus(NavIndex, NavItems.Num(), Direction);
+		}
+		break;
+	}
+	case EHCJMenuNav::Accept:
+	{
+		// Copies: a button may build another page (which empties NavItems) or close the menu while it runs.
+		const TFunction<void()> Activate = NavItems[NavIndex].Activate;
+		const TFunction<void(int32)> Step = NavItems[NavIndex].Step;
+		if (Activate)
+		{
+			Activate();
+		}
+		else if (Step)
+		{
+			Step(+1);
+		}
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+FReply SHCJMenu::OnAnalogValueChanged(const FGeometry& MyGeometry, const FAnalogInputEvent& InAnalogInputEvent)
+{
+	if (InAnalogInputEvent.GetKey() == EKeys::Gamepad_LeftX)
+	{
+		StickX = InAnalogInputEvent.GetAnalogValue();
+	}
+	else if (InAnalogInputEvent.GetKey() == EKeys::Gamepad_LeftY)
+	{
+		StickY = InAnalogInputEvent.GetAnalogValue();
+	}
+	// Not handled: the game below must go on seeing the sticks (their return to the centre above all).
+	return SCompoundWidget::OnAnalogValueChanged(MyGeometry, InAnalogInputEvent);
+}
+
+FNavigationReply SHCJMenu::OnNavigation(const FGeometry& MyGeometry, const FNavigationEvent& InNavigationEvent)
+{
+	// (Explicit to nobody = the keyboard focus stays where it is.)
+	return FNavigationReply::Explicit(nullptr);
+}
+
+FReply SHCJMenu::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	if (!MouseEvent.GetCursorDelta().IsNearlyZero())
+	{
+		bNavVisible = false;
+	}
+	return SCompoundWidget::OnMouseMove(MyGeometry, MouseEvent);
 }
 
 UHCJEOSSubsystem* SHCJMenu::GetOnline() const
@@ -128,29 +336,58 @@ void SHCJMenu::Tick(const FGeometry& AllottedGeometry, const double InCurrentTim
 			SetPage(Page, Notice);
 		}
 	}
+
+	// The left stick of a game controller: a step of the focus when it is pushed, and again while it is held.
+	if (IsControllerEnabled())
+	{
+		const HCJPad::EDirection Direction = StickNav.Update(StickX, StickY, InCurrentTime);
+		if (Direction != HCJPad::EDirection::None)
+		{
+			if (AHCJPlayerController* Controller = Owner.Get()) { Controller->NoteInputDevice(true, false, 1.0f); }
+			Navigate(Direction == HCJPad::EDirection::Up ? EHCJMenuNav::Up : Direction == HCJPad::EDirection::Down ? EHCJMenuNav::Down
+				: Direction == HCJPad::EDirection::Left ? EHCJMenuNav::Left : EHCJMenuNav::Right);
+		}
+	}
 }
 
 FReply SHCJMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
-	if (InKeyEvent.GetKey() == EKeys::Escape)
+	const FKey Key = InKeyEvent.GetKey();
+	if (Key.IsGamepadKey())
 	{
-		if (Page == EHCJMenuPage::Settings || Page == EHCJMenuPage::Controls || Page == EHCJMenuPage::Lobbies || Page == EHCJMenuPage::Leaderboards || Page == EHCJMenuPage::Hangar)
+		// Every pad key ends here while the menu is open (the ship must not get it), also when the controller is
+		// switched off in SETTINGS: then it does nothing at all.
+		if (!IsControllerEnabled())
 		{
-			if (Page == EHCJMenuPage::Hangar)
-			{
-				if (AHCJPlayerController* Controller = Owner.Get()) { Controller->MenuApplyShip(); }
-			}
-			UHCJUserSettings::Get().Save();
-			SetPage(SettingsReturnPage);
+			return FReply::Handled();
 		}
-		else if (Page == EHCJMenuPage::QuickPlay)
-		{
-			if (AHCJPlayerController* Controller = Owner.Get()) { Controller->MenuCancelQuickPlay(); }
-		}
-		else if (AHCJPlayerController* Controller = Owner.Get())
-		{
-			Controller->MenuEscape();
-		}
+		if (AHCJPlayerController* Controller = Owner.Get()) { Controller->NoteInputDevice(true, false, 1.0f); }
+		// The D-pad repeats while it is held. A, B and Start do not: the Start that opened the menu is still down.
+		if (Key == EKeys::Gamepad_DPad_Up) { Navigate(EHCJMenuNav::Up); }
+		else if (Key == EKeys::Gamepad_DPad_Down) { Navigate(EHCJMenuNav::Down); }
+		else if (Key == EKeys::Gamepad_DPad_Left) { Navigate(EHCJMenuNav::Left); }
+		else if (Key == EKeys::Gamepad_DPad_Right) { Navigate(EHCJMenuNav::Right); }
+		else if (InKeyEvent.IsRepeat()) { }
+		else if (Key == EKeys::Gamepad_FaceButton_Bottom) { Navigate(EHCJMenuNav::Accept); }
+		else if (Key == EKeys::Gamepad_FaceButton_Right || Key == EKeys::Gamepad_Special_Right) { Navigate(EHCJMenuNav::Back); }
+		return FReply::Handled();
+	}
+	if (Key == EKeys::Escape)
+	{
+		GoBack();
+		return FReply::Handled();
+	}
+	// The arrow keys and Tab move the same focus as the pad (a text box that has the keyboard keeps left / right).
+	if (Key == EKeys::Up || Key == EKeys::Down || Key == EKeys::Left || Key == EKeys::Right || Key == EKeys::Tab)
+	{
+		Navigate(Key == EKeys::Up || (Key == EKeys::Tab && InKeyEvent.IsShiftDown()) ? EHCJMenuNav::Up : Key == EKeys::Down || Key == EKeys::Tab ? EHCJMenuNav::Down
+			: Key == EKeys::Left ? EHCJMenuNav::Left : EHCJMenuNav::Right);
+		return FReply::Handled();
+	}
+	if (Key == EKeys::Enter && bNavVisible && NavItems.Num() > 0)
+	{
+		// After the arrow keys Enter presses what they chose.
+		Navigate(EHCJMenuNav::Accept);
 		return FReply::Handled();
 	}
 	if (InKeyEvent.GetKey() == EKeys::Enter && (Page == EHCJMenuPage::Main || Page == EHCJMenuPage::Pause))
@@ -246,13 +483,15 @@ TSharedRef<SWidget> SHCJMenu::MakeControlRow(const FString& Keys, const FString&
 		];
 }
 
-TSharedRef<SWidget> SHCJMenu::MakeButton(const FString& Label, TFunction<void()> OnClick, bool bPrimary, float FontSize)
+TSharedRef<SWidget> SHCJMenu::MakeButton(const FString& Label, TFunction<void()> OnClick, bool bPrimary, float FontSize, bool bNavItem)
 {
-	return SNew(SButton)
+	TSharedRef<SWidget> Button = SNew(SButton)
 		.ButtonColorAndOpacity(bPrimary ? MenuButtonPrimary : MenuButton)
 		.ContentPadding(FMargin(18.0f, bPrimary ? 10.0f : 6.0f))
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
+		// (Never the keyboard focus: it stays with the menu, whose own focus the pad and the arrow keys move.)
+		.IsFocusable(false)
 		.OnClicked_Lambda([OnClick]() { OnClick(); return FReply::Handled(); })
 		[
 			SNew(STextBlock)
@@ -260,18 +499,40 @@ TSharedRef<SWidget> SHCJMenu::MakeButton(const FString& Label, TFunction<void()>
 			.Font(FCoreStyle::GetDefaultFontStyle("Bold", FMath::RoundToInt32(FontSize)))
 			.ColorAndOpacity(FSlateColor(FLinearColor::White))
 		];
+	return bNavItem ? AddNavItem(Label, Button, OnClick, nullptr, bPrimary) : Button;
+}
+
+TSharedRef<SWidget> SHCJMenu::MakeLegend(const FString& KeyboardMarkup, const FString& PadMarkup)
+{
+	const TWeakObjectPtr<AHCJPlayerController> WeakOwner = Owner;
+	const auto IsPad = [WeakOwner]() { const AHCJPlayerController* C = WeakOwner.Get(); return C != nullptr && C->IsPadPrompts(); };
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SNew(SBox).Visibility_Lambda([IsPad]() { return IsPad() ? EVisibility::Collapsed : EVisibility::HitTestInvisible; })
+			[
+				MakeKeyLegend(KeyboardMarkup)
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SNew(SBox).Visibility_Lambda([IsPad]() { return IsPad() ? EVisibility::HitTestInvisible : EVisibility::Collapsed; })
+			[
+				MakeKeyLegend(PadMarkup)
+			]
+		];
 }
 
 TSharedRef<SWidget> SHCJMenu::MakeStepper(const FString& Label, TFunction<FString()> GetValue, TFunction<void(int32)> Step)
 {
-	return SNew(SHorizontalBox)
+	return AddNavItem(Label, SNew(SHorizontalBox)
 		+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
 		[
 			MakeLabel(Label, 16.0f, MenuText)
 		]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 		[
-			MakeButton(TEXT("<"), [Step]() { Step(-1); }, false, 14.0f)
+			MakeButton(TEXT("<"), [Step]() { Step(-1); }, false, 14.0f, false)
 		]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 		[
@@ -285,13 +546,15 @@ TSharedRef<SWidget> SHCJMenu::MakeStepper(const FString& Label, TFunction<FStrin
 		]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 		[
-			MakeButton(TEXT(">"), [Step]() { Step(+1); }, false, 14.0f)
-		];
+			MakeButton(TEXT(">"), [Step]() { Step(+1); }, false, 14.0f, false)
+		], nullptr, Step, false);
 }
 
 TSharedRef<SWidget> SHCJMenu::MakeSlider(const FString& Label, float Min, float Max, TFunction<float()> GetValue, TFunction<void(float)> SetValue, TFunction<FString(float)> Format)
 {
-	return SNew(SHorizontalBox)
+	// Left / right of the pad or the arrow keys: a twentieth of the range.
+	const auto Step = [Min, Max, GetValue, SetValue](int32 Direction) { SetValue(FMath::Clamp(GetValue() + static_cast<float>(Direction) * (Max - Min) / 20.0f, Min, Max)); };
+	return AddNavItem(Label, SNew(SHorizontalBox)
 		+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
 		[
 			MakeLabel(Label, 16.0f, MenuText)
@@ -305,6 +568,7 @@ TSharedRef<SWidget> SHCJMenu::MakeSlider(const FString& Label, float Min, float 
 				.MaxValue(Max)
 				.SliderBarColor(MenuDim)
 				.SliderHandleColor(MenuAccent)
+				.IsFocusable(false)
 				.Value_Lambda([GetValue]() { return GetValue(); })
 				.OnValueChanged_Lambda([SetValue](float Value) { SetValue(Value); })
 			]
@@ -318,7 +582,7 @@ TSharedRef<SWidget> SHCJMenu::MakeSlider(const FString& Label, float Min, float 
 				.Font(FCoreStyle::GetDefaultFontStyle("Bold", 16))
 				.ColorAndOpacity(FSlateColor(MenuAccent))
 			]
-		];
+		], nullptr, Step, false);
 }
 
 TSharedRef<SWidget> SHCJMenu::MakeTextRow(const FString& Label, const FString& Hint, TFunction<FString()> GetValue, TFunction<void(const FString&)> SetValue, float Width)
@@ -547,14 +811,16 @@ TSharedRef<SWidget> SHCJMenu::BuildMain()
 	];
 	Box->AddSlot().AutoHeight()
 	[
-		MakeKeyLegend(TEXT("[Enter] play with bots     [F1] controls     in a match:  [Esc] menu   [F1] help   [H] hints"))
+		MakeLegend(TEXT("[Enter] play with bots     [F1] controls     in a match:  [Esc] menu   [F1] help   [H] hints"),
+			TEXT("[D-pad] / [L stick] move     [A] select     left / right: change a value     in a match:  [Start] menu   [L3] help"))
 	];
 	return Box;
 }
 
 TSharedRef<SWidget> SHCJMenu::BuildSettings()
 {
-	const FMargin Row(0.0f, 7.0f);
+	// (5: two rows more than before - the controller's - in the same height.)
+	const FMargin Row(0.0f, 5.0f);
 	const auto Percent = [](float Value) { return FString::Printf(TEXT("%d %%"), FMath::RoundToInt32(Value * 100.0f)); };
 
 	return SNew(SVerticalBox)
@@ -566,6 +832,16 @@ TSharedRef<SWidget> SHCJMenu::BuildSettings()
 		[
 			MakeSlider(TEXT("Mouse sensitivity"), 0.2f, 3.0f, []() { return UHCJUserSettings::Get().MouseSensitivity; },
 				[](float Value) { UHCJUserSettings::Get().MouseSensitivity = Value; }, [](float Value) { return FString::Printf(TEXT("%.2f x"), Value); })
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
+		[
+			MakeStepper(TEXT("Controller (Xbox / Steam Controller)"), []() { return FString(UHCJUserSettings::Get().bController ? TEXT("On") : TEXT("Off")); },
+				[](int32 Step) { UHCJUserSettings& S = UHCJUserSettings::Get(); S.bController = !S.bController; })
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
+		[
+			MakeSlider(TEXT("Controller sensitivity"), HCJPad::MinSensitivity, HCJPad::MaxSensitivity, []() { return UHCJUserSettings::Get().ControllerSensitivity; },
+				[](float Value) { UHCJUserSettings::Get().ControllerSensitivity = Value; }, [](float Value) { return FString::Printf(TEXT("%.2f x"), Value); })
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
 		[
@@ -614,7 +890,7 @@ TSharedRef<SWidget> SHCJMenu::BuildSettings()
 		]
 		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 6.0f))
 		[
-			MakeLabel(TEXT("Saved for the next start. Volumes, hints, voice, shake, highlight and music change at once."), 13.0f, MenuDim)
+			MakeLabel(TEXT("Saved for the next start. Volumes, hints, voice, shake, highlight, music and the controller change at once."), 13.0f, MenuDim)
 		]
 		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 2.0f))
 		[
@@ -634,7 +910,7 @@ TSharedRef<SWidget> SHCJMenu::BuildSettings()
 		]
 		+ SVerticalBox::Slot().AutoHeight()
 		[
-			MakeKeyLegend(TEXT("[Esc] back"))
+			MakeLegend(TEXT("[Esc] back"), TEXT("[D-pad] / [L stick] move     left / right: change     [A] select     [B] back"))
 		];
 }
 
@@ -643,6 +919,7 @@ TSharedRef<SWidget> SHCJMenu::BuildPause()
 	const TWeakObjectPtr<AHCJPlayerController> WeakOwner = Owner;
 	const FMargin Row(0.0f, 6.0f);
 
+	// (Built from top to bottom: the order of the calls is the order of the pad's focus.)
 	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 4.0f))
 		[
@@ -655,48 +932,18 @@ TSharedRef<SWidget> SHCJMenu::BuildPause()
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
 		[
 			MakeButton(TEXT("RESUME"), [WeakOwner]() { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuResume(); } }, true, 22.0f)
-		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
-		[
-			MakeButton(TEXT("HANGAR  (your next ship)"), [this]() { SetPage(EHCJMenuPage::Hangar); }, false, 20.0f)
-		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
-		[
-			MakeButton(TEXT("SETTINGS"), [this]() { SetPage(EHCJMenuPage::Settings); }, false, 20.0f)
-		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
-		[
-			MakeButton(TEXT("CONTROLS"), [this]() { SetPage(EHCJMenuPage::Controls); }, false, 20.0f)
-		]
-#if !PLATFORM_WASM
-		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
-		[
-			MakeButton(TEXT("LEADERBOARDS"), [this]() { SetPage(EHCJMenuPage::Leaderboards); }, false, 20.0f)
-		]
-#endif
-		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
-		[
-			MakeButton(TEXT("LEAVE TO MENU"), [WeakOwner]() { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuLeave(); } }, false, 20.0f)
-		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
-		[
-			MakeButton(TEXT("QUIT GAME"), [WeakOwner]() { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuQuit(); } }, false, 20.0f)
-		]
-		+ SVerticalBox::Slot().AutoHeight()
-		[
-			MakeKeyLegend(TEXT("[Esc] or [Enter] resume     [F1] controls"))
 		];
 
 	// The host (and a single player) can make the bots easier or harder without leaving the match: under RESUME.
 	if (WeakOwner.IsValid() && WeakOwner->HasAuthority())
 	{
-		Box->InsertSlot(3).AutoHeight().Padding(FMargin(0.0f, 8.0f, 0.0f, 0.0f))
+		Box->AddSlot().AutoHeight().Padding(FMargin(0.0f, 8.0f, 0.0f, 0.0f))
 		[
 			MakeStepper(TEXT("Bot difficulty (applies now)"),
 				[WeakOwner]() { const AHCJPlayerController* C = WeakOwner.Get(); return FString(DifficultyName(C != nullptr ? C->GetMenuDifficulty() : 0)); },
 				[WeakOwner](int32 Step) { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuStepDifficulty(Step); } })
 		];
-		Box->InsertSlot(4).AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 8.0f))
+		Box->AddSlot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 8.0f))
 		[
 			SNew(STextBlock)
 			.Text_Lambda([WeakOwner]() { const AHCJPlayerController* C = WeakOwner.Get(); return FText::FromString(HCJBalance::GetDifficultyDescription(C != nullptr ? C->GetMenuDifficulty() : 0)); })
@@ -704,6 +951,37 @@ TSharedRef<SWidget> SHCJMenu::BuildPause()
 			.ColorAndOpacity(FSlateColor(MenuDim))
 		];
 	}
+
+	Box->AddSlot().AutoHeight().Padding(Row)
+	[
+		MakeButton(TEXT("HANGAR  (your next ship)"), [this]() { SetPage(EHCJMenuPage::Hangar); }, false, 20.0f)
+	];
+	Box->AddSlot().AutoHeight().Padding(Row)
+	[
+		MakeButton(TEXT("SETTINGS"), [this]() { SetPage(EHCJMenuPage::Settings); }, false, 20.0f)
+	];
+	Box->AddSlot().AutoHeight().Padding(Row)
+	[
+		MakeButton(TEXT("CONTROLS"), [this]() { SetPage(EHCJMenuPage::Controls); }, false, 20.0f)
+	];
+#if !PLATFORM_WASM
+	Box->AddSlot().AutoHeight().Padding(Row)
+	[
+		MakeButton(TEXT("LEADERBOARDS"), [this]() { SetPage(EHCJMenuPage::Leaderboards); }, false, 20.0f)
+	];
+#endif
+	Box->AddSlot().AutoHeight().Padding(Row)
+	[
+		MakeButton(TEXT("LEAVE TO MENU"), [WeakOwner]() { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuLeave(); } }, false, 20.0f)
+	];
+	Box->AddSlot().AutoHeight().Padding(Row)
+	[
+		MakeButton(TEXT("QUIT GAME"), [WeakOwner]() { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuQuit(); } }, false, 20.0f)
+	];
+	Box->AddSlot().AutoHeight()
+	[
+		MakeLegend(TEXT("[Esc] or [Enter] resume     [F1] controls"), TEXT("[D-pad] / [L stick] move     [A] select     [B] or [Start] resume"))
+	];
 	return Box;
 }
 
@@ -758,6 +1036,47 @@ TSharedRef<SWidget> SHCJMenu::BuildControls()
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeLabel(TEXT("meter; a hit or an enemy within 15 m reveals you. Tractor beam: uses"), 14.0f, MenuText) ]
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ MakeLabel(TEXT("phaser energy; caught in one, boost to break free."), 14.0f, MenuText) ];
 
+	// The game controller: the same things by their pad names (Xbox layout; a Steam Controller through Steam Input
+	// reports the same buttons).
+	const auto PadRow = [this](const TCHAR* Keys, const TCHAR* What)
+	{
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[
+				SNew(SBox).WidthOverride(150.0f).HAlign(HAlign_Left)
+				[
+					MakeKeyMarkup(Keys, 14.0f, MenuAccent)
+				]
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[
+				MakeKeyMarkup(What, 15.0f, MenuText)
+			];
+	};
+	TSharedRef<SVerticalBox> PadColumn = SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight() [ Head(UHCJUserSettings::Get().bController ? TEXT("CONTROLLER  (Xbox / Steam Controller)") : TEXT("CONTROLLER  (switched off in SETTINGS)")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[R stick]"), TEXT("steer")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[L stick]"), TEXT("thrust and strafe")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[A] [B]"), TEXT("up / down")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[LB] hold"), TEXT("boost")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[RT]"), TEXT("fire: hold for the phaser")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[LT]"), TEXT("photon torpedo")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[X]"), TEXT("switch phaser / blaster")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[RB]"), TEXT("next target")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[Y]"), TEXT("target the nearest enemy")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[D-pad down]"), TEXT("drop a pickup weapon")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[D-pad up]"), TEXT("hold: warp drive")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[D-pad left]"), TEXT("cloak on / off")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[D-pad right]"), TEXT("hold: tractor beam")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[Back]"), TEXT("scoreboard (hold)")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[R3]"), TEXT("first / third person  (stick click)")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[L3]"), TEXT("controls overlay  (stick click)")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[Start]"), TEXT("menu, settings, quit")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("[A] [RT]"), TEXT("respawn now, when destroyed")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row) [ PadRow(TEXT("menus"), TEXT("[D-pad] move   [A] select   [B] back")) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.0f, 8.0f, 0.0f, 0.0f)) [ MakeLabel(TEXT("Steam Controller: add the game to Steam and pick"), 13.0f, MenuDim) ]
+		+ SVerticalBox::Slot().AutoHeight() [ MakeLabel(TEXT("the Gamepad layout (see README). On / off: SETTINGS."), 13.0f, MenuDim) ];
+
 	return SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 4.0f))
 		[
@@ -774,9 +1093,13 @@ TSharedRef<SWidget> SHCJMenu::BuildControls()
 			[
 				Left
 			]
-			+ SHorizontalBox::Slot().AutoWidth()
+			+ SHorizontalBox::Slot().AutoWidth().Padding(FMargin(0.0f, 0.0f, 40.0f, 0.0f))
 			[
 				Right
+			]
+			+ SHorizontalBox::Slot().AutoWidth()
+			[
+				PadColumn
 			]
 		]
 		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 18.0f, 0.0f, 0.0f))
@@ -788,7 +1111,7 @@ TSharedRef<SWidget> SHCJMenu::BuildControls()
 		]
 		+ SVerticalBox::Slot().AutoHeight()
 		[
-			MakeKeyLegend(TEXT("[Esc] back"))
+			MakeLegend(TEXT("[Esc] back"), TEXT("[D-pad] / [L stick] move     left / right: change     [A] select     [B] back"))
 		];
 }
 
@@ -907,7 +1230,7 @@ TSharedRef<SWidget> SHCJMenu::BuildHangar()
 	];
 	Box->AddSlot().AutoHeight()
 	[
-		MakeKeyLegend(TEXT("[Esc] back"))
+		MakeLegend(TEXT("[Esc] back"), TEXT("[D-pad] / [L stick] move     left / right: change     [A] select     [B] back"))
 	];
 	return Box;
 }
@@ -963,7 +1286,7 @@ TSharedRef<SWidget> SHCJMenu::BuildQuickPlay()
 		]
 		+ SVerticalBox::Slot().AutoHeight()
 		[
-			MakeKeyLegend(TEXT("[Esc] cancel"))
+			MakeLegend(TEXT("[Esc] cancel"), TEXT("[A] or [B] cancel"))
 		];
 }
 
@@ -999,7 +1322,7 @@ TSharedRef<SWidget> SHCJMenu::BuildOnlineUnavailable(const FString& Title, const
 		]
 		+ SVerticalBox::Slot().AutoHeight()
 		[
-			MakeKeyLegend(TEXT("[Esc] back"))
+			MakeLegend(TEXT("[Esc] back"), TEXT("[D-pad] / [L stick] move     left / right: change     [A] select     [B] back"))
 		];
 }
 
@@ -1133,7 +1456,7 @@ TSharedRef<SWidget> SHCJMenu::BuildLobbies()
 	];
 	Box->AddSlot().AutoHeight()
 	[
-		MakeKeyLegend(TEXT("[Esc] back"))
+		MakeLegend(TEXT("[Esc] back"), TEXT("[D-pad] / [L stick] move     left / right: change     [A] select     [B] back"))
 	];
 	return Box;
 }
@@ -1263,6 +1586,6 @@ TSharedRef<SWidget> SHCJMenu::BuildLeaderboards()
 		]
 		+ SVerticalBox::Slot().AutoHeight()
 		[
-			MakeKeyLegend(TEXT("[Esc] back"))
+			MakeLegend(TEXT("[Esc] back"), TEXT("[D-pad] / [L stick] move     left / right: change     [A] select     [B] back"))
 		];
 }

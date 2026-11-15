@@ -1255,6 +1255,33 @@ void AHCJHUD::DrawHelp(const AHCJGameState& GameState)
 		{ TEXT("[Esc]"), TEXT("menu, settings, quit") },
 		{ TEXT("[R] [Enter]"), TEXT("respawn now, when destroyed") },
 	};
+	// The same with a game controller in the hand (its names as they are: no translation from keyboard names).
+	static const FRow PadFlightRows[] = {
+		{ TEXT("[R stick]"), TEXT("steer: the ship flies where you look") },
+		{ TEXT("[L stick]"), TEXT("thrust forward / back, strafe") },
+		{ TEXT("[A] [B]"), TEXT("up / down") },
+		{ TEXT("[LB]"), TEXT("boost: drains the BOOST bar") },
+		{ TEXT("[RT]"), TEXT("fire: hold for the phaser beam") },
+		{ TEXT("[LT]"), TEXT("photon torpedo") },
+		{ TEXT("[X]"), TEXT("phaser / blaster") },
+		{ TEXT("[RB]"), TEXT("next target") },
+		{ TEXT("[Y]"), TEXT("target the nearest enemy") },
+		{ TEXT("[D-down]"), TEXT("drop a pickup weapon") },
+		{ TEXT("[D-up] hold"), TEXT("warp drive: charge, then jump ahead") },
+		{ TEXT("[D-left]"), TEXT("cloak on / off") },
+		{ TEXT("[D-right] hold"), TEXT("tractor beam on the target") },
+	};
+	static const FRow PadInterfaceRows[] = {
+		{ TEXT("[Back]"), TEXT("scoreboard (hold)") },
+		{ TEXT("[R3]"), TEXT("first / third person (stick click)") },
+		{ TEXT("[L3]"), TEXT("this page (stick click)") },
+		{ TEXT("[Start]"), TEXT("menu, settings, quit") },
+		{ TEXT("[A] [RT]"), TEXT("respawn now, when destroyed") },
+	};
+	const AHCJPlayerController* PadController = Cast<AHCJPlayerController>(GetOwningPlayerController());
+	const bool bPad = PadController != nullptr && PadController->IsPadPrompts();
+	const TConstArrayView<FRow> FlightView = bPad ? TConstArrayView<FRow>(PadFlightRows) : TConstArrayView<FRow>(FlightRows);
+	const TConstArrayView<FRow> InterfaceView = bPad ? TConstArrayView<FRow>(PadInterfaceRows) : TConstArrayView<FRow>(InterfaceRows);
 	static const FRow LegendRows[] = {
 		{ TEXT("red brackets"), TEXT("enemies; red arrows: out of view") },
 		{ TEXT("orange diamond"), TEXT("your target") },
@@ -1272,7 +1299,7 @@ void AHCJHUD::DrawHelp(const AHCJGameState& GameState)
 	const float LineHeight = static_cast<float>(MeasureLabel(TEXT("Ag"), 1.05f).Y) + 3.0f * UIScale;
 	const float TitleHeight = static_cast<float>(MeasureLabel(TEXT("Ag"), 1.4f, true).Y) + 8.0f * UIScale;
 	const float HeadHeight = static_cast<float>(MeasureLabel(TEXT("Ag"), 0.85f, true).Y) + 6.0f * UIScale;
-	const int32 LeftRows = UE_ARRAY_COUNT(FlightRows);
+	const int32 LeftRows = FlightView.Num();
 	const float ColumnsHeight = HeadHeight + LeftRows * RowHeight;
 	const FString TorpedoTip = TEXT("Photon torpedoes (TORPEDOES, bottom right): few, slow to reload, steering a little for your target. A full facing stops most of one;");
 	const FString TorpedoTip2 = TEXT("through a facing that is down it nearly finishes a ship. INCOMING TORPEDO: boost across its path, or take it on a full side.");
@@ -1336,11 +1363,13 @@ void AHCJHUD::DrawHelp(const AHCJGameState& GameState)
 		return ColumnY;
 	};
 
-	DrawColumn(X, Y, TEXT("FLIGHT AND COMBAT"), FlightRows, true);
+	bKeyMarkupAsIs = bPad;
+	DrawColumn(X, Y, bPad ? TEXT("FLIGHT AND COMBAT  (controller)") : TEXT("FLIGHT AND COMBAT"), FlightView, true);
 	const float RightX = X + ColumnWidth + Padding;
-	const float RightY = DrawColumn(RightX, Y, TEXT("INTERFACE"), InterfaceRows, true);
+	const float RightY = DrawColumn(RightX, Y, TEXT("INTERFACE"), InterfaceView, true);
+	bKeyMarkupAsIs = false;
 	// The legend fills the rest of the right column (it has four rows fewer than the left one).
-	if (LeftRows - static_cast<int32>(UE_ARRAY_COUNT(InterfaceRows)) >= static_cast<int32>(UE_ARRAY_COUNT(LegendRows)))
+	if (LeftRows - InterfaceView.Num() >= static_cast<int32>(UE_ARRAY_COUNT(LegendRows)))
 	{
 		// No separate head: the rows explain themselves.
 		float LegendY = RightY;

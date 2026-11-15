@@ -11,6 +11,7 @@
 #include "Game/HCJPlayerController.h"
 #include "Game/HCJPlayerState.h"
 #include "Game/HCJUiLogic.h"
+#include "Game/HCJPadLogic.h"
 #include "Game/HCJUserSettings.h"
 #include "Hypercube/HCJHypercubeGraph.h"
 #include "HypeCubeJam.h"
@@ -87,7 +88,9 @@ void AHCJHUD::DrawPanel(float X, float Y, float Width, float Height, const FLine
 FVector2D AHCJHUD::DrawKeyMarkup(const FString& Markup, const FVector2D& Position, const FLinearColor& Color, float Scale, bool bCentered, bool bDraw, float Alpha)
 {
 	TArray<FHCJHintRun> Runs;
-	HCJHints::SplitKeyMarkup(Markup, Runs);
+	// With a game controller in the hand the key caps carry its names ("RT" for "Left mouse").
+	const AHCJPlayerController* PadController = Cast<AHCJPlayerController>(GetOwningPlayerController());
+	HCJHints::SplitKeyMarkup(!bKeyMarkupAsIs && PadController != nullptr && PadController->IsPadPrompts() ? HCJPad::ToPadMarkup(Markup) : Markup, Runs);
 	if (Runs.Num() == 0)
 	{
 		return FVector2D::ZeroVector;

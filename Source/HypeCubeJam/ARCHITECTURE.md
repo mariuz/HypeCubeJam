@@ -364,6 +364,24 @@ B -> A `AHCJUniverse::GetSectorAtLocation`; C -> A `Rebuild`, spawn/sector queri
 C -> D spawn/destroy bot controllers; D -> A universe/graph queries; D -> B control API and ship queries;
 D -> C `AHCJPlayerState::GetCurrentSector`.
 
+## Game controller (XInput pad; a Steam Controller through Steam Input)
+- `Game/HCJPadLogic.h` (plain C++, tested): `ShapeStick` / `LookDelta` (aim stick: radial dead zone, squared response,
+  rate times frame time), `IsKeyAllowed` (the SETTINGS switch), `UpdatePadActive` (which device was used last),
+  `StepFocus` and `FStickNav` (menu focus; the left stick as a D-pad with a repeat), `PadNameForKey` / `ToPadMarkup`
+  (key prompts in pad names).
+- `AHCJPlayerController`: a second mapping context `PadMappingContext` (same actions as the keyboard's plus PadLook,
+  PadMenu, PadTargetNext, PadTargetNearest, PadBaseWeapon, PadHelp), registered by `SyncPadContext` every frame exactly
+  while `UHCJUserSettings::bController`; `InputKey` override feeds `NoteInputDevice`; `IsPadPrompts` is what the HUD and
+  the menu legends ask. Local only: no replicated property, no RPC.
+- `SHCJMenu`: every button / stepper / slider is a `FNavItem` in build order (so build a page top to bottom);
+  `Navigate(EHCJMenuNav)` moves the focus, steps a row, presses or goes back; `OnKeyDown` takes every gamepad key while
+  the menu is open (A, B and Start ignore key repeats: the Start that opened the menu is still down),
+  `OnAnalogValueChanged` only records the left stick (unhandled, so the game keeps seeing the sticks) and `Tick` turns
+  it into steps; `OnNavigation` switches Slate's own focus navigation off. Buttons and sliders are not focusable.
+- `AHCJHUD::DrawKeyMarkup` translates keyboard names to pad names while `IsPadPrompts` (`bKeyMarkupAsIs` for text that
+  already names pad buttons: the F1 overlay's pad table, the respawn line).
+- Development: `HCJMenuCmd padtest | nav <dir> | pad <0|1>` (`TickPadTest`; `InputHits` records which handlers ran).
+
 ## Menu, HUD and feel (added in the polish pass)
 - `Game/HCJUiLogic.h` (plain C++, tested): kill streaks, HUD scale, off-screen marker, start-menu command-line rule,
   target selection, fire-now rule, radar projection, and `HCJMenuFlow` (process-wide "open the title menu" state).

@@ -153,6 +153,11 @@ protected:
 	void DrawJumpFlash();
 	/** Text with key caps: "[W] thrust" draws W in a box. Returns the size used; with bDraw false only measures. */
 	FVector2D DrawKeyMarkup(const FString& Markup, const FVector2D& Position, const FLinearColor& Color, float Scale, bool bCentered, bool bDraw = true, float Alpha = 1.0f);
+	/**
+	 * DrawKeyMarkup turns keyboard names into pad names while a game controller is the device in use
+	 * (AHCJPlayerController::IsPadPrompts, HCJPad::ToPadMarkup). Set while text is drawn that already names pad buttons.
+	 */
+	bool bKeyMarkupAsIs = false;
 	/** Dark panel; Accent with alpha > 0 adds a bar on its left edge. */
 	void DrawPanel(float X, float Y, float Width, float Height, const FLinearColor& Accent, float Alpha = 1.0f);
 	/** Size of the bottom-left block (shield, hull, boost); the radar sits on top of it. */

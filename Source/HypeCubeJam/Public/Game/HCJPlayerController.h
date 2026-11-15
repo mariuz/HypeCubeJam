@@ -15,6 +15,7 @@ enum class EHCJMenuPage : uint8;
 class UInputAction;
 class UInputMappingContext;
 struct FInputActionValue;
+struct FInputKeyEventArgs;
 
 /**
  * Human controller: owns ALL player input and the respawn request.
@@ -38,6 +39,17 @@ struct FInputActionValue;
  *   Cloak  (bool)    C                                          -> AHCJShipCharacter::ToggleCloak
  *   Tractor (bool)   R, held (R also asks for a respawn when shipless) -> AHCJShipCharacter::SetTractoring
  * Handlers do nothing when there is no live ship (except Scoreboard and the respawn requests).
+ *
+ * GAME CONTROLLER (XInput: an Xbox pad, or a Steam Controller through Steam Input): a second mapping context with the
+ * same actions and a few of its own, registered only while UHCJUserSettings::bController is on (SyncPadContext, every
+ * frame). Keyboard and mouse stay as they are; both work at the same time.
+ *   left stick = Move X / Y (dead zone 0.2), A / B = Move +-Z, right stick = PadLook (HCJPad::LookDelta: radial dead
+ *   zone 0.2, squared response, degrees per second times the frame time), RT = Fire, LT = Torpedo, LB = Boost,
+ *   RB = next target, Y = nearest enemy, X = base weapon, D-pad up = Warp (held), left = Cloak, right = Tractor (held),
+ *   down = DropWeapon, right stick click = Camera, left stick click = controls overlay, Back = Scoreboard (held),
+ *   Start = the in-match menu (as Esc), A = Respawn when shipless.
+ * While the menu is open the pad drives the menu instead (SHCJMenu::OnKeyDown). The key prompts of the HUD show pad
+ * names while the pad was the device used last (IsPadPrompts).
  *
  * MENU (local controller only): the title menu and the in-match menu are one Slate widget (SHCJMenu) that this
  * controller adds to the game viewport; while it is open the mouse cursor is shown and flight input is ignored.
@@ -100,6 +112,14 @@ public:
 	void ServerSetShipChoice(uint8 Type, uint8 Variant, uint8 Skin);
 	/** Esc: closes the in-match menu, or opens it. Does nothing in the title menu. */
 	void MenuEscape();
+
+	// ---- game controller ----
+
+	/** Local: the pad was the device used last and the controller is enabled: prompts show pad names. */
+	bool IsPadPrompts() const;
+	/** Local: a key or axis of a device was used (the menu reports the pad keys it takes before the game sees them). */
+	void NoteInputDevice(bool bGamepadKey, bool bAxis, float AxisValue);
+	virtual bool InputKey(const FInputKeyEventArgs& Params) override;
 
 	/**
 	 * Server -> owning client: this player's ship lost Amount points to something at SourceLocation. Cosmetic
@@ -235,7 +255,9 @@ public:
 	 * slomo <factor> (listen host: time dilation, for pictures), warp <0|1> / tractor <0|1> (the own key, held or let go),
 	 * cloak (the own toggle), ship <type>[,<hull>[,<paint>]] (the hangar's choice; a listen host's ship becomes it at
 	 * once), hangar (the hangar page), and for a listen host with "peace": enemyship <type>.., enemywarp <0|1>,
-	 * enemycloak, enemytractor <0|1> (the nearest other ship).
+	 * enemycloak, enemytractor <0|1> (the nearest other ship). Game controller: nav <up|down|left|right|accept|back>
+	 * (what the pad does in the open menu; logs the entry that has the focus), padtest (see TickPadTest),
+	 * pad <0|1> (the SETTINGS switch).
 	 */
 	UFUNCTION(Exec)
 	void HCJMenuCmd(const FString& Action, const FString& Argument = TEXT(""));
@@ -305,6 +327,20 @@ protected:
 	void HandleCloak(const FInputActionValue& Value);
 	void HandleTractorStarted(const FInputActionValue& Value);
 	void HandleTractorCompleted(const FInputActionValue& Value);
+	void HandlePadLook(const FInputActionValue& Value);
+	void HandlePadMenu(const FInputActionValue& Value);
+	void HandlePadTargetNext(const FInputActionValue& Value);
+	void HandlePadTargetNearest(const FInputActionValue& Value);
+	void HandlePadBaseWeapon(const FInputActionValue& Value);
+	void HandlePadHelp(const FInputActionValue& Value);
+
+	/** Local, every frame: the pad's mapping context is registered exactly while UHCJUserSettings::bController is on. */
+	void SyncPadContext();
+	/**
+	 * Development (HCJMenuCmd padtest; not in shipping builds): presses every pad key through InputKey, one step every
+	 * few frames, and logs what the ship did ("PadTest: step=... ok=1", at the end "PadTest: result=PASS|FAIL").
+	 */
+	void TickPadTest();
 
 	/** Local, every frame: the turning hull in front of the camera while the hangar page is open (created / removed as needed). */
 	void UpdateHangarPreview(float DeltaTime);
@@ -347,6 +383,43 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> TractorAction;
+
+	/** The game controller's context and the actions only it has. */
+	UPROPERTY(Transient)
+	TObjectPtr<UInputMappingContext> PadMappingContext;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> PadLookAction;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> PadMenuAction;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> PadTargetNextAction;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> PadTargetNearestAction;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> PadBaseWeaponAction;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> PadHelpAction;
+
+	/** The pad's context is in the Enhanced Input subsystem. */
+	bool bPadContextAdded = false;
+	/** The pad was the device used last. */
+	bool bPadActive = false;
+	/** Which input handlers ran since this was last cleared (bits of EHCJInputHit in the .cpp), and the last thrust axes: read by the pad self-test. */
+	uint32 InputHits = 0;
+	FVector LastMoveAxes = FVector::ZeroVector;
+	/** HCJMenuCmd padtest: the step being run (negative: off), frames left in it, what failed so far. */
+	int32 PadTestStep = -1;
+	int32 PadTestFrames = 0;
+	int32 PadTestChecks = 0;
+	int32 PadTestFailures = 0;
+	FRotator PadTestRotation = FRotator::ZeroRotator;
+	int32 PadTestCounter = 0;
 
 	/** Hangar preview: a local actor with one mesh component, the hull material instance, what it shows and its turn. */
 	UPROPERTY(Transient)

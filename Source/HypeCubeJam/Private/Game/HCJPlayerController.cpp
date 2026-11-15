@@ -23,6 +23,8 @@
 #include "Game/HCJHUD.h"
 #include "Game/HCJPlayerState.h"
 #include "Game/HCJUiLogic.h"
+#include "Game/HCJPadLogic.h"
+#include "InputKeyEventArgs.h"
 #include "Game/HCJUserSettings.h"
 #include "Game/HCJGameState.h"
 #include "GameFramework/GameSession.h"
@@ -73,6 +75,18 @@ namespace
 			Mapping.Modifiers.Add(NewObject<UInputModifierNegate>(&Context));
 		}
 	}
+}
+
+namespace
+{
+	/** Which input handler ran (AHCJPlayerController::InputHits): what the pad self-test reads. */
+	enum EHCJInputHit : uint32
+	{
+		HitMove = 1u << 0, HitLook = 1u << 1, HitPadLook = 1u << 2, HitFireOn = 1u << 3, HitFireOff = 1u << 4, HitBoostOn = 1u << 5, HitBoostOff = 1u << 6,
+		HitScoreOn = 1u << 7, HitScoreOff = 1u << 8, HitCamera = 1u << 9, HitRespawn = 1u << 10, HitDrop = 1u << 11, HitTorpedo = 1u << 12,
+		HitWarpOn = 1u << 13, HitWarpOff = 1u << 14, HitCloak = 1u << 15, HitTractorOn = 1u << 16, HitTractorOff = 1u << 17, HitPadMenu = 1u << 18,
+		HitTargetNext = 1u << 19, HitTargetNearest = 1u << 20, HitBaseWeapon = 1u << 21, HitHelp = 1u << 22
+	};
 }
 
 AHCJPlayerController::AHCJPlayerController()
@@ -476,6 +490,9 @@ void AHCJPlayerController::PlayerTick(float DeltaTime)
 		// The join did not work out and this world is still the one running.
 		MenuWidget->SetPage(bInStartMenu ? EHCJMenuPage::Main : EHCJMenuPage::Pause, HCJMenuFlow::TakeNotice());
 	}
+
+	SyncPadContext();
+	TickPadTest();
 
 	UpdateOnline(DeltaTime);
 	UpdateQuickPlay();
@@ -1846,6 +1863,39 @@ void AHCJPlayerController::HCJMenuCmd(const FString& Action, const FString& Argu
 	{
 		MenuWidget->SetPage(EHCJMenuPage::Hangar);
 	}
+	else if (Action == TEXT("nav"))
+	{
+		// What the pad does in the open menu: "nav down", "nav accept", ... The log says which entry has the focus.
+		// (A local reference: "accept" on PLAY closes the menu, which lets go of the widget.)
+		const TSharedPtr<SHCJMenu> Menu = MenuWidget;
+		if (Menu.IsValid())
+		{
+			const EHCJMenuNav Nav = Argument == TEXT("up") ? EHCJMenuNav::Up : Argument == TEXT("down") ? EHCJMenuNav::Down : Argument == TEXT("left") ? EHCJMenuNav::Left
+				: Argument == TEXT("right") ? EHCJMenuNav::Right : Argument == TEXT("back") ? EHCJMenuNav::Back : EHCJMenuNav::Accept;
+			const FString Before = Menu->GetNavLabel();
+			Menu->Navigate(Nav);
+			UE_LOG(LogHCJ, Log, TEXT("Menu: nav %s: page %d, focus %d of %d '%s' (was '%s'), menu %s; difficulty %d, controller %d, start menu %d"), *Argument, static_cast<int32>(Menu->GetPage()), Menu->GetNavIndex(),
+				Menu->GetNumNavItems(), *Menu->GetNavLabel(), *Before, MenuWidget.IsValid() ? TEXT("open") : TEXT("closed"), UHCJUserSettings::Get().BotDifficulty, UHCJUserSettings::Get().bController ? 1 : 0, bInStartMenu ? 1 : 0);
+		}
+		else
+		{
+			UE_LOG(LogHCJ, Log, TEXT("Menu: nav %s: no menu is open"), *Argument);
+		}
+	}
+	else if (Action == TEXT("pad"))
+	{
+		// The SETTINGS switch "Controller" (not saved).
+		UHCJUserSettings::Get().bController = Argument.IsEmpty() ? !UHCJUserSettings::Get().bController : FCString::Atoi(*Argument) != 0;
+	}
+	else if (Action == TEXT("padtest"))
+	{
+		HCJMenuCmd(TEXT("peace"), FString());
+		PadTestStep = 0;
+		PadTestFrames = 0;
+		PadTestChecks = 0;
+		PadTestFailures = 0;
+		UE_LOG(LogHCJ, Log, TEXT("PadTest: started (gamepad keys are pressed through APlayerController::InputKey; no controller is needed)"));
+	}
 	else if (Action == TEXT("ship") || Action == TEXT("enemyship"))
 	{
 		// "ship <type>[,<hull>[,<paint>]]": the own choice (as the hangar makes it; listen host: the ship it has becomes it at once).
@@ -2104,6 +2154,178 @@ void AHCJPlayerController::HCJMenuCmd(const FString& Action, const FString& Argu
 #endif
 }
 
+void AHCJPlayerController::TickPadTest()
+{
+#if !UE_BUILD_SHIPPING
+	if (PadTestStep < 0)
+	{
+		return;
+	}
+
+	/** What must hold besides the handlers that ran. */
+	enum class ECheck : uint8 { None, MoveForward, MoveBack, MoveRight, NoMove, MoveUp, MoveDown, YawRight, PitchUp, NoTurn, Firing, Boosting, Scoreboard, MenuOpen, Nothing, Dead };
+	struct FStep
+	{
+		const TCHAR* Name;
+		FKey Key;
+		/** 0: a button, pressed and released; else the value of the axis. */
+		float Axis;
+		uint32 OnPress;
+		uint32 OnRelease;
+		ECheck Check;
+	};
+	static const FStep Steps[] = {
+		{ TEXT("left_stick_forward"), EKeys::Gamepad_LeftY, 1.0f, HitMove, 0, ECheck::MoveForward },
+		{ TEXT("left_stick_back"), EKeys::Gamepad_LeftY, -1.0f, HitMove, 0, ECheck::MoveBack },
+		{ TEXT("left_stick_right"), EKeys::Gamepad_LeftX, 1.0f, HitMove, 0, ECheck::MoveRight },
+		{ TEXT("left_stick_dead_zone"), EKeys::Gamepad_LeftX, 0.15f, 0, 0, ECheck::NoMove },
+		{ TEXT("a_up"), EKeys::Gamepad_FaceButton_Bottom, 0.0f, HitMove, 0, ECheck::MoveUp },
+		{ TEXT("b_down"), EKeys::Gamepad_FaceButton_Right, 0.0f, HitMove, 0, ECheck::MoveDown },
+		{ TEXT("right_stick_right"), EKeys::Gamepad_RightX, 1.0f, HitPadLook, 0, ECheck::YawRight },
+		{ TEXT("right_stick_up"), EKeys::Gamepad_RightY, 1.0f, HitPadLook, 0, ECheck::PitchUp },
+		{ TEXT("right_stick_dead_zone"), EKeys::Gamepad_RightX, 0.15f, 0, 0, ECheck::NoTurn },
+		{ TEXT("rt_fire"), EKeys::Gamepad_RightTrigger, 0.0f, HitFireOn, HitFireOff, ECheck::Firing },
+		{ TEXT("lt_torpedo"), EKeys::Gamepad_LeftTrigger, 0.0f, HitTorpedo, 0, ECheck::None },
+		{ TEXT("lb_boost"), EKeys::Gamepad_LeftShoulder, 0.0f, HitBoostOn, HitBoostOff, ECheck::Boosting },
+		{ TEXT("rb_next_target"), EKeys::Gamepad_RightShoulder, 0.0f, HitTargetNext, 0, ECheck::None },
+		{ TEXT("y_nearest_enemy"), EKeys::Gamepad_FaceButton_Top, 0.0f, HitTargetNearest, 0, ECheck::None },
+		{ TEXT("x_base_weapon"), EKeys::Gamepad_FaceButton_Left, 0.0f, HitBaseWeapon, 0, ECheck::None },
+		{ TEXT("x_base_weapon_back"), EKeys::Gamepad_FaceButton_Left, 0.0f, HitBaseWeapon, 0, ECheck::None },
+		{ TEXT("dpad_up_warp"), EKeys::Gamepad_DPad_Up, 0.0f, HitWarpOn, HitWarpOff, ECheck::None },
+		{ TEXT("dpad_left_cloak"), EKeys::Gamepad_DPad_Left, 0.0f, HitCloak, 0, ECheck::None },
+		{ TEXT("dpad_left_decloak"), EKeys::Gamepad_DPad_Left, 0.0f, HitCloak, 0, ECheck::None },
+		{ TEXT("dpad_right_tractor"), EKeys::Gamepad_DPad_Right, 0.0f, HitTractorOn, HitTractorOff, ECheck::None },
+		{ TEXT("dpad_down_drop_weapon"), EKeys::Gamepad_DPad_Down, 0.0f, HitDrop, 0, ECheck::None },
+		{ TEXT("r3_camera"), EKeys::Gamepad_RightThumbstick, 0.0f, HitCamera, 0, ECheck::None },
+		{ TEXT("r3_camera_back"), EKeys::Gamepad_RightThumbstick, 0.0f, HitCamera, 0, ECheck::None },
+		{ TEXT("l3_help"), EKeys::Gamepad_LeftThumbstick, 0.0f, HitHelp, 0, ECheck::None },
+		{ TEXT("l3_help_off"), EKeys::Gamepad_LeftThumbstick, 0.0f, HitHelp, 0, ECheck::None },
+		{ TEXT("back_scoreboard"), EKeys::Gamepad_Special_Left, 0.0f, HitScoreOn, HitScoreOff, ECheck::Scoreboard },
+		{ TEXT("start_menu"), EKeys::Gamepad_Special_Right, 0.0f, HitPadMenu, 0, ECheck::MenuOpen },
+		// The SETTINGS switch off: the same trigger does nothing.
+		{ TEXT("controller_off_rt"), EKeys::Gamepad_RightTrigger, 0.0f, 0, 0, ECheck::Nothing },
+		// The switch on again (two steps on: the context is back), then without a ship: A asks for the respawn.
+		{ TEXT("controller_on_rt"), EKeys::Gamepad_RightTrigger, 0.0f, HitFireOn, HitFireOff, ECheck::Firing },
+		{ TEXT("a_respawn_when_destroyed"), EKeys::Gamepad_FaceButton_Bottom, 0.0f, HitRespawn, 0, ECheck::Dead },
+	};
+	constexpr int32 PressFrames = 5;
+	constexpr int32 StepFrames = 10;
+
+	if (PadTestStep >= static_cast<int32>(UE_ARRAY_COUNT(Steps)))
+	{
+		UE_LOG(LogHCJ, Log, TEXT("PadTest: result=%s steps=%d checks=%d failed=%d"), PadTestFailures == 0 ? TEXT("PASS") : TEXT("FAIL"), static_cast<int32>(UE_ARRAY_COUNT(Steps)), PadTestChecks, PadTestFailures);
+		PadTestStep = -1;
+		return;
+	}
+
+	const FStep& Step = Steps[PadTestStep];
+	const bool bAxis = Step.Axis != 0.0f;
+	const auto Send = [this, &Step, bAxis](bool bDown)
+	{
+		InputKey(bAxis ? FInputKeyEventArgs::CreateSimulated(Step.Key, IE_Axis, bDown ? Step.Axis : 0.0f, 1)
+			: FInputKeyEventArgs::CreateSimulated(Step.Key, bDown ? IE_Pressed : IE_Released, bDown ? 1.0f : 0.0f));
+	};
+	AHCJShipCharacter* Ship = GetShip();
+
+	if (PadTestFrames == 0)
+	{
+		if (Step.Check == ECheck::Nothing)
+		{
+			UHCJUserSettings::Get().bController = false;
+			SyncPadContext();
+		}
+		else if (Step.Check == ECheck::Dead)
+		{
+			HCJMenuCmd(TEXT("die"), FString());
+		}
+		else if (Ship == nullptr)
+		{
+			// (A ship lost to a rock or a black hole meanwhile: wait for the next one.)
+			if (++PadTestCounter > 1200)
+			{
+				UE_LOG(LogHCJ, Log, TEXT("PadTest: step=%s ok=0 (no ship for 1200 frames)"), Step.Name);
+				++PadTestFailures;
+				PadTestStep = UE_ARRAY_COUNT(Steps);
+			}
+			else if (PadTestCounter % 30 == 0)
+			{
+				ServerRequestRespawn();
+			}
+			return;
+		}
+		PadTestCounter = 0;
+		InputHits = 0;
+		LastMoveAxes = FVector::ZeroVector;
+		PadTestRotation = GetControlRotation();
+		Send(true);
+	}
+	else if (PadTestFrames < PressFrames)
+	{
+		if (bAxis)
+		{
+			// (A real stick reports its value every frame.)
+			Send(true);
+		}
+	}
+	else if (PadTestFrames == PressFrames)
+	{
+		const FRotator Now = GetControlRotation();
+		const float Yaw = FMath::FindDeltaAngleDegrees(PadTestRotation.Yaw, Now.Yaw);
+		const float Pitch = FMath::FindDeltaAngleDegrees(PadTestRotation.Pitch, Now.Pitch);
+		bool bOk = (InputHits & Step.OnPress) == Step.OnPress;
+		switch (Step.Check)
+		{
+		case ECheck::MoveForward: bOk &= LastMoveAxes.X > 0.5; break;
+		case ECheck::MoveBack: bOk &= LastMoveAxes.X < -0.5; break;
+		case ECheck::MoveRight: bOk &= LastMoveAxes.Y > 0.5; break;
+		case ECheck::NoMove: bOk &= (InputHits & HitMove) == 0; break;
+		case ECheck::MoveUp: bOk &= LastMoveAxes.Z > 0.5; break;
+		case ECheck::MoveDown: bOk &= LastMoveAxes.Z < -0.5; break;
+		case ECheck::YawRight: bOk &= Yaw > 0.02f && FMath::Abs(Pitch) < 0.01f; break;
+		case ECheck::PitchUp: bOk &= Pitch > 0.02f && FMath::Abs(Yaw) < 0.01f; break;
+		case ECheck::NoTurn: bOk &= FMath::Abs(Yaw) < 0.001f && FMath::Abs(Pitch) < 0.001f; break;
+		case ECheck::Firing: bOk &= Ship != nullptr && Ship->IsFiring(); break;
+		case ECheck::Boosting: bOk &= (InputHits & HitBoostOn) != 0; break;
+		case ECheck::Scoreboard: bOk &= bScoreboardVisible; break;
+		case ECheck::MenuOpen: bOk &= IsMenuOpen(); break;
+		case ECheck::Nothing: bOk &= InputHits == 0 && !bPadContextAdded && (Ship == nullptr || !Ship->IsFiring()); break;
+		case ECheck::Dead: bOk &= Ship == nullptr; break;
+		default: break;
+		}
+		++PadTestChecks;
+		PadTestFailures += bOk ? 0 : 1;
+		UE_LOG(LogHCJ, Log, TEXT("PadTest: step=%s key=%s ok=%d hits=%08X move=(%.2f %.2f %.2f) yaw=%.3f pitch=%.3f firing=%d scores=%d menu=%d pad_prompts=%d"), Step.Name, *Step.Key.ToString(), bOk ? 1 : 0, InputHits,
+			LastMoveAxes.X, LastMoveAxes.Y, LastMoveAxes.Z, Yaw, Pitch, Ship != nullptr && Ship->IsFiring() ? 1 : 0, bScoreboardVisible ? 1 : 0, IsMenuOpen() ? 1 : 0, IsPadPrompts() ? 1 : 0);
+		InputHits = 0;
+		Send(false);
+		if (Step.Check == ECheck::MenuOpen && IsMenuOpen())
+		{
+			MenuEscape();
+		}
+	}
+	else if (PadTestFrames >= StepFrames)
+	{
+		if (Step.OnRelease != 0)
+		{
+			const bool bOk = (InputHits & Step.OnRelease) == Step.OnRelease && (Step.Check != ECheck::Firing || Ship == nullptr || !Ship->IsFiring())
+				&& (Step.Check != ECheck::Scoreboard || !bScoreboardVisible);
+			++PadTestChecks;
+			PadTestFailures += bOk ? 0 : 1;
+			UE_LOG(LogHCJ, Log, TEXT("PadTest: step=%s release ok=%d hits=%08X"), Step.Name, bOk ? 1 : 0, InputHits);
+		}
+		if (Step.Check == ECheck::Nothing)
+		{
+			UHCJUserSettings::Get().bController = true;
+			SyncPadContext();
+		}
+		++PadTestStep;
+		PadTestFrames = 0;
+		return;
+	}
+	++PadTestFrames;
+#endif
+}
+
 void AHCJPlayerController::HCJKillTurrets()
 {
 	ServerDebugKillTurrets();
@@ -2170,6 +2392,13 @@ void AHCJPlayerController::SetupInputComponent()
 	EnhancedInput->BindAction(CloakAction, ETriggerEvent::Started, this, &AHCJPlayerController::HandleCloak);
 	EnhancedInput->BindAction(TractorAction, ETriggerEvent::Started, this, &AHCJPlayerController::HandleTractorStarted);
 	EnhancedInput->BindAction(TractorAction, ETriggerEvent::Completed, this, &AHCJPlayerController::HandleTractorCompleted);
+	// Game controller only (the actions above are mapped to pad keys as well, in the pad's own context).
+	EnhancedInput->BindAction(PadLookAction, ETriggerEvent::Triggered, this, &AHCJPlayerController::HandlePadLook);
+	EnhancedInput->BindAction(PadMenuAction, ETriggerEvent::Started, this, &AHCJPlayerController::HandlePadMenu);
+	EnhancedInput->BindAction(PadTargetNextAction, ETriggerEvent::Started, this, &AHCJPlayerController::HandlePadTargetNext);
+	EnhancedInput->BindAction(PadTargetNearestAction, ETriggerEvent::Started, this, &AHCJPlayerController::HandlePadTargetNearest);
+	EnhancedInput->BindAction(PadBaseWeaponAction, ETriggerEvent::Started, this, &AHCJPlayerController::HandlePadBaseWeapon);
+	EnhancedInput->BindAction(PadHelpAction, ETriggerEvent::Started, this, &AHCJPlayerController::HandlePadHelp);
 
 	if (IsLocalController() && !MenuWidget.IsValid())
 	{
@@ -2231,6 +2460,62 @@ void AHCJPlayerController::BuildInputObjects()
 	Context->MapKey(TractorAction, EKeys::R);
 
 	MappingContext = Context;
+
+	// ---- game controller (XInput): its own context, registered while the SETTINGS switch is on (SyncPadContext) ----
+	PadLookAction = MakeAction(TEXT("IA_HCJ_PadLook"), EInputActionValueType::Axis2D);
+	PadMenuAction = MakeAction(TEXT("IA_HCJ_PadMenu"), EInputActionValueType::Boolean);
+	PadTargetNextAction = MakeAction(TEXT("IA_HCJ_PadTargetNext"), EInputActionValueType::Boolean);
+	PadTargetNearestAction = MakeAction(TEXT("IA_HCJ_PadTargetNearest"), EInputActionValueType::Boolean);
+	PadBaseWeaponAction = MakeAction(TEXT("IA_HCJ_PadBaseWeapon"), EInputActionValueType::Boolean);
+	PadHelpAction = MakeAction(TEXT("IA_HCJ_PadHelp"), EInputActionValueType::Boolean);
+
+	UInputMappingContext* Pad = NewObject<UInputMappingContext>(this, FName(TEXT("IMC_HCJ_Gamepad")));
+
+	// Left stick: thrust forward / back and strafe. Each axis has its dead zone before it is moved to its place.
+	const auto MapThrustStick = [Pad, this](const FKey& Key, bool bToY)
+	{
+		FEnhancedActionKeyMapping& Mapping = Pad->MapKey(MoveAction, Key);
+		UInputModifierDeadZone* DeadZone = NewObject<UInputModifierDeadZone>(Pad);
+		DeadZone->LowerThreshold = HCJPad::MoveDeadZone;
+		DeadZone->UpperThreshold = 1.0f;
+		DeadZone->Type = EDeadZoneType::Axial;
+		Mapping.Modifiers.Add(DeadZone);
+		if (bToY)
+		{
+			UInputModifierSwizzleAxis* Swizzle = NewObject<UInputModifierSwizzleAxis>(Pad);
+			Swizzle->Order = EInputAxisSwizzle::YXZ;
+			Mapping.Modifiers.Add(Swizzle);
+		}
+	};
+	MapThrustStick(EKeys::Gamepad_LeftY, false);
+	MapThrustStick(EKeys::Gamepad_LeftX, true);
+	MapAxisKey(*Pad, MoveAction, EKeys::Gamepad_FaceButton_Bottom, false, true, false);
+	MapAxisKey(*Pad, MoveAction, EKeys::Gamepad_FaceButton_Right, false, true, true);
+
+	// Right stick: aim. Raw here; HandlePadLook shapes both axes together (radial dead zone, curve, frame time).
+	MapAxisKey(*Pad, PadLookAction, EKeys::Gamepad_RightX, false, false, false);
+	MapAxisKey(*Pad, PadLookAction, EKeys::Gamepad_RightY, true, false, false);
+
+	// (The triggers as the buttons the engine makes of them at its threshold: a trigger that rests a hair above zero
+	// must not fire.)
+	Pad->MapKey(FireAction, EKeys::Gamepad_RightTrigger);
+	Pad->MapKey(TorpedoAction, EKeys::Gamepad_LeftTrigger);
+	Pad->MapKey(BoostAction, EKeys::Gamepad_LeftShoulder);
+	Pad->MapKey(PadTargetNextAction, EKeys::Gamepad_RightShoulder);
+	Pad->MapKey(PadTargetNearestAction, EKeys::Gamepad_FaceButton_Top);
+	Pad->MapKey(PadBaseWeaponAction, EKeys::Gamepad_FaceButton_Left);
+	Pad->MapKey(WarpAction, EKeys::Gamepad_DPad_Up);
+	Pad->MapKey(CloakAction, EKeys::Gamepad_DPad_Left);
+	Pad->MapKey(TractorAction, EKeys::Gamepad_DPad_Right);
+	Pad->MapKey(DropWeaponAction, EKeys::Gamepad_DPad_Down);
+	Pad->MapKey(CameraAction, EKeys::Gamepad_RightThumbstick);
+	Pad->MapKey(PadHelpAction, EKeys::Gamepad_LeftThumbstick);
+	Pad->MapKey(ScoreboardAction, EKeys::Gamepad_Special_Left);
+	Pad->MapKey(PadMenuAction, EKeys::Gamepad_Special_Right);
+	// (A is also "up": that one only does something with a ship, this one only without.)
+	Pad->MapKey(RespawnAction, EKeys::Gamepad_FaceButton_Bottom);
+
+	PadMappingContext = Pad;
 }
 
 void AHCJPlayerController::RegisterMappingContext()
@@ -2248,10 +2533,108 @@ void AHCJPlayerController::RegisterMappingContext()
 			Subsystem->AddMappingContext(MappingContext, 0);
 		}
 	}
+	SyncPadContext();
+}
+
+void AHCJPlayerController::SyncPadContext()
+{
+	const bool bWanted = PadMappingContext != nullptr && HCJPad::IsKeyAllowed(true, UHCJUserSettings::Get().bController);
+	if (bWanted == bPadContextAdded)
+	{
+		return;
+	}
+	const ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	UEnhancedInputLocalPlayerSubsystem* Subsystem = LocalPlayer != nullptr ? ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(LocalPlayer) : nullptr;
+	if (Subsystem == nullptr)
+	{
+		return;
+	}
+	if (bWanted)
+	{
+		Subsystem->AddMappingContext(PadMappingContext, 0);
+	}
+	else
+	{
+		Subsystem->RemoveMappingContext(PadMappingContext);
+		bPadActive = false;
+		// Whatever a pad key held down: its release will not be seen any more.
+		if (AHCJShipCharacter* Ship = GetShip())
+		{
+			Ship->SetFiring(false);
+			Ship->SetBoosting(false);
+			Ship->SetWarping(false);
+			Ship->SetTractoring(false);
+		}
+		bScoreboardVisible = false;
+	}
+	bPadContextAdded = bWanted;
+	UE_LOG(LogHCJ, Log, TEXT("Controller: gamepad input %s (SETTINGS: Controller %s)"), bWanted ? TEXT("on") : TEXT("off"), bWanted ? TEXT("On") : TEXT("Off"));
+}
+
+bool AHCJPlayerController::IsPadPrompts() const
+{
+	return bPadActive && UHCJUserSettings::Get().bController;
+}
+
+void AHCJPlayerController::NoteInputDevice(bool bGamepadKey, bool bAxis, float AxisValue)
+{
+	bPadActive = HCJPad::UpdatePadActive(bPadActive, bGamepadKey, bAxis, AxisValue);
+}
+
+bool AHCJPlayerController::InputKey(const FInputKeyEventArgs& Params)
+{
+	NoteInputDevice(Params.Key.IsGamepadKey(), Params.Event == IE_Axis, Params.AmountDepressed);
+	return Super::InputKey(Params);
+}
+
+void AHCJPlayerController::HandlePadLook(const FInputActionValue& Value)
+{
+	InputHits |= HitPadLook;
+	if (!GetShip() || IsLookInputIgnored() || IsMenuOpen())
+	{
+		return;
+	}
+	// A stick is a rate: degrees per second times the frame time (the mouse above is a step per count).
+	const UWorld* World = GetWorld();
+	const FVector2D Delta = HCJPad::LookDelta(Value.Get<FVector2D>(), UHCJUserSettings::Get().ControllerSensitivity, World != nullptr ? World->GetDeltaSeconds() : 0.0f);
+	RotationInput.Yaw += Delta.X;
+	RotationInput.Pitch += Delta.Y;
+}
+
+void AHCJPlayerController::HandlePadMenu(const FInputActionValue& Value)
+{
+	InputHits |= HitPadMenu;
+	MenuEscape();
+}
+
+void AHCJPlayerController::HandlePadTargetNext(const FInputActionValue& Value)
+{
+	InputHits |= HitTargetNext;
+	TargetNext();
+}
+
+void AHCJPlayerController::HandlePadTargetNearest(const FInputActionValue& Value)
+{
+	InputHits |= HitTargetNearest;
+	TargetNearest();
+}
+
+void AHCJPlayerController::HandlePadBaseWeapon(const FInputActionValue& Value)
+{
+	InputHits |= HitBaseWeapon;
+	ToggleBaseWeapon();
+}
+
+void AHCJPlayerController::HandlePadHelp(const FInputActionValue& Value)
+{
+	InputHits |= HitHelp;
+	ToggleHelp();
 }
 
 void AHCJPlayerController::HandleMove(const FInputActionValue& Value)
 {
+	InputHits |= HitMove;
+	LastMoveAxes = Value.Get<FVector>();
 	AHCJShipCharacter* Ship = IsMenuOpen() ? nullptr : GetShip();
 	if (Ship != nullptr)
 	{
@@ -2263,6 +2646,7 @@ void AHCJPlayerController::HandleMove(const FInputActionValue& Value)
 
 void AHCJPlayerController::HandleLook(const FInputActionValue& Value)
 {
+	InputHits |= HitLook;
 	if (!GetShip() || IsLookInputIgnored() || IsMenuOpen())
 	{
 		return;
@@ -2276,6 +2660,7 @@ void AHCJPlayerController::HandleLook(const FInputActionValue& Value)
 
 void AHCJPlayerController::HandleFireStarted(const FInputActionValue& Value)
 {
+	InputHits |= HitFireOn;
 	if (IsMenuOpen())
 	{
 		return;
@@ -2292,6 +2677,7 @@ void AHCJPlayerController::HandleFireStarted(const FInputActionValue& Value)
 
 void AHCJPlayerController::HandleFireCompleted(const FInputActionValue& Value)
 {
+	InputHits |= HitFireOff;
 	if (AHCJShipCharacter* Ship = GetShip())
 	{
 		Ship->SetFiring(false);
@@ -2300,6 +2686,7 @@ void AHCJPlayerController::HandleFireCompleted(const FInputActionValue& Value)
 
 void AHCJPlayerController::HandleBoostStarted(const FInputActionValue& Value)
 {
+	InputHits |= HitBoostOn;
 	if (IsMenuOpen())
 	{
 		return;
@@ -2312,6 +2699,7 @@ void AHCJPlayerController::HandleBoostStarted(const FInputActionValue& Value)
 
 void AHCJPlayerController::HandleBoostCompleted(const FInputActionValue& Value)
 {
+	InputHits |= HitBoostOff;
 	if (AHCJShipCharacter* Ship = GetShip())
 	{
 		Ship->SetBoosting(false);
@@ -2320,16 +2708,19 @@ void AHCJPlayerController::HandleBoostCompleted(const FInputActionValue& Value)
 
 void AHCJPlayerController::HandleScoreboardStarted(const FInputActionValue& Value)
 {
+	InputHits |= HitScoreOn;
 	bScoreboardVisible = true;
 }
 
 void AHCJPlayerController::HandleScoreboardCompleted(const FInputActionValue& Value)
 {
+	InputHits |= HitScoreOff;
 	bScoreboardVisible = false;
 }
 
 void AHCJPlayerController::HandleToggleCamera(const FInputActionValue& Value)
 {
+	InputHits |= HitCamera;
 	if (AHCJShipCharacter* Ship = GetShip())
 	{
 		Ship->ToggleCameraMode();
@@ -2350,6 +2741,7 @@ void AHCJPlayerController::ToggleBaseWeapon()
 
 void AHCJPlayerController::HandleDropWeapon(const FInputActionValue& Value)
 {
+	InputHits |= HitDrop;
 	if (AHCJShipCharacter* Ship = GetShip())
 	{
 		Ship->DropWeapon();
@@ -2358,6 +2750,7 @@ void AHCJPlayerController::HandleDropWeapon(const FInputActionValue& Value)
 
 void AHCJPlayerController::HandleTorpedo(const FInputActionValue& Value)
 {
+	InputHits |= HitTorpedo;
 	if (IsMenuOpen())
 	{
 		return;
@@ -2370,6 +2763,7 @@ void AHCJPlayerController::HandleTorpedo(const FInputActionValue& Value)
 
 void AHCJPlayerController::HandleWarpStarted(const FInputActionValue& Value)
 {
+	InputHits |= HitWarpOn;
 	if (IsMenuOpen())
 	{
 		return;
@@ -2382,6 +2776,7 @@ void AHCJPlayerController::HandleWarpStarted(const FInputActionValue& Value)
 
 void AHCJPlayerController::HandleWarpCompleted(const FInputActionValue& Value)
 {
+	InputHits |= HitWarpOff;
 	if (AHCJShipCharacter* Ship = GetShip())
 	{
 		Ship->SetWarping(false);
@@ -2390,6 +2785,7 @@ void AHCJPlayerController::HandleWarpCompleted(const FInputActionValue& Value)
 
 void AHCJPlayerController::HandleCloak(const FInputActionValue& Value)
 {
+	InputHits |= HitCloak;
 	if (IsMenuOpen())
 	{
 		return;
@@ -2402,6 +2798,7 @@ void AHCJPlayerController::HandleCloak(const FInputActionValue& Value)
 
 void AHCJPlayerController::HandleTractorStarted(const FInputActionValue& Value)
 {
+	InputHits |= HitTractorOn;
 	if (IsMenuOpen())
 	{
 		return;
@@ -2414,6 +2811,7 @@ void AHCJPlayerController::HandleTractorStarted(const FInputActionValue& Value)
 
 void AHCJPlayerController::HandleTractorCompleted(const FInputActionValue& Value)
 {
+	InputHits |= HitTractorOff;
 	if (AHCJShipCharacter* Ship = GetShip())
 	{
 		Ship->SetTractoring(false);
@@ -2422,6 +2820,7 @@ void AHCJPlayerController::HandleTractorCompleted(const FInputActionValue& Value
 
 void AHCJPlayerController::HandleRespawn(const FInputActionValue& Value)
 {
+	InputHits |= HitRespawn;
 	if (!GetShip() && !IsMenuOpen())
 	{
 		ServerRequestRespawn();

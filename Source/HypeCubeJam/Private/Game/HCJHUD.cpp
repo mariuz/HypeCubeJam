@@ -1040,7 +1040,11 @@ void AHCJHUD::DrawRespawnInfo(const AHCJGameState& GameState, const AHCJPlayerSt
 	Y += DrawLabel(FString::Printf(TEXT("RESPAWN IN  %d"), FMath::CeilToInt(Remaining)), FVector2D(CenterX, Y), HCJTextColor, 1.8f, true, true) + 6.0f * UIScale;
 	if (bMayRespawn)
 	{
-		Y += static_cast<float>(DrawKeyMarkup(TEXT("[Left mouse] or [R] respawn now"), FVector2D(CenterX, Y), HCJAccentColor, 1.1f, true).Y);
+		const AHCJPlayerController* PadController = Cast<AHCJPlayerController>(GetOwningPlayerController());
+		const bool bPad = PadController != nullptr && PadController->IsPadPrompts();
+		bKeyMarkupAsIs = bPad;
+		Y += static_cast<float>(DrawKeyMarkup(bPad ? TEXT("[RT] or [A] respawn now") : TEXT("[Left mouse] or [R] respawn now"), FVector2D(CenterX, Y), HCJAccentColor, 1.1f, true).Y);
+		bKeyMarkupAsIs = false;
 	}
 
 	// Who or what did it, and (with hints on) one thing to try next time.

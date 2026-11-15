@@ -14,8 +14,8 @@ Start:  HypeCubeJam.exe            plays a 10 s intro (any key, mouse button or 
                                     HANGAR: choose your ship - type, hull and paint (see "Ship types").
                                     The menu also has: number of bots, hypercube size (3D-5D),
                                     seed, pilot name, JOIN by address, CONTROLS (all keys), SETTINGS (mouse
-                                    sensitivity, volumes, hints, camera shake, enemy highlight, cinematic look,
-                                    music), QUIT.
+                                    sensitivity, game controller, volumes, hints, camera shake, enemy highlight,
+                                    cinematic look, music), QUIT.
                                     Enter = PLAY.   HypeCubeJam.exe -HCJQuickPlay  starts with QUICK PLAY.
 Join:   type the host's address in the menu and press JOIN,
         or start with the address:  HypeCubeJam.exe <ip>       e.g. HypeCubeJam.exe 127.0.0.1
@@ -47,6 +47,31 @@ Controls: mouse aim (the ship flies where you look), W/S/A/D thrust, Space/E up,
           hold Z: warp drive, C: cloak on / off, hold R: tractor beam on the target,
           Tab scoreboard, F1 controls overlay, H hints on / off, R or Enter or fire: respawn early,
           Esc menu (resume, hangar, settings, controls, leave to the title menu, quit).
+
+Game controller (Xbox pad; Steam Controller - see below). Works next to keyboard and mouse, nothing to switch:
+          left stick   thrust and strafe          right stick  aim (the ship flies where you look)
+          A / B        up / down                  RT           fire, hold for the phaser beam
+          LT           photon torpedo             LB (hold)    boost
+          RB           next target                Y            nearest enemy
+          X            switch phaser / blaster    D-pad down   drop a pickup weapon
+          D-pad up (hold)     warp drive          D-pad left   cloak on / off
+          D-pad right (hold)  tractor beam        Back (hold)  scoreboard
+          right stick click   camera              left stick click   controls overlay
+          Start        menu                       A or RT      respawn early, when destroyed
+          Menus: D-pad or left stick moves the yellow frame, left / right changes a value, A selects, B or Start
+          goes back. On the title menu A is PLAY. Seed, pilot name and address need the keyboard.
+          SETTINGS > Controller (Xbox / Steam Controller) On / Off switches the pad off entirely;
+          SETTINGS > Controller sensitivity is the turn rate of the aim stick. With a pad in the hand the
+          prompts on the screen show pad names (RT, LB, ...). CONTROLS in the menu lists all of this.
+
+Steam Controller (2015): it needs Steam Input. Either
+          1. as a gamepad (recommended): in Steam choose Games > Add a Non-Steam Game to My Library > Browse >
+             HypeCubeJam.exe, start the game from Steam, and in the game's controller settings pick the
+             "Gamepad" template. The game then sees an Xbox pad: the right touch pad is the right stick, the
+             left touch pad the D-pad, and the layout above applies; or
+          2. as mouse and keys: Steam's desktop layout (Steam > Settings > Controller > Desktop Layout) makes the
+             right pad the mouse and the buttons keys - bind them to the keyboard controls above.
+          The game itself needs no Steam.
 
 Hints: the first ship gets key prompts at the bottom of the screen (move, fire, boost, target keys); each goes
 away when you have done it. Later, short tips appear near portals, wormholes, pads, stations and black holes, when

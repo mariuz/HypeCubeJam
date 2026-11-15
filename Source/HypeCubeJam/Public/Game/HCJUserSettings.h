@@ -92,6 +92,17 @@ public:
 	UPROPERTY(Config)
 	int32 ShipSkin = -1;
 
+	/**
+	 * Game controller (an Xbox pad, or a Steam Controller through Steam Input): its bindings and the pad in the menus.
+	 * Off = the game takes no gamepad key at all. Settings page.
+	 */
+	UPROPERTY(Config)
+	bool bController = true;
+
+	/** Multiplier of the turn rate of the controller's aim stick, 0.2 .. 3. Settings page. */
+	UPROPERTY(Config)
+	float ControllerSensitivity = 1.0f;
+
 	/** The controls overlay was shown once on this machine. */
 	UPROPERTY(Config)
 	bool bHelpSeen = false;

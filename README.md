@@ -105,6 +105,84 @@ adds portal jumps and bot state changes. For a headless run use `-nullrhi`.
 Controls: W/S/A/D thrust, Space/E up, Ctrl/Q down, mouse aim, left mouse fire, right mouse (or X) photon torpedo,
 Shift boost, G drop pickup weapon, T next target, F nearest enemy, middle mouse holds the target, V camera, Tab scoreboard, F1 controls overlay,
 H hints on / off, hold Z warp drive, C cloak on / off, hold R tractor beam (R/Enter/fire respawn when destroyed), Esc menu.
+A game controller works as well: see "Game controller (Xbox pad, Steam Controller)".
+
+## Game controller (Xbox pad, Steam Controller)
+
+An Xbox-style (XInput) pad works next to keyboard and mouse - both at the same time, nothing to choose. SETTINGS has
+**Controller (Xbox / Steam Controller) On / Off** (on by default; off = the game takes no gamepad key at all, in the
+match or in the menus) and **Controller sensitivity** (0.2 x to 3 x: the turn rate of the aim stick). Both are saved in
+`UHCJUserSettings` (`bController`, `ControllerSensitivity`).
+
+| pad | does | keyboard / mouse |
+|---|---|---|
+| left stick | thrust forward / back, strafe left / right (dead zone 0.2 per axis) | W S A D |
+| right stick | aim: the ship flies where you look | mouse |
+| A / B | up / down | Space / Ctrl (E / Q) |
+| RT | fire; hold for the phaser beam (also: respawn when destroyed) | left mouse |
+| LT | photon torpedo | right mouse, X |
+| LB (hold) | boost | Shift |
+| RB | next target | T |
+| Y | target the nearest enemy | F |
+| X | switch phaser / blaster | B |
+| D-pad up (hold) | warp drive | Z |
+| D-pad left | cloak on / off | C |
+| D-pad right (hold) | tractor beam on the target | R |
+| D-pad down | drop a pickup weapon | G |
+| right stick click (R3) | first / third person | V |
+| left stick click (L3) | controls overlay | F1 |
+| Back / View (hold) | scoreboard | Tab |
+| Start / Menu | in-match menu | Esc |
+| A | respawn now, when destroyed | R, Enter |
+
+Not on the pad: hints on / off (H; also in SETTINGS), "hold the target" (middle mouse; the soft lock on the enemy
+nearest the crosshair works as always), typing a seed, a pilot name or an address.
+
+- Aim stick (`HCJPad::LookDelta`, `Game/HCJPadLogic.h`, tested): radial dead zone 0.2, the rest rescaled to 0..1 and
+  squared (fine aim near the centre), 150 degrees a second at full deflection times the sensitivity, **times the frame
+  time** (capped at 0.1 s) - a stick is a rate, the mouse a step per count, so the mouse path is untouched. Stick up is
+  nose up (no invert option). No gameplay value changed; the aim assist is the one the mouse has.
+- Bindings: a second Enhanced Input mapping context (`IMC_HCJ_Gamepad`, built in code in
+  `AHCJPlayerController::BuildInputObjects` like the keyboard's) that maps pad keys to the same actions plus six of its
+  own. `SyncPadContext` registers it exactly while the SETTINGS switch is on. The triggers are bound as the buttons the
+  engine makes of them at its threshold, not as axes.
+- Menus with a pad (and with the arrow keys): D-pad or left stick up / down moves a yellow focus frame through the
+  buttons, steppers and sliders of the page (it wraps round), left / right changes a stepper or slider (or moves the
+  focus on a button), **A** presses (a stepper steps forward), **B** or **Start** goes back (out of the in-match menu,
+  one page back elsewhere; nothing on the title page). The title page opens with the focus on PLAY, so **A = PLAY**;
+  SETTINGS and HANGAR open on their first row; the in-match menu on RESUME. The frame shows once a pad or an arrow
+  key was used and goes away when the mouse moves. Text boxes (seed, pilot name, address) are mouse and keyboard only:
+  there is no on-screen keyboard. `SHCJMenu::Navigate`; the menu widget keeps Slate's keyboard focus itself (its
+  buttons are not focusable any more), so Tab now moves this focus instead of Slate's.
+- Prompts: while the pad is the device used last (`AHCJPlayerController::IsPadPrompts`: any pad button, or a stick /
+  trigger pushed past half; any key or mouse movement switches back) the key caps of the HUD - hints, the weapon and
+  system rows, the respawn line, the F1 overlay - and the legend lines of the menu show pad names ("RT" for
+  "Left mouse"; `HCJPad::ToPadMarkup`). The CONTROLS page always shows both, the pad in a third column.
+- The respawn and end-of-match screens need no menu: A or RT respawns, the scoreboard of the intermission shows itself
+  and the next match starts by itself. The intro is skipped by any pad button.
+
+**Steam Controller (2015).** It has no Windows driver of its own; Steam Input turns it into something a game
+understands. Two ways:
+
+1. *As a gamepad (recommended).* In Steam: Games > "Add a Non-Steam Game to My Library..." > Browse >
+   `HypeCubeJam.exe`. Start the game from Steam (Steam must be running, the controller switched on). In the
+   controller settings of the game (the gamepad icon on its library page, or Steam button > Controller settings while
+   it runs) choose the **Gamepad** template (or "Gamepad with Camera Controls" for the right pad as a stick with
+   mouse-like feel). The game then sees an Xbox pad and the table above applies: left stick, right touch pad = right
+   stick, the four face buttons, bumpers, triggers, the left touch pad = D-pad, Back / Start, stick click and
+   right-pad click = L3 / R3. The grips can be given any button in Steam (boost or up / down sit well there).
+2. *As mouse and keys.* Without adding the game, Steam's desktop configuration (Steam > Settings > Controller >
+   Desktop Layout) makes the right pad the mouse and the buttons keys; bind them to the keyboard controls above.
+   SETTINGS > Controller does not matter for this: the game sees a mouse and a keyboard.
+
+The game uses no Steamworks code and needs no Steam to run. Other pads work when Windows or Steam presents them as
+XInput (an Xbox One / Series pad directly; a DualShock / DualSense through Steam Input).
+
+Development: `HCJMenuCmd padtest` presses every pad key through `APlayerController::InputKey` (no hardware) and logs
+what happened (`PadTest: step=rt_fire ... ok=1`, at the end `PadTest: result=PASS steps=30 checks=36 failed=0`);
+`HCJMenuCmd nav <up|down|left|right|accept|back>` does in the open menu what the pad does and logs the entry that has
+the focus; `HCJMenuCmd pad <0|1>` is the SETTINGS switch. Not in shipping builds. What was and was not tried with a
+real pad: docs/DEVLOG_NOTES.md, item 36.
 
 ## Menu and HUD
 
@@ -118,16 +196,17 @@ Menu sizes follow the engine's DPI scaling of viewport widgets, HUD sizes `HCJUi
   "Bots and people: the fairness rules"). Then QUICK PLAY (first button: joins an open match found through Epic Online Services, hosts one when there is
   none - see "Online"), PLAY (host with bots - one click; Enter), HANGAR (ship type, hull and paint with a turning 3D preview and stat
   bars; see "Ship types, warp drive, cloak, tractor beam"), bots 0-15, hypercube 3D-5D, seed, pilot name, JOIN
-  by address, FIND GAMES and LEADERBOARDS (see "Online"), SETTINGS (mouse sensitivity, music / effects /
-  interface volume), QUIT. The choices are kept in the
+  by address, FIND GAMES and LEADERBOARDS (see "Online"), SETTINGS (mouse sensitivity, controller on / off and its
+  sensitivity, music / effects / interface volume), QUIT. The choices are kept in the
   user's `GameUserSettings.ini` (`UHCJUserSettings`). The host has no ship while in the menu and does not count as
   a combatant; PLAY starts a fresh match (`AHCJGameMode::StartMatchFromMenu`).
 - Esc in a match: RESUME, "Bot difficulty (applies now)" with the level's one-line description (host and single
   player only: the running match changes level at once and the setting is saved), HANGAR (the next ship), SETTINGS,
   CONTROLS, LEAVE TO MENU, QUIT GAME. The match is not paused (it is a network
   game). A client that leaves, loses the host or fails to connect ends up in the title menu with a line saying why.
-  Every page has a line of key caps (Enter = the big button, Esc = back, F1 = controls); CONTROLS is a two-column
-  page of all keys and of what the HUD marks mean; SETTINGS also has "In-game hints On / Off" and "Computer voice (spoken warnings) On / Off".
+  Every page has a line of key caps (Enter = the big button, Esc = back, F1 = controls; with a pad in the hand the
+  pad's: D-pad / left stick move, A select, B back); CONTROLS is a three-column
+  page of all keys, of what the HUD marks mean and of the game controller's buttons; SETTINGS also has "In-game hints On / Off" and "Computer voice (spoken warnings) On / Off".
 - F1: the same controls page as an overlay in the match (and by itself for the first 8 s of the first ship when
   hints are off).
 - Hints (`UI/HCJHints.h`, `Private/UI/HCJHUDHints.cpp`; local, nothing replicated): one panel at the bottom centre,
@@ -932,7 +1011,8 @@ hardware.
 & "F:\EpicGames\UE_5.9\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "F:\work\HypeCubeJam\HypeCubeJam.uproject" -ExecCmds="Automation RunTests HypeCubeJam; Quit" -unattended -nullrhi -nosplash -log "-ini:EditorPerProjectUserSettings:[/Script/ModelContextProtocol.ModelContextProtocolSettings]:bAutoStartServer=False"
 ```
 
-77 automation tests (about a minute). Two of them are playthroughs (`HypeCubeJam.Playthrough.*`): a real game world
+81 automation tests (about a minute; four of them `HypeCubeJam.Input.*`: the aim stick's dead zone and curve, the
+controller switch and the device in use, the menu focus, the pad names of the prompts). Two of them are playthroughs (`HypeCubeJam.Playthrough.*`): a real game world
 with the game mode, the universe and bots, ticked by hand at 30 frames per game second - a match of six hard bots to
 a frag limit of 4 and the start of the next one on another layout, and three minutes of an open match of eight bots
 (kills, portal jumps, pickups, every ship type, nobody stuck or outside its sector). About 15 and 20 s of real time.

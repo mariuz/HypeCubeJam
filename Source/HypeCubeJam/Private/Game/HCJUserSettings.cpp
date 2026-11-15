@@ -1,11 +1,13 @@
 #include "Game/HCJUserSettings.h"
 
 #include "Game/HCJBalance.h"
+#include "Game/HCJPadLogic.h"
 #include "Ship/HCJShipTypes.h"
 
 void UHCJUserSettings::Sanitize()
 {
 	MouseSensitivity = FMath::Clamp(MouseSensitivity, 0.2f, 3.0f);
+	ControllerSensitivity = FMath::Clamp(ControllerSensitivity, HCJPad::MinSensitivity, HCJPad::MaxSensitivity);
 	MusicVolume = FMath::Clamp(MusicVolume, 0.0f, 1.0f);
 	SfxVolume = FMath::Clamp(SfxVolume, 0.0f, 1.0f);
 	UiVolume = FMath::Clamp(UiVolume, 0.0f, 1.0f);

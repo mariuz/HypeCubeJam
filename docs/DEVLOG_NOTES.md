@@ -2660,8 +2660,128 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
       row, the site on GitHub Pages itself, other browsers. `PackagedWeb\itch` and the itch zip are still the old
       build. The container is 0.5 MB under the Pages limit: the next content needs texture cuts or a second chunk.
 
+## 15 Nov 2026 (twenty-first session) - game controller
+36. "Add support for My Steam Controller (2015) and xbox controller if is enabled" (the player). The game had no gamepad
+    binding at all. From commit b7b92f9 (0.19.0). No replicated property, no RPC, no lobby key changed (`ProjectVersion`
+    stays 0.2.0): the build joins 0.19.0 hosts. Nothing was committed, pushed or uploaded. **No controller was used in
+    this session: everything below was shown with injected key events, console commands and pictures.**
+    - **What "Steam Controller" means here.** It has no Windows driver: Steam Input presents it as an XInput pad (game
+      added to Steam as a non-Steam game, "Gamepad" template) or as mouse and keys (desktop layout). So the work is
+      XInput bindings plus the two recipes in the README and in `docs/README.txt`. No Steamworks SDK, nothing downloaded.
+    - **Bindings** (`AHCJPlayerController::BuildInputObjects`): a second mapping context `IMC_HCJ_Gamepad`, built in code
+      like the keyboard's, with the same actions and six of its own. Left stick thrust / strafe (dead zone 0.2 per axis),
+      right stick aim, A / B up / down, RT fire, LT torpedo, LB boost, RB next target, Y nearest enemy, X phaser /
+      blaster, D-pad up warp (hold), left cloak, right tractor (hold), down drop weapon, R3 camera, L3 controls overlay,
+      Back scoreboard (hold), Start menu, A respawn when destroyed (RT too: fire always did). Keyboard and mouse are
+      untouched and work at the same time. The triggers are bound as the engine's threshold buttons, not as axes (a
+      trigger resting a hair above zero would hold the phaser on).
+    - **Aim stick** (`HCJPad::LookDelta`): radial dead zone 0.2, rescaled, squared, 150 degrees a second at full
+      deflection times "Controller sensitivity", times the frame time (capped at 0.1 s). The mouse path (a step per
+      count) is as it was. No gameplay value changed.
+    - **"If is enabled"**: SETTINGS has "Controller (Xbox / Steam Controller)" On / Off (`bController`, default On) and
+      "Controller sensitivity" 0.2 x to 3 x (`ControllerSensitivity`). Off removes the pad's mapping context
+      (`SyncPadContext`, every frame; log line `Controller: gamepad input off`) and makes the menu swallow pad keys.
+    - **Menus** (`SHCJMenu::Navigate`): every button, stepper and slider is an entry of a focus list; D-pad, left stick
+      (`HCJPad::FStickNav`: a step, then a repeat), arrow keys and Tab move a yellow frame, left / right change a
+      stepper or slider, A / Enter press, B / Start / Esc go back. Title page: the focus starts on PLAY (A = PLAY).
+      Buttons and sliders no longer take Slate's keyboard focus (the menu widget keeps it, so a pad key always arrives
+      there); Slate's own navigation is switched off (`OnNavigation` returns Explicit to nobody). The entries are sorted
+      by their place in the widget tree after a page is built: they register while the page is built, and the order in
+      which a compiler evaluates a chain of `+ Slot()[...]` is unspecified (MSVC happened to go top to bottom; the Wasm
+      build is clang).
+    - **Prompts**: with the pad as the device used last the HUD's key caps show pad names (`HCJPad::ToPadMarkup` in
+      `AHCJHUD::DrawKeyMarkup`; the F1 overlay has its own pad table, the respawn line says "[RT] or [A]"), and the
+      menu legends switch to the pad's. CONTROLS has a third column with the pad layout.
+    - **Changed for keyboard users** (deliberate, small): the arrow keys and Tab now move the menu's own focus (Tab used
+      to walk Slate's focus through buttons and text boxes); after an arrow key, Enter presses the framed entry
+      instead of always PLAY / RESUME; a click on a button no longer leaves the keyboard focus on it. SETTINGS rows are
+      2 units closer together (two rows more in the same height).
+    - **Tests.** Four new automation tests, `HypeCubeJam.Input.*`: the stick's dead zone, curve and frame-time scaling
+      (72 directions); the switch, the sensitivity clamp and the device in use; the focus steps and the stick repeat;
+      the pad names of the prompts. **81 automation tests.**
+      - First full run: **80 of 81**, exit code 255. The failure, verbatim: `Test Completed. Result={Fail}
+        Name={OpenMatchKeepsMoving} Path={HypeCubeJam.Playthrough.OpenMatchKeepsMoving}` - `Expected 'no bot sat still
+        for 20 s' to be 0, but it was 2.` Two bots (`Bot-06`, `Bot-03`, both `retreating=1 pad=1`, 175 uu apart in
+        sector 15) sat nose to nose for 20 s: the unexplained case of item 27 ("Two bots sat nose to nose for 21 s
+        once"). The test world has bots only and no player controller; nothing of this item runs in it. The two
+        playthrough tests alone, twice: pass, pass.
+      - Second full run, on the final sources: **81 of 81, exit code 0.**
+    - **Shown without a controller.**
+      - `HCJMenuCmd padtest` (new, not in shipping builds): presses every pad key through `APlayerController::InputKey`
+        (`FInputKeyEventArgs::CreateSimulated`), a step every ten frames, and checks which handlers ran and what the
+        ship or the controller did - thrust axes for the left stick (and none inside the dead zone), yaw / pitch for the
+        right stick (and none inside it), `IsFiring` on RT and off at its release, boost, the scoreboard flag, the menu
+        opening on Start, nothing at all with the switch off, fire again with it on, the respawn request on A without a
+        ship. Editor binary, headless: `PadTest: result=PASS steps=30 checks=36 failed=0`, three times (two headless
+        runs, one rendered). The packaged build, headless: the same
+        `PadTest: result=PASS steps=30 checks=36 failed=0` (36 `ok=1` lines, no `ok=0`).
+      - `HCJMenuCmd nav <up|down|left|right|accept|back>` (new): what the pad does in the open menu, with a log line
+        naming the entry in focus. Headless, the in-match menu: RESUME -> down -> "Bot difficulty (applies now)" ->
+        right (difficulty 1) -> left (0) -> HANGAR -> SETTINGS -> accept (the SETTINGS page, focus on "Mouse
+        sensitivity") -> down ("Controller (Xbox / Steam Controller)") -> up twice (wraps to BACK) -> back (the menu,
+        RESUME) -> up (QUIT GAME) -> back (menu closed). Rendered (the title menu does not open under `-nullrhi`):
+        title page, down from PLAY to HANGAR; back on the title page "accept" on PLAY started the match.
+      - One rendered run of the editor binary (1280x720 window at the top left of the desktop, 69 s from start to
+        exit, about 45 s of it with the window up - somebody was at this PC and the window takes keyboard and mouse
+        when it opens): pictures of the title page with the frame on HANGAR, SETTINGS with the two new rows, CONTROLS
+        with three columns (it fits 1280x720 with about 75 px to spare at each side), the HUD with pad names
+        ("[D-left]" in the cloak hint, "[LT]", "[D-up] WARP", "[X] switch to blaster"), the F1 overlay with the pad
+        table, the in-match menu with the pad legend and the frame on RESUME. The pictures are in
+        `Saved/Screenshots/HCJCapture` (not kept in `Media`). After them the frame of a focused stepper row was
+        changed from a solid yellow band (the value could not be read on it) to a faint one; that was not looked at
+        again.
+    - **Verification.** `HypeCubeJamEditor` (Win64 Development) built, 0 errors, 0 warnings of the project.
+      - Playthrough suite, editor binary, headless, `--port 7910`: **8 of 8**, 519 s, exit code 0
+        (`Saved\Playthrough\20261115_222321`). It ran before two last menu-only changes (the sorting of the focus
+        list; Esc on CONNECTING back to what it did); the editor suite was not run again after them.
+      - Second full automation run (above): 81 of 81 on the final sources.
+      - **Packaged** (the command of the README): exit code 0, BUILD SUCCESSFUL, 192 s; 1095 packages in the cook (1066
+        cooked, 29 skipped for the platform), 0 errors, 0 warnings. `docs\tools\make_zip.ps1`:
+        `Packaged\mariuz_HypeCubeJam.zip` 585.2 MB (613,631,179 bytes), 884.2 MB unpacked, 48 files; `python -I` /
+        `zipfile.testzip()`: nothing wrong, 48 entries, forward slashes, no `.pdb`; the `README.txt` in it has the
+        controller section.
+      - The packaged build, headless (`-nullrhi`, port 7934): the in-match menu walked with `nav` as above (the same
+        entries in the same order), `padtest` PASS; one error line, the known CelestialVault message.
+      - Playthrough suite on the packaged build (`--binary packaged --port 7940`, headless): **6 of 8**, 490 s, exit
+        code 1 (`Saved\Playthrough\20261115_224003`). The two failures, verbatim (shortened after the first fields):
+        `difficulty_easy          FAIL       29     234  easy: 1 "stuck" event(s), first: {'event': 'stuck', 'name':
+        'Bot-05', 't': '30', 'seconds': '21', 'sector': '6', ... 'state': '0', 'speed': '1320', 'type': 'ftr', ...
+        'pad': '1', ... 'boosting': '1', ...}` and `difficulty_normal        FAIL       31     235  normal: 1 "stuck"
+        event(s), first: {'event': 'stuck', 'name': 'Bot-03', 't': '123', 'seconds': '21', 'sector': '3', ... 'state':
+        '2', 'speed': '28', 'type': 'sct', ... 'retreating': '1', ... 'pad': '1', ... 'wander_point': '1', ...
+        'cloaked': '1', ...}`. A bot that stayed within 2.5 m for 21 s on its way to a pickup pad, once in each of the
+        two matches (Bot-05 from its ninth second, pressing on at 1320 uu/s; it went on to kill and die as usual).
+        The four bot scenarios again (`--only difficulty_easy,difficulty_normal,difficulty_hard,match_cycle --port
+        7950`): **5 of 5** (the four and the sum), 242 s, exit code 0 (`Saved\Playthrough\20261115_224946`).
+      - **What the stuck bots say about this change - not settled.** No `stuck` event is in the logs of the thirteen
+        suite runs kept from the sessions before; this session has three incidents (the automation test above, these
+        two). The code of this item is input, menu and HUD of the local player: the automation world has no player
+        at all, and in a bots-only process the local player sits in the (headless) title menu, where the new menu
+        code ticks but touches no ship. No path from it to a bot's movement was found by reading, all three bots
+        were flying to a pad, and the rerun was clean - but the 0.19.0 build was not run side by side for a rate
+        (a copy is in `F:\work\HCJ_final_19`).
+    - **Not verified - nobody has held a controller on this game.**
+      - Whether an Xbox pad or a Steam Controller is seen at all by the packaged build (the engine's `XInputDevice`
+        plugin is enabled by default; no device was attached or looked for), the feel of the aim stick (150 degrees a
+        second, squared curve, no invert option, no smoothing), whether RT / LT arrive as the threshold buttons on
+        every pad, stick drift, vibration (none is sent).
+      - The left stick in the menus on real hardware (`OnAnalogValueChanged` is assumed to reach the menu widget before
+        the viewport); the D-pad's key repeat; Start opening the menu and the same press not closing it again (key
+        repeats of A, B and Start are ignored for this - by reading only); A / B in a menu while a text box has the
+        keyboard focus.
+      - Steam Input: the non-Steam-game recipe and the desktop layout are written from how Steam Input works, not
+        from a try.
+      - The mouse: no menu page was clicked since the buttons stopped taking the keyboard focus (a click handler does
+        not depend on it); the focus frame going away when the mouse moves was not seen.
+      - Pad prompts: the device switch was only driven by injected events; "Middle mouse" (hold the target) and "H"
+        (hints) have no pad button and keep their keyboard names in the prompts.
+      - HANGAR, FIND GAMES, LEADERBOARDS, QUICK PLAY and CONNECTING were not walked with `nav` (same code as the pages
+        that were); text boxes (seed, pilot name, address) cannot be filled with a pad.
+      - The web (Wasm) build was not compiled: nothing Windows-only was added, the only new engine calls are Enhanced
+        Input, Slate and `FInputKeyEventArgs` (the last one in non-shipping code only).
+
 ## Measurements
-- Automation tests: 9 at the start, 77 now (items 33 and 34: 77 of 77), all passing (added: the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
+- Automation tests: 9 at the start, 81 now (item 36: 81 of 81; items 33 and 34: 77 of 77), all passing (added: the game controller - aim stick, switch, menu focus, prompt names -; the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station
   placement, lead aim).
 - Frame rate (editor binary, -game, 8 s averages): 101-128 fps with basic shapes (`-HCJNoAssets`), 98-129 fps
@@ -2672,6 +2792,11 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
   also with basic shapes only.
 
 ## Not done / open
+- Item 36 (game controller): **no controller was attached or used.** The bindings, the SETTINGS switch, the menu
+  focus and the pad prompts were shown with injected key events (`HCJMenuCmd padtest`, `HCJMenuCmd nav`), unit tests
+  and pictures. Open: an Xbox pad and a Steam Controller in the hand (is it seen, the feel of the aim stick, the left
+  stick and Start in the menus), Steam Input's two recipes, the mouse on the menu after the buttons stopped taking the
+  keyboard focus, the Wasm build (not compiled). No invert-Y, no vibration, no on-screen keyboard for the text boxes.
 - Item 34 (review fixes for the voice and the online extras, packaged as `Packaged\mariuz_HypeCubeJam.zip`): of the
   twelve fixes one was seen working in a run (the voice fades when it is switched off); the others were checked by
   reading, the unit tests and the suites. Nobody has heard the voice. The web build compiles and links with all of
