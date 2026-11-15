@@ -228,11 +228,21 @@ bool AHCJPlayerController::TickIntro(float DeltaTime)
 	if (!bIntroChecked)
 	{
 		bIntroChecked = true;
+#if PLATFORM_WASM
+		// The web build has no movie decoder (the Media Framework players are Windows / desktop plugins) and the
+		// movie is not staged there: straight to the title menu.
+		if (!GIntroShown)
+		{
+			GIntroShown = true;
+			UE_LOG(LogHCJ, Log, TEXT("Intro: skipped in the web build (no movie player); the title menu opens"));
+		}
+#else
 		if (HCJIntro::ShouldPlay(FCommandLine::Get(), FApp::GetProjectName(), FApp::CanEverRender(), IsRunningDedicatedServer(), GIntroShown))
 		{
 			GIntroShown = true;
 			StartIntro();
 		}
+#endif
 	}
 	if (!IntroWidget.IsValid() || IntroPlayer == nullptr)
 	{

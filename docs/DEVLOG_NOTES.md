@@ -1616,6 +1616,135 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
     - Judged from logs, bot matches, the test runs and still pictures. Nobody has played against the new bots, clicked
       QUICK PLAY with a mouse, or joined a match of another PC with it.
 
+## 15 Nov 2026 (thirteenth session) - web build (WebAssembly + WebGPU)
+28. "Build a web version". The engine's Wasm platform (`Engine/Platforms/Wasm`, UE 5.9 Preview 1; its `Docs/` and the
+    `Skills/web-deploy` skill were followed) with Emscripten 6.0.10 from `F:\work\tools\emsdk`
+    (`WASM_EMSDK_ROOT` set per command, nothing system-wide). The game runs in Chrome: title menu, hangar,
+    settings, a match against bots, both renderer tiers. Nothing was uploaded.
+    - **What the web build is**: single-player against bots. A browser cannot host and has no online subsystem, so
+      on Wasm PLAY ("a match against bots") is the primary button and QUICK PLAY, the join-by-address row, FIND GAMES
+      and LEADERBOARDS (title and pause menu) are not built into the menu; two lines say "Online play ... is in the
+      Windows build". The match is a standalone match (the engine drops `?listen` on Wasm; `LocalMapOptions=` is empty
+      there). The intro movie is skipped (no media player plugin on the web) and not staged.
+    - **Changes, all behind the platform** (`PLATFORM_WASM` is the engine's define, `HAL/Platform.h`):
+      - `HypeCubeJam.Build.cs`: `HCJ_WITH_EOS` = 0 on Wasm, 1 elsewhere; `EOSShared`, `EOSSDK`, `Sockets` only with it.
+      - `Private/Online/HCJEOSSubsystem.cpp`: the whole file inside `#if HCJ_WITH_EOS` (not a line changed otherwise);
+        `Private/Online/HCJEOSSubsystemWeb.cpp` (new, `#if !HCJ_WITH_EOS`): the same class as a stub that is always
+        `Disabled` and reads no config.
+      - `Private/UI/HCJMenu.cpp`: `#if PLATFORM_WASM` blocks (above). `Private/Game/HCJPlayerController.cpp`:
+        `TickIntro` skips the intro on Wasm.
+      - `HypeCubeJam.uproject`: `EOSShared` and `WmfMedia` get `"PlatformDenyList": ["Wasm"]`.
+      - `Config/Wasm/WasmEngine.ini` (page title, `StartMode=Click` - the click a browser needs for sound and pointer
+        lock -, `bInjectIsolationHeaders=True` for GitHub Pages, both mobile tiers, no `?listen`),
+        `Config/Wasm/WasmGame.ini` (`IniSectionDenylist=HypeCubeJam.EOS` and the five key names, `bSkipMovies=True`
+        plus `!DirectoriesToAlwaysStageAsNonUFS=ClearArray` - both are needed, UAT stages `Content/Movies` by itself),
+        `Config/Wasm/WasmDeviceProfiles.ini` (texture caps, below). None of the three is read on Windows.
+      - `.gitignore`: `PackagedWeb/`. Tools: `docs/tools/web_fixtures.json` (harness fixtures), `web_secret_scan.py`,
+        `web_split_for_pages.py`, `web_plain_server.py`.
+      - Windows after the changes: `HypeCubeJamEditor Win64 Development` built (up to date), 71 of 71 automation
+        tests pass (exit code 0). The Windows package and `Packaged/` were not touched.
+    - **Commands** (engine root `F:\EpicGames\UE_5.9`, `set WASM_EMSDK_ROOT=F:\work\tools\emsdk` first):
+      - SDK: `RunUAT.bat Turnkey -command=VerifySdk -platform=Wasm` -> `Status=Valid, Current_Sdk=6.0.10`.
+      - Package: `RunUAT.bat BuildCookRun -project=F:\work\HypeCubeJam\HypeCubeJam.uproject -noP4 -platform=Wasm
+        -clientconfig=Shipping -build -cook -stage -pak -iostore -package -archive
+        -archivedirectory=F:\work\HypeCubeJam\PackagedWeb\Ship -unattended -utf8output -nocompileeditor
+        -AdditionalCookerOptions="-unattended -nopause -nosplash -nullrhi"` (`-clientconfig=Development` and
+        `PackagedWeb\Dev` for the test stage: its page takes `?args=` and console commands). Delete the archive folder
+        first: files of an earlier stage stay in it otherwise.
+      - Check: `python Engine\Platforms\Wasm\Build\Tools\deploy\check_stage.py PackagedWeb\Ship\Wasm` (all passed;
+        release scan 0 findings), `python docs\tools\web_secret_scan.py PackagedWeb\Ship\Wasm
+        Engine\Binaries\Win64\UnrealPak.exe <scratch folder>`.
+      - Run: `set PROBE_CHROME=C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`, then
+        `python Engine\Platforms\Wasm\Build\Tools\web\webrun.py run --stage PackagedWeb\Dev\Wasm --fixtures
+        docs\tools\web_fixtures.json --fixture hcj_tour --port 8080 --out <dir>` (Development: `hcj_tour`,
+        `hcj_scores`; Shipping: `hcj_click_play`, `hcj_click_soak`, which click instead of running console commands;
+        `--query tier=forward` for the other tier). By hand: `python Engine\Platforms\Wasm\Build\Tools\web\serve.py
+        --root PackagedWeb\Ship\Wasm --port 8080`, then `http://127.0.0.1:8080/index.html`.
+      - Hosting copies: `python docs\tools\web_split_for_pages.py PackagedWeb\Ship\Wasm PackagedWeb\GitHubPages` and
+        `... PackagedWeb\itch --limit-mb 200`, then the zip of the `itch` folder.
+    - **Times** (8 cores, while two other jobs used the machine): first Development BuildCookRun 17 min 8 s (compile
+      and link of the game module against the engine's prebuilt web libraries 211 s; the cook of 1080 packages 13 min -
+      every material was compiled to WGSL for both tiers, 337 shader maps, no failure). Shipping BuildCookRun 28 min
+      47 s: the link 19 min (wasm-opt alone about 15 min, 241 MB -> 142 MB), the cook 3 min (shaders from the cache),
+      Brotli quality 11 of the staged files 6.5 min. A restage without cook 7 min.
+    - **In the browser** (Chrome 157, GTX 950, 1920x1080 off-screen window, GPU shared with other running copies of
+      the game - no conclusion about speed): compatibility check passed; READY after 4.4-5.7 s on the Shipping stages
+      (local server, files from disk); the deferred tier (`SP_WEBGPU_ES3_1_DEFERRED`) is picked by default, the forward
+      tier (`SP_WEBGPU_ES3_1`) runs with `?tier=forward`; 0 WebGPU errors, no `UE_RUN ERROR`, no missing package, no
+      stub shader in any run; 62-66 pipelines created. Frame rate seen (frames presented per second, Development
+      stage): 51 fps in a match on the deferred tier, 55 on the forward tier, 31-39 in the title menu. Sound: the
+      WebAudio context runs at 48 kHz and frames are played all through (75 underruns at the start of the first run);
+      waves are cooked as RAD Audio (the web default; the MP3-imported Lyria tracks and the Lyra stems alike, 7.5 MB
+      together - both sets were kept).
+      Every material was compiled for both tiers (no cook error, no stub shader at run time). The pictures of both
+      tiers show ships and their paint, rocks of three themes, nebula and stars, portals, a wormhole, pickup pads, a
+      phaser beam, explosions, the shield ring, the HUD and the menus - nothing black or missing in them. Not compared
+      side by side with Windows: how much the second directional light adds on the forward tier, the decorative
+      pebbles of `M_HCJ_DecorRock` (world position offset), torpedoes, the station and its turrets, black holes, the
+      cloak and warp effects (none of them was looked for in a picture).
+      Bots fight: after 80 s the scoreboard showed 26 kills among seven bots (`Media/115`).
+      Stability: the Shipping stage (deferred tier) ran a match for 10 minutes without an error line - the first match
+      ended at the frag limit and the next one started (`Media/119`, `120`); the wasm heap stayed at 512 MiB over 64
+      samples, the JavaScript heap went from 17 to 25 MB. The ship of the player was not flown in it.
+    - **Size**. First cook: container (`.ucas`) 208.7 MB, of which 104 MB the 4K maps of the hover-vehicle pack (the
+      turret parts, and barrels / lamp poles that an old `DirectoriesToAlwaysCook` line still pulls in). With
+      `WasmDeviceProfiles.ini` (every world / vehicle / weapon / character / effects / cinematic / HLOD texture group
+      at most 1024, sky 2048; the cook drops the larger mips) 99.3 MB. The movie (9.5 MB) is not staged. Shipping
+      wasm 142.3 MB (26.5 MB as Brotli).
+      Final stage `PackagedWeb\Ship\Wasm`: 56 files, 286.5 MB with the `.br` copies; without them 33 files, 261.4 MB.
+      Download of a first visit: **forward tier 252 MB, deferred tier 261 MB** on a host that sends the files as they
+      are (GitHub Pages, itch.io); **134 MB / 138 MB** on a host that serves the `.br` copies (nginx / Apache / IIS
+      with the engine's templates; measured by the harness: 133.8 MB before READY on the forward tier). Largest files:
+      `HypeCubeJam-Wasm-Shipping.wasm` 142.3 MB, `HypeCubeJam-Wasm.ucas` 99.3 MB, `HypeCubeJam-Wasm.pak` 9.2 MB,
+      the deferred tier's shader libraries 5.6 + 2.9 MB.
+    - **Hosts**.
+      - GitHub Pages (100 MB a file, about 1 GB a site, no headers): `PackagedWeb\GitHubPages` - 36 files, 261.4 MB,
+        the wasm in three parts of at most 50 MB (the page's own `parts` format in `wasm-cache.json`, joined by its
+        service worker), the container 99.3 MB as it is (it is read in byte ranges and cannot be cut; **0.7 MB under
+        100 000 000 bytes** - more content needs another cut or a second pak chunk), no `.br`, a `.nojekyll` file.
+        Tested with `docs/tools/web_plain_server.py` (no isolation headers, byte ranges): the page logged "PAGE
+        ISOLATION reload under the service worker", passed its check after the reload, joined the wasm and ran a match.
+      - itch.io HTML5 (500 MB extracted, 200 MB a file, 1000 files): `PackagedWeb\mariuz_HypeCubeJam_web.zip` -
+        154.5 MB, 33 files, 261.4 MB extracted, largest file 142.3 MB, `index.html` at the root. The same folder
+        (`PackagedWeb\itch`) ran from the engine's server. Not tested on itch.io itself.
+    - **The EOS secret**: the web build has no EOS code and the section is not staged. `web_secret_scan.py` searched
+      the 56 staged files and the 1077 files extracted from the staged `.pak` for the five values of
+      `[HypeCubeJam.EOS]` and the section name (UTF-8 and UTF-16): 0 hits; the same script finds all of them in the
+      Windows stage's `.pak`. The staged `DefaultEngine.ini` has 7 sections, none of them EOS.
+    - **Problems and workarounds**.
+      - The harness looks for Chrome in `C:\Program Files`; here it is in `Program Files (x86)`: `PROBE_CHROME`.
+      - `-DirectoriesToAlwaysStageAsNonUFS=(Path="Movies")` in the Wasm ini did not keep the movie out, nor did
+        `bSkipMovies=True` alone: both routes stage it (see the ini).
+      - The container was over GitHub's 100 MB twice (208.7, then 105.7 MB: one 4K normal map sat in the
+        `HierarchicalLOD` texture group) - texture caps. The Shipping wasm is over it by design - the split script.
+      - The game's own log lines (`LogHCJ`, verbosity Log) do not reach the browser console (it shows Display and
+        above; `-FullStdOutLogOutput` changed nothing) and a web run left no log file in the browser's storage that
+        the harness could fetch: kills were read from the scoreboard and the kill feed in pictures, not from log
+        lines. Portal jumps of bots were not counted.
+      - A Shipping page drops `?args=` and console commands: its runs are driven by clicks at fixed places
+        (1920x1080).
+    - **Deploy** (not done - nothing was uploaded).
+      - itch.io: new project, kind "HTML"; upload `mariuz_HypeCubeJam_web.zip`, tick "This file will be played in
+        the browser"; Embed options: viewport 1280 x 720 (or larger), the fullscreen button, and
+        **"SharedArrayBuffer support" on** (only that isolates the game's frame; check that it stayed on after
+        saving). Chrome or Edge on a desktop.
+      - GitHub Pages: publish the contents of `PackagedWeb\GitHubPages` as the site root (a `gh-pages` branch or a
+        `docs` folder; `.nojekyll` included). No `_headers` rule is read there; the service worker adds the
+        isolation headers and the page reloads once on the first visit. Each update: publish the whole folder again.
+      - Any server with header control: `PackagedWeb\Ship\Wasm` with `PackagedWeb\deploy-plan-static` (nginx.conf /
+        web.config from the engine; `.br` served for whole-file requests). Never upload `Ship\Wasm-Debug`.
+    - Pictures (1920x1080, taken by the harness): `Media/110_web_title_menu.png`, `111_web_hangar.png`,
+      `112_web_settings.png`, `113_web_match_deferred_tier.png`, `114_web_match_forward_tier.png`,
+      `115_web_scoreboard_bots_fighting.png` (Development stage), `116_web_shipping_title.png`,
+      `117_web_shipping_match.png`, `118_web_shipping_forward_tier.png`, `119_web_shipping_after_5_minutes.png`,
+      `120_web_shipping_after_10_minutes.png` (Shipping stage).
+    - **Not verified**: sound by ear (only that the audio device runs and plays frames); the game on itch.io or
+      GitHub Pages themselves, in Edge, Firefox, Safari or on a phone; a download over a real network; whether
+      settings survive a reload (browser storage); QUIT in a browser tab; playing with mouse and keyboard by a person
+      (the harness clicked PLAY and held one key). No pipeline prewarm list was recorded (the engine's
+      `-WebGPUPipelineRecord` / `pipeline_list.py`), so things flicker in for a few frames the first time they are
+      drawn (about 1300 draws skipped in the first 40 s of a run).
+
 ## Measurements
 - Automation tests: 9 at the start, 71 now, all passing (added: two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station

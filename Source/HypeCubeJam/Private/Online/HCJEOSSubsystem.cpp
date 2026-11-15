@@ -1,5 +1,8 @@
 #include "Online/HCJEOSSubsystem.h"
 
+// The web build (Wasm) has no EOS SDK: there HCJEOSSubsystemWeb.cpp is the whole class (always switched off).
+#if HCJ_WITH_EOS
+
 #include "HypeCubeJam.h"
 
 #include "Engine/GameInstance.h"
@@ -1116,3 +1119,5 @@ void UHCJEOSSubsystem::QueryLeaderboard(int32 Index)
 			}
 		}), &THCJEosCall<EOS_Leaderboards_OnQueryLeaderboardRanksCompleteCallbackInfo>::Thunk);
 }
+
+#endif // HCJ_WITH_EOS

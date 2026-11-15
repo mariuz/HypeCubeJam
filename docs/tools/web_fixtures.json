@@ -1,0 +1,99 @@
+{
+ "about": "HypeCubeJam fixtures for the engine's web harness (Engine/Platforms/Wasm/Build/Tools/web/webrun.py run --fixtures <this file> --fixture <name>). Development stages only: the exec= steps run console commands (HCJMenuCmd), which a Shipping page refuses. See docs/DEVLOG_NOTES.md, item 28.",
+ "fixtures": {
+  "hcj_tour": {
+   "about": "title menu, hangar, settings, then PLAY and 100 s of a match against bots with page shots",
+   "args": "-log {harness} {time_origin}",
+   "stop_after_ready": 150,
+   "stop_after": 0,
+   "timeout": 600,
+   "page": [
+    "--input-anchor",
+    "READY",
+    "--input",
+    "2:click=960,540;6:shot=title;8:exec=HCJMenuCmd hangar;14:shot=hangar;16:exec=HCJMenuCmd settings;20:shot=settings;22:exec=HCJMenuCmd main;25:exec=HCJMenuCmd play;40:shot=match_a;50:down=KeyW;60:shot=match_b;61:up=KeyW;80:shot=match_c;110:shot=match_d;140:shot=match_e"
+   ],
+   "expect": {
+    "ready": true
+   },
+   "frames": false,
+   "net": "none"
+  },
+  "hcj_soak": {
+   "about": "PLAY, then 10 minutes of a match (stability, memory every 10 s)",
+   "args": "-log {harness} {time_origin}",
+   "stop_after_ready": 620,
+   "stop_after": 0,
+   "timeout": 900,
+   "page": [
+    "--input-anchor",
+    "READY",
+    "--input",
+    "2:click=960,540;6:exec=HCJMenuCmd play;300:shot=soak_5min;600:shot=soak_10min"
+   ],
+   "expect": {
+    "ready": true
+   },
+   "frames": false,
+   "net": "none",
+   "mem_every": 10,
+   "stall_s": 600
+  },
+  "hcj_scores": {
+   "about": "PLAY, 75 s of the match, then the scoreboard (kills of every pilot) in a page shot",
+   "args": "-log {harness} {time_origin}",
+   "stop_after_ready": 95,
+   "stop_after": 0,
+   "timeout": 400,
+   "page": [
+    "--input-anchor",
+    "READY",
+    "--input",
+    "2:click=960,540;5:exec=HCJMenuCmd play;80:exec=HCJMenuCmd scores;86:shot=scores;88:exec=HCJMenuCmd scores"
+   ],
+   "expect": {
+    "ready": true
+   },
+   "frames": false,
+   "net": "none"
+  },
+  "hcj_click_play": {
+   "about": "Shipping stages (no exec=): the start click, a click on PLAY in the title menu at 1920x1080, then shots of the match; W held for a while",
+   "args": "{harness} {time_origin}",
+   "stop_after_ready": 100,
+   "stop_after": 0,
+   "timeout": 400,
+   "page": [
+    "--input-anchor",
+    "READY",
+    "--input",
+    "2:click=960,540;7:shot=title;9:click=960,365;30:shot=match_a;35:down=KeyW;55:shot=match_b;56:up=KeyW;58:key=Tab;90:shot=match_c"
+   ],
+   "expect": {
+    "ready": true
+   },
+   "frames": false,
+   "net": "none"
+  },
+  "hcj_click_soak": {
+   "about": "Shipping stages: the start click, a click on PLAY, then 10 minutes of the match (the player's ship is not flown; it respawns by itself), memory every 10 s, shots at 5 and 10 minutes",
+   "args": "{harness} {time_origin}",
+   "stop_after_ready": 620,
+   "stop_after": 0,
+   "timeout": 900,
+   "page": [
+    "--input-anchor",
+    "READY",
+    "--input",
+    "2:click=960,540;9:click=960,365;300:shot=soak_5min;600:shot=soak_10min"
+   ],
+   "expect": {
+    "ready": true
+   },
+   "frames": false,
+   "net": "none",
+   "mem_every": 10,
+   "stall_s": 600
+  }
+ }
+}

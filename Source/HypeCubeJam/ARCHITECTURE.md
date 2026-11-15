@@ -540,3 +540,12 @@ D -> C `AHCJPlayerState::GetCurrentSector`.
   every `HCJEos::LobbyHeartbeatSeconds`.
 - Nothing of it is replicated and no gameplay depends on it. The game connection of a joiner is the engine's IP
   net driver to an address read from the lobby; EOS P2P is not used (devlog item 27 says what was looked at).
+
+## Web build (Wasm; devlog item 28)
+- Single-player against bots in a browser (WebAssembly + WebGPU, the engine's `Wasm` platform). Everything web-specific
+  is behind the platform: `#if PLATFORM_WASM` in `UI/HCJMenu.cpp` (no online buttons) and
+  `Game/HCJPlayerController.cpp` (no intro movie), `HCJ_WITH_EOS` (0 on Wasm, set in `HypeCubeJam.Build.cs`) around
+  the whole of `Online/HCJEOSSubsystem.cpp`, with `Online/HCJEOSSubsystemWeb.cpp` as the always-off stub of the same
+  class, and `Config/Wasm/*.ini` (page settings, config sections that must not be staged, texture caps).
+- The match there is a standalone world (no `?listen`): authority code, bots and the title menu run as on a listen
+  host. Nothing else in the game knows about the web.

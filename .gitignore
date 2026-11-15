@@ -36,3 +36,7 @@ SourceAssets/
 Packaged/
 Media/raw/
 *.avi
+
+# web (Wasm) build stage and zip
+PackagedWeb/
+Media/*.mp4

@@ -364,6 +364,13 @@ TSharedRef<SWidget> SHCJMenu::BuildMain()
 		];
 	}
 
+#if PLATFORM_WASM
+	// The web build is single-player: a browser cannot host or reach a host, and there is no online service.
+	Box->AddSlot().AutoHeight().Padding(Row)
+	[
+		MakeButton(TEXT("PLAY   (a match against bots)"), [WeakOwner]() { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuPlay(); } }, true, 24.0f)
+	];
+#else
 	Box->AddSlot().AutoHeight().Padding(Row)
 	[
 		MakeButton(TEXT("QUICK PLAY   (join an open match, or host one)"), [WeakOwner]() { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuQuickPlay(); } }, true, 24.0f)
@@ -372,6 +379,7 @@ TSharedRef<SWidget> SHCJMenu::BuildMain()
 	[
 		MakeButton(TEXT("PLAY   (host a match with bots)"), [WeakOwner]() { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuPlay(); } }, false, 20.0f)
 	];
+#endif
 	Box->AddSlot().AutoHeight().Padding(Row)
 	[
 		SNew(SHorizontalBox)
@@ -419,6 +427,16 @@ TSharedRef<SWidget> SHCJMenu::BuildMain()
 			[](const FString& Text) { UHCJUserSettings::Get().PlayerName = Text.Left(20); }, 260.0f)
 	];
 
+#if PLATFORM_WASM
+	Box->AddSlot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 16.0f, 0.0f, 0.0f))
+	[
+		MakeLabel(TEXT("Web build: single-player against bots. Online play (quick play, find games,"), 13.0f, MenuDim)
+	];
+	Box->AddSlot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 0.0f))
+	[
+		MakeLabel(TEXT("join by address, leaderboards) is in the Windows build."), 13.0f, MenuDim)
+	];
+#else
 	Box->AddSlot().AutoHeight().Padding(FMargin(0.0f, 16.0f, 0.0f, 5.0f))
 	[
 		SNew(SHorizontalBox)
@@ -474,6 +492,7 @@ TSharedRef<SWidget> SHCJMenu::BuildMain()
 		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
 		.ColorAndOpacity(FSlateColor(MenuDim))
 	];
+#endif
 
 	Box->AddSlot().AutoHeight().Padding(FMargin(0.0f, 10.0f, 0.0f, 0.0f))
 	[
@@ -610,10 +629,12 @@ TSharedRef<SWidget> SHCJMenu::BuildPause()
 		[
 			MakeButton(TEXT("CONTROLS"), [this]() { SetPage(EHCJMenuPage::Controls); }, false, 20.0f)
 		]
+#if !PLATFORM_WASM
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
 		[
 			MakeButton(TEXT("LEADERBOARDS"), [this]() { SetPage(EHCJMenuPage::Leaderboards); }, false, 20.0f)
 		]
+#endif
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
 		[
 			MakeButton(TEXT("LEAVE TO MENU"), [WeakOwner]() { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuLeave(); } }, false, 20.0f)
