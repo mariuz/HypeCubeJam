@@ -2,7 +2,9 @@
 
 Multiplayer free-for-all space shooter for Unreal Engine 5.9 (C++; looks and sounds from Fab packs, see "Assets").
 
-**Play it:** https://mariuz.itch.io/hypecubejam (Windows build). Made for the 2026 Epic AI MegaJam by one person
+**Play it:** https://mariuz.itch.io/hypecubejam (Windows build), or in the browser at
+https://mariuz.github.io/HypeCubeJam/ (experimental: bots only, needs WebGPU, about 250 MB on the first visit;
+served from the `gh-pages` branch). Trailer: https://youtu.be/iwO5n33EsUc. Made for the 2026 Epic AI MegaJam by one person
 directing AI coding agents (Claude Code).
 
 **About this repository:** it holds the C++ source, config, docs, build scripts and the project's own generated
