@@ -109,6 +109,20 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UStaticMeshComponent> FarGlowMesh;
 
+	/** Rune glyphs on both faces of the ring (item 26): quads with M_HCJ_PortalRunes, one glyph each; they turn with the lip. */
+	UPROPERTY(Transient)
+	TObjectPtr<UInstancedStaticMeshComponent> RuneMesh;
+
+	/** Rays of light radiating from behind the ring: one quad in the portal's plane with M_HCJ_PortalRays. */
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMeshComponent> RayMesh;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> RuneMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> RayMaterial;
+
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> SwirlMaterial;
 
@@ -121,6 +135,8 @@ protected:
 	/** Local world time of the last passage (see NotifyPassage); very negative when none. */
 	float FlashTime = -1000.0f;
 	float GlyphAngle = 0.0f;
+	/** The flash parameter of the rune and ray materials is above zero (so that it is set back once). */
+	bool bFlashShown = false;
 	float CoreBrightness = 1.0f;
 	float CardBaseScale = 1.0f;
 	FLinearColor GlowColor = FLinearColor::White;

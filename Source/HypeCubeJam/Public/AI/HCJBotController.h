@@ -75,6 +75,8 @@ public:
 
 	/** Development aid (HCJMenuCmd peace): every bot of this process holds still and holds its fire, for pictures. */
 	static void SetDebugIdle(bool bIdle);
+	/** Development: while idle, bots leave their trigger as "HCJMenuCmd enemyfire" set it (pictures of a beam seen from the side). */
+	static void SetDebugIdleKeepsFire(bool bKeep);
 	/**
 	 * Replaces the engine's focus-based logic: the control rotation is owned by TickAim; this only makes the
 	 * pawn face the control rotation (APawn::FaceRotation) when bUpdatePawn is set.

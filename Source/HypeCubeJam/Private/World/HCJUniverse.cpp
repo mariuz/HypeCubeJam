@@ -77,6 +77,26 @@ AHCJUniverse::AHCJUniverse()
 	BaseMaterial = MaterialFinder.Object;
 }
 
+void AHCJUniverse::ApplySectorLighting(int32 Sector)
+{
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+	const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
+	SunLight->SetIntensity(Settings.SunIntensity);
+	FillLight->SetIntensity(Settings.FillIntensity);
+	if (Layouts.IsValidIndex(Sector))
+	{
+		FVector BackDirection;
+		FLinearColor BackColor;
+		AHCJSpaceBackdrop::MakeBacklight(Config.Seed, Sector, Layouts[Sector].Tint, -SunLight->GetComponentRotation().Vector(), BackDirection, BackColor);
+		// The light travels from the back light into the scene.
+		FillLight->SetWorldRotation((-BackDirection).Rotation());
+		FillLight->SetLightColor(FMath::Lerp(BackColor, FLinearColor::White, 0.25f));
+	}
+}
+
 AHCJUniverse* AHCJUniverse::Get(const UObject* WorldContextObject)
 {
 	const AHCJGameState* GameState = AHCJGameState::Get(WorldContextObject);
@@ -109,6 +129,7 @@ void AHCJUniverse::Rebuild(const FHCJMatchConfig& InConfig)
 		// Before anything is built or anybody fires: pulls in meshes, effects and sounds in one go.
 		UHCJAssetSettings::PreloadAll();
 		LoadRockMeshes();
+		ApplySectorLighting(INDEX_NONE);
 	}
 
 	Graph.Build(Config.Dimension, Config.Seed, Config.EdgeProbability);
@@ -846,6 +867,7 @@ UInstancedStaticMeshComponent* AHCJUniverse::CreateRockComponent(int32 Sector, i
 	// Textured rock, pulled a little towards the sector tint so that the sectors still read differently.
 	const FLinearColor RockTint = FMath::Lerp(FLinearColor::White, Layouts[Sector].Tint, Settings.AsteroidTintStrength) * Settings.AsteroidBrightness;
 
+	// (Item 26 tried hierarchical instances here: no faster on this card - 92 against 97 fps in the densest field - so not kept.)
 	UInstancedStaticMeshComponent* Component = NewObject<UInstancedStaticMeshComponent>(this, NAME_None, RF_Transient);
 	Component->SetMobility(EComponentMobility::Static);
 	Component->SetStaticMesh(RockMeshes[Variant]);
@@ -859,6 +881,15 @@ UInstancedStaticMeshComponent* AHCJUniverse::CreateRockComponent(int32 Sector, i
 			{
 				UMaterialInstanceDynamic* Material = UMaterialInstanceDynamic::Create(SlotMaterial, this);
 				Material->SetVectorParameterValue(Settings.AsteroidTintParameter, BaseValue * RockTint);
+				// Rim light from the back light of this sector's sky, and craters (M_Asteroid; ignored by a material without them).
+				FVector BackDirection;
+				FLinearColor BackColor;
+				AHCJSpaceBackdrop::MakeBacklight(Config.Seed, Sector, Layouts[Sector].Tint, -SunLight->GetComponentRotation().Vector(), BackDirection, BackColor);
+				Material->SetVectorParameterValue(TEXT("Rim Color"), FMath::Lerp(BackColor, FLinearColor::White, 0.3f));
+				Material->SetVectorParameterValue(TEXT("Rim Dir"), FLinearColor(BackDirection));
+				Material->SetScalarParameterValue(TEXT("Rim Strength"), Settings.RockRimStrength);
+				Material->SetScalarParameterValue(TEXT("Rim Power"), Settings.RockRimPower);
+				Material->SetScalarParameterValue(TEXT("Crater Strength"), Settings.RockCraterStrength);
 				GeneratedMaterials.Add(Material);
 				Component->SetMaterial(Slot, Material);
 			}

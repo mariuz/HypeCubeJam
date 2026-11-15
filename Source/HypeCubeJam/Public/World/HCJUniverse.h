@@ -224,6 +224,13 @@ public:
 	/** The local sky (stars, planets, black holes, nebulae), or nullptr: dedicated server, or switched off in UHCJAssetSettings. */
 	AHCJSpaceBackdrop* GetBackdrop() const { return Backdrop; }
 
+	/**
+	 * Cosmetic, local: the two lights of the scene for the sector the local view is in (called by the backdrop when the
+	 * view changes sector). The sun keeps its direction; the fill light shines from where the backlit core of that
+	 * sector's sky stands (AHCJSpaceBackdrop::MakeBacklight), in its colour. Intensities from UHCJAssetSettings.
+	 */
+	void ApplySectorLighting(int32 Sector);
+
 	/** Local-machine notification that a (re)build finished; HUD and bots may cache per-match data on it. */
 	FHCJOnUniverseRebuilt OnRebuilt;
 

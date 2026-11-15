@@ -1149,6 +1149,17 @@ void AHCJShipCharacter::StartShieldFlare(const FVector& LocalDirection, const FL
 	ShieldBubbleMaterial->SetVectorParameterValue(Slot == 0 ? TEXT("HitColorA") : TEXT("HitColorB"), Color);
 	bShieldBubbleActive = true;
 	TickShieldBubble(ShieldFlareTime[Slot]);
+
+	// A star of streaks where the shield was hit (item 26), on the surface of the bubble.
+	if (UHCJEffectsDirector* Effects = UHCJEffectsDirector::Get(this))
+	{
+		const FVector Unit = LocalDirection.GetSafeNormal(UE_SMALL_NUMBER, FVector::ForwardVector);
+		const double Reach = GetTypeDef().Scale / FMath::Sqrt(FMath::Square(Unit.X / Radii.X) + FMath::Square(Unit.Y / Radii.Y) + FMath::Square(Unit.Z / Radii.Z));
+		const bool bOwnShip = IsPlayerControlled() && IsLocallyControlled();
+		// (On the ship the view follows the effects director makes the star small and dim, so that it does not hide the ship.)
+		Effects->PlayImpactStar(GetActorLocation() + GetActorTransform().TransformVectorNoScale(Unit) * Reach, bOwnShip ? 0.75f : 1.1f,
+			FMath::Lerp(Color, FLinearColor::White, 0.35f));
+	}
 }
 
 void AHCJShipCharacter::PlayFacingCollapse(EHCJShieldFacing Facing)
@@ -1638,7 +1649,7 @@ void AHCJShipCharacter::ApplyDeadState()
 	}
 
 	SetActorEnableCollision(false);
-	for (UStaticMeshComponent* Part : { BeaconMesh.Get(), EngineGlowMesh.Get(), EngineTrailMesh.Get() })
+	for (UStaticMeshComponent* Part : { BeaconMesh.Get(), EngineGlowMesh.Get(), EngineTrailMesh.Get(), EngineJetMesh.Get() })
 	{
 		if (Part != nullptr)
 		{
@@ -1941,6 +1952,13 @@ void AHCJShipCharacter::SetupShipVisuals()
 			EngineTrailMaterial = UMaterialInstanceDynamic::Create(TrailBase, this);
 			EngineTrailMesh = MakeHighlightQuad(TEXT("EngineTrailMesh"), EngineTrailMaterial);
 		}
+		UMaterialInterface* JetBase = UHCJAssetSettings::Load<UMaterialInterface>(Settings.EngineJetMaterial, TEXT("engine jet"));
+		if (JetBase != nullptr && HighlightPlane != nullptr && Settings.EngineJetWidth > 0.0f)
+		{
+			EngineJetMaterial = UMaterialInstanceDynamic::Create(JetBase, this);
+			EngineJetMaterial->SetScalarParameterValue(TEXT("Phase"), static_cast<float>(GetUniqueID() % 97));
+			EngineJetMesh = MakeHighlightQuad(TEXT("EngineJetMesh"), EngineJetMaterial);
+		}
 	}
 
 	// Phaser: the beam quad and a glow at each end. Free-standing (world space), hidden until the beam runs.
@@ -2147,6 +2165,7 @@ void AHCJShipCharacter::TickShipEffects()
 						bShow = true;
 						BeaconMaterial->SetVectorParameterValue(TEXT("Color"), EnemyColor);
 						BeaconMaterial->SetScalarParameterValue(TEXT("Brightness"), Settings.ShipGlintBrightness * Alpha);
+						BeaconMaterial->SetScalarParameterValue(TEXT("Backing"), bHighlight ? Settings.ShipGlintBacking * Alpha : 0.0f);
 						// In front of the hull as the view sees it, so the hull does not cut the quad in two.
 						BeaconMesh->SetWorldLocation(Location + ToView * (0.6f * HullLength));
 						BeaconMesh->SetWorldScale3D(FVector(Edge / 100.0f));
@@ -2218,6 +2237,29 @@ void AHCJShipCharacter::TickShipEffects()
 			if (EngineTrailMesh->IsVisible() != bTrail)
 			{
 				EngineTrailMesh->SetVisibility(bTrail);
+			}
+		}
+
+		if (EngineJetMesh != nullptr)
+		{
+			// The jet: straight back from the tail, its length follows the speed (at rest a short flame, under boost a long one).
+			// The own jet points at the chase camera behind the ship: it is kept short enough to end on the screen.
+			const float Lengths = FMath::Lerp(Settings.EngineJetIdleLength, Settings.EngineJetBoostLength, FMath::Pow(Throttle, 0.8f)) * (1.0f + 0.8f * WarpGlow);
+			const double JetLength = double(HullLength) * Lengths * (bOwn ? Settings.EngineJetOwnShare : 1.0f);
+			const bool bJet = bEngineShown && JetLength > 20.0;
+			if (bJet)
+			{
+				const FVector Back = -GetActorForwardVector();
+				const FVector Middle = Tail + Back * (0.5 * JetLength);
+				const float TypeScale = GetTypeDef().Scale;
+				EngineJetMaterial->SetVectorParameterValue(TEXT("Color"), GlowColor);
+				EngineJetMaterial->SetScalarParameterValue(TEXT("Brightness"), Settings.EngineJetBrightness * FMath::Lerp(0.7f, 1.0f, Throttle) * (bOwn ? 0.55f : 1.0f));
+				EngineJetMesh->SetWorldLocationAndRotation(Middle, FRotationMatrix::MakeFromXZ(Back, ViewLocation - Middle).Rotator());
+				EngineJetMesh->SetWorldScale3D(FVector(JetLength / 100.0, Settings.EngineJetWidth * TypeScale * FMath::Lerp(0.8f, 1.15f, Throttle) * (bOwn ? 0.8f : 1.0f) / 100.0, 1.0));
+			}
+			if (EngineJetMesh->IsVisible() != bJet)
+			{
+				EngineJetMesh->SetVisibility(bJet);
 			}
 		}
 	}
@@ -2464,6 +2506,11 @@ void AHCJShipCharacter::TickPhaserEffects(float Now, float DeltaSeconds)
 	{
 		NextPhaserSparkTime = Now + FMath::Max(Settings.PhaserSparkInterval, 0.03f);
 		const bool bOnShip = IsValid(PhaserTarget);
+		if (UHCJEffectsDirector* Effects = UHCJEffectsDirector::Get(this))
+		{
+			// A star of streaks where the beam burns (item 26); on a ship in the beam's own colour, on rock paler.
+			Effects->PlayImpactStar(End - Along.GetSafeNormal() * 30.0, bOnShip ? 1.0f : 0.75f, bOnShip ? FLinearColor(1.0f, 0.5f, 0.15f) : FLinearColor(1.0f, 0.7f, 0.4f));
+		}
 		UNiagaraComponent* Sparks = UHCJAssetSettings::SpawnEffect(this, bOnShip ? Settings.ImpactShipEffect : Settings.ImpactRockEffect, TEXT("phaser sparks"), End,
 			FRotator::ZeroRotator, Settings.ImpactScale);
 		if (Sparks != nullptr)

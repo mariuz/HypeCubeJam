@@ -150,6 +150,13 @@ namespace
 {
 	/** Development: bots hold still and hold their fire (see SetDebugIdle). */
 	bool GHCJBotsIdle = false;
+	/** Development: idle bots keep the trigger as a development command set it ("HCJMenuCmd enemyfire"). */
+	bool GHCJBotsIdleKeepFire = false;
+}
+
+void AHCJBotController::SetDebugIdleKeepsFire(bool bKeep)
+{
+	GHCJBotsIdleKeepFire = bKeep;
 }
 
 void AHCJBotController::SetDebugIdle(bool bIdle)
@@ -168,7 +175,10 @@ void AHCJBotController::Tick(float DeltaTime)
 		if (Ship != nullptr)
 		{
 			// (Warp, cloak and tractor keys are left alone: the development commands of the pictures set them.)
-			Ship->SetFiring(false);
+			if (!GHCJBotsIdleKeepFire)
+			{
+				Ship->SetFiring(false);
+			}
 			Ship->SetBoosting(false);
 		}
 		Super::Tick(DeltaTime);

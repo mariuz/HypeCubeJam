@@ -50,7 +50,7 @@ TStatId UHCJEffectsDirector::GetStatId() const
 bool UHCJEffectsDirector::IsTickable() const
 {
 	// Nothing ticks while nothing flies, flares or shakes.
-	return bReady && (Debris.NumActive() > 0 || GetNumFlares() > 0 || ShakeAmount > 0.0f);
+	return bReady && (Debris.NumActive() > 0 || GetNumFlares() > 0 || NumActiveStars > 0 || ShakeAmount > 0.0f);
 }
 
 void UHCJEffectsDirector::Deinitialize()
@@ -64,6 +64,10 @@ void UHCJEffectsDirector::Deinitialize()
 	DebrisMaterials.Reset();
 	FlareQuads.Reset();
 	FlareMaterials.Reset();
+	StarQuads.Reset();
+	StarMaterials.Reset();
+	Stars.Reset();
+	NumActiveStars = 0;
 	bReady = false;
 	Super::Deinitialize();
 }
@@ -216,6 +220,29 @@ bool UHCJEffectsDirector::EnsureReady()
 		FlareMaterials.Add(Material);
 	}
 
+	// Impact stars: the same again with M_HCJ_ImpactStar.
+	UMaterialInterface* StarBase = UHCJAssetSettings::Load<UMaterialInterface>(Settings.ImpactStarMaterial, TEXT("impact star"));
+	const int32 NumStarQuads = (Plane != nullptr && StarBase != nullptr) ? FMath::Clamp(Settings.MaxImpactStars, 0, 24) : 0;
+	Stars.SetNum(NumStarQuads);
+	for (int32 Index = 0; Index < NumStarQuads; ++Index)
+	{
+		UMaterialInstanceDynamic* Material = UMaterialInstanceDynamic::Create(StarBase, Host);
+		UStaticMeshComponent* Quad = NewObject<UStaticMeshComponent>(Host, NAME_None, RF_Transient);
+		Quad->SetMobility(EComponentMobility::Movable);
+		Quad->SetStaticMesh(Plane);
+		Quad->SetMaterial(0, Material);
+		Quad->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Quad->SetGenerateOverlapEvents(false);
+		Quad->SetCanEverAffectNavigation(false);
+		Quad->SetCastShadow(false);
+		Quad->SetReceivesDecals(false);
+		Quad->SetVisibility(false);
+		Quad->SetupAttachment(Root);
+		Quad->RegisterComponent();
+		StarQuads.Add(Quad);
+		StarMaterials.Add(Material);
+	}
+
 	bReady = true;
 	UE_LOG(LogHCJ, Log, TEXT("Effects: %d debris slots on %d meshes (%d rock, hull plate %s, ember %s), %d flare quads, camera shake %s"), Capacity, DebrisMeshes.Num(), NumRockKinds,
 		PlateKind != INDEX_NONE ? TEXT("yes") : TEXT("no"), EmberKind != INDEX_NONE ? TEXT("yes") : TEXT("no"), NumFlares, UHCJUserSettings::Get().bCameraShake ? TEXT("on") : TEXT("off"));
@@ -276,6 +303,69 @@ void UHCJEffectsDirector::SpawnFlare(const FVector& Location, float Size, const 
 	}
 	Quad->SetVisibility(true);
 	++NumFlaresSpawned;
+}
+
+void UHCJEffectsDirector::PlayImpactStar(const FVector& Location, float Scale, const FLinearColor& Color)
+{
+	if (!EnsureReady() || Stars.Num() == 0)
+	{
+		return;
+	}
+	const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
+	if (!UHCJAssetSettings::IsNearLocalView(this, Location, Settings.EffectMaxDistance * 2.0f))
+	{
+		return;
+	}
+	// A free quad, else the one that is nearly over.
+	int32 Slot = 0;
+	float BestLeft = TNumericLimits<float>::Max();
+	for (int32 Index = 0; Index < Stars.Num(); ++Index)
+	{
+		const float Left = Stars[Index].bActive ? Stars[Index].Duration - Stars[Index].Age : -1.0f;
+		if (Left < BestLeft)
+		{
+			BestLeft = Left;
+			Slot = Index;
+		}
+	}
+	FVector ViewLocation = Location;
+	FRotator ViewRotation = FRotator::ZeroRotator;
+	GetLocalView(ViewLocation, ViewRotation);
+	// Right in front of the view a star would cover it: dimmer and smaller the nearer.
+	float Nearness = FMath::Clamp(static_cast<float>(FVector::Dist(ViewLocation, Location)) / 2500.0f, 0.25f, 1.0f);
+	// A hit on the ship the view follows (the chase camera sits right behind it) must not hide that ship: smaller and dimmer still.
+	const UWorld* World = GetWorld();
+	const APlayerController* LocalController = (World != nullptr && GEngine != nullptr) ? GEngine->GetFirstLocalPlayerController(World) : nullptr;
+	const AActor* ViewTarget = LocalController != nullptr ? LocalController->GetViewTarget() : nullptr;
+	if (ViewTarget != nullptr && FVector::DistSquared(ViewTarget->GetActorLocation(), Location) < FMath::Square(500.0))
+	{
+		Scale *= 0.4f;
+		Nearness *= 0.5f;
+	}
+
+	FFlare& Star = Stars[Slot];
+	NumActiveStars += Star.bActive ? 0 : 1;
+	Star.bActive = true;
+	Star.Age = 0.0f;
+	Star.Duration = FMath::Max(Settings.ImpactStarSeconds, 0.05f);
+	Star.Brightness = Settings.ImpactStarBrightness * Nearness;
+	UMaterialInstanceDynamic* Material = StarMaterials[Slot];
+	Material->SetVectorParameterValue(TEXT("Color"), FLinearColor(Color.R, Color.G, Color.B, 1.0f));
+	Material->SetScalarParameterValue(TEXT("Brightness"), Star.Brightness);
+	Material->SetScalarParameterValue(TEXT("Age"), 0.0f);
+	Material->SetScalarParameterValue(TEXT("Seed"), Random.FRandRange(0.0f, 10.0f));
+	UStaticMeshComponent* Quad = StarQuads[Slot];
+	const float Size = Settings.ImpactStarSize * Scale * FMath::Lerp(0.6f, 1.0f, Nearness);
+	const FVector ToView = ViewLocation - Location;
+	// A little towards the view, so that what was hit does not cut the quad in two.
+	Quad->SetWorldLocation(Location + ToView.GetSafeNormal() * FMath::Min(60.0, 0.5 * ToView.Size()));
+	Quad->SetWorldScale3D(FVector(Size / 100.0f, Size / 100.0f, 1.0f));
+	if (ToView.SizeSquared() > 1.0)
+	{
+		Quad->SetWorldRotation(FRotationMatrix::MakeFromZX(ToView, FRotationMatrix(ViewRotation).GetUnitAxis(EAxis::Y)).Rotator());
+	}
+	Quad->SetVisibility(true);
+	++NumStarsSpawned;
 }
 
 void UHCJEffectsDirector::SpawnDebris(const FVector& Location, const FVector& BaseVelocity, int32 Count, int32 KindMin, int32 KindMax, float Spread, float Speed,
@@ -480,6 +570,25 @@ void UHCJEffectsDirector::Tick(float DeltaTime)
 		{
 			Quad->SetWorldRotation(FRotationMatrix::MakeFromZX(ToView, FRotationMatrix(ViewRotation).GetUnitAxis(EAxis::Y)).Rotator());
 		}
+	}
+
+	// Impact stars.
+	for (int32 Index = 0; Index < Stars.Num() && NumActiveStars > 0; ++Index)
+	{
+		FFlare& Star = Stars[Index];
+		if (!Star.bActive)
+		{
+			continue;
+		}
+		Star.Age += DeltaTime;
+		if (Star.Age >= Star.Duration)
+		{
+			Star.bActive = false;
+			--NumActiveStars;
+			StarQuads[Index]->SetVisibility(false);
+			continue;
+		}
+		StarMaterials[Index]->SetScalarParameterValue(TEXT("Age"), Star.Age / Star.Duration);
 	}
 
 	// Debris.

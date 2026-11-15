@@ -30,9 +30,10 @@ float x = UV.x * Length * 0.01;
 float t = T + Phase;
 float flick = 0.84 + 0.16 * sin(t * 71.0) * sin(t * 43.7 + 1.3);
 float ripple = 0.8 + 0.2 * sin(x * 2.3 - t * 60.0) * sin(x * 0.7 + t * 23.0);
-float core = exp(-v * v * 520.0) * 1.7;
-float body = exp(-v * v * 42.0) * 1.5 * ripple;
-float glow = exp(-abs(v) * 4.0) * 0.2;
+// item 26: a thicker white core and a wide halo around the body (the quad is drawn wider too: PhaserBeamWidth)
+float core = exp(-v * v * 240.0) * 2.1;
+float body = exp(-v * v * 26.0) * 1.4 * ripple;
+float glow = exp(-abs(v) * 3.2) * 0.42;
 float ends = saturate(min(UV.x, 1.0 - UV.x) * Length / 50.0);
 float edge = 1.0 - smoothstep(0.8, 1.0, abs(v));
 float3 col = Color * (body + glow) + float3(1.0, 0.93, 0.8) * core;

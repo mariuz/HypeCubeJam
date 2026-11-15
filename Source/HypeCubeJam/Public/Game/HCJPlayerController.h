@@ -356,6 +356,8 @@ protected:
 
 	TSharedPtr<SHCJIntro> IntroWidget;
 	FHCJIntroFlow IntroFlow;
+	/** Development ("HCJMenuCmd fly"): 0 off, 1 the own ship flies ahead at cruise, 2 under boost. */
+	int32 DebugFlyMode = 0;
 	bool bIntroChecked = false;
 	bool bIntroFirstFrameLogged = false;
 	/** Seconds until the next lobby update of UpdateOnline. */

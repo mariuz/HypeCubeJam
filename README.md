@@ -224,6 +224,36 @@ materials built by `docs/tools/make_ship_fx_materials.py`, settings in the "seei
   `body0|body1|nebula0..2|dark|portal<n>|wormhole|station`), `HCJMenuCmd peace [0]` (bots hold still and hold fire),
   `HCJParkEnemy <uu>`.
 
+## Cinematic look
+
+"Make it close to the cinematic intro" (item 26 of `docs/DEVLOG_NOTES.md`). Presentation only: no rule, layout,
+collision or checksum changed. Details: `Source/HypeCubeJam/ARCHITECTURE.md`, "Cinematic look".
+
+- **Sky**: every sector has layered nebula clouds in its own colour (pulled towards teal), a backlit core cloud with
+  a white-hot centre, soft haze so that no direction is black, soft clouds that stand in the world 600-1000 m out and
+  shift against the sky as you fly, and about 15 000 stars (the 10 000 of the catalogue plus 5 000 made-up faint ones).
+- **Rocks**: a rim light on every rock (stronger towards the sector's back light), craters laid over the boulders, a
+  stronger sun and a coloured fill light from the back light of the sky.
+- **Decorative rocks**: about 1 600 pebbles (below half a metre; most hang around the real rocks) and a belt of 180
+  boulders outside the kill radius, per sector, generated from the sector seed on each machine for the sector the
+  view is in. Drawn only: no collision, never replicated, invisible to bots, aim assist and traces. A pebble closer
+  than 7 m to the camera is not drawn.
+- **Engines**: a jet behind every ship (white-hot core, shock diamonds), longer with speed; enemies red, the own ship
+  in its own colour.
+- **Weapons**: thicker phaser beam with a halo, a star of streaks at every hit (bolt, beam, shield), brighter bolts.
+- **Portals**: a heavier, darker ring with glowing rune glyphs on both faces, loops of light in the swirl, rays
+  radiating from behind the ring.
+- **Post process**: more bloom (above a threshold), vignette, more contrast, a teal-and-orange grade.
+- SETTINGS > "Cinematic look" (on by default, `UHCJUserSettings::bCinematicLook`): off switches the post process off
+  (the picture as the engine renders it by default) and keeps about a third of the decorative rocks.
+- Tunables: `[/Script/HypeCubeJam.HCJAssetSettings]` in `Config/DefaultGame.ini`, from `NebulaBrightness` to
+  `PortalFilaments`. Materials: `python docs/tools/make_cinematic_textures.py` (Pillow), then the editor scripts
+  `docs/tools/make_cinematic_materials.py`, `make_portal_materials.py`, `make_phaser_fx_materials.py`,
+  `make_ship_fx_materials.py`.
+- Development: `HCJMenuCmd cinematic <0|1>` (the setting, not saved), `fly <0|1|2>` (the own ship flies ahead at
+  cruise / under boost), `impact [uu]` (an impact star ahead), `enemyfire <0|1>[,<ship>[,<target ship>]]` (with
+  `peace`: that ship holds its trigger at another ship or, -1, at you), `scene <sector>,backlight`.
+
 ## Portals and wormhole mouths
 
 `AHCJPortal` (trigger and position unchanged): a ring of 28 dark blocks, 14 glowing glyph bars and an inner lip that

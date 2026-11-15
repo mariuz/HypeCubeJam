@@ -1213,8 +1213,164 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
     - Judged from logs, bot matches and still pictures only. Nobody has flown a warp jump, held a ship with the beam
       while shooting it, hunted a cloaked ship or clicked through the hangar; nobody has heard any of the new sounds.
 
+## 15 Nov 2026 (eleventh session) - the look of the intro movie
+26. "Make it close to the cinematic intro" (the player, after watching the Veo movie of item 24 in front of the game: black
+    space, sparse grey angular rocks, small engine dots). A look pass: no rule, layout, collision or replicated state
+    changed (`ProjectVersion` stays 0.2.0). Order of work as asked: sky, rocks, engines, weapons, portal, post process.
+    - **How it is built.** Two new scripts, the pattern of the earlier ones: `docs/tools/make_cinematic_textures.py` (plain
+      Python + Pillow, fixed seeds) writes three textures to `SourceAssets/Cinematic` - a tileable 1024 px cloud noise
+      with four different fields in R, G, B, A, an atlas of sixteen rune-like glyphs (strokes on a 3 x 5 grid of points; no
+      real script), a tileable crater normal / cavity map - and `docs/tools/make_cinematic_materials.py` (editor
+      commandlet) imports them to `/Game/HCJ/Cinematic` and builds `M_HCJ_Nebula` (rebuilt), `M_Asteroid` (rebuilt),
+      `M_HCJ_DecorRock` + four instances, `M_HCJ_EngineJet`, `M_HCJ_ImpactStar`, `M_HCJ_PortalRunes`, `M_HCJ_PortalRays`.
+      `make_portal_materials.py`, `make_phaser_fx_materials.py` and `make_ship_fx_materials.py` were edited and run again
+      (swirl filaments, thicker beam, glint backing). Decision for the web build that is planned: every new effect
+      material is unlit + additive (or alpha composite) over texture coordinates, with at most a few texture samples -
+      nothing reads scene colour, scene depth or custom depth, nothing refracts. The old nebula computed four octaves of
+      noise per pixel; the new one samples one texture three times.
+    - **Sky** (`AHCJSpaceBackdrop`). Per sector: the three seeded clouds as before (their place is tested and unchanged),
+      one large BACKLIT CORE cloud (a white-hot point, the cloud around it lit from behind, dust lanes cutting into it), two soft haze
+      cards at infinity so that no direction is black, and three soft clouds that stand IN the world 600-1000 m from the
+      sector origin: they shift against the sky at infinity when a ship crosses the sector (the only real parallax; the
+      rest of the sky is at infinity). Colours: the sector tint, hue-shifted per cloud and pulled 35 % towards teal; haze
+      and near clouds mostly deep blue. Stars: the whole 10 000-star catalogue (it was cut at magnitude 6: 5070) plus 5000
+      made-up faint ones in the same instanced draw - 15 001 with the sun.
+      - Problem (first pictures): the whole screen was a milky fog and the core a white wall - haze and core far too
+        bright, the cloud without dark gaps. Brightness of haze 0.5 -> 0.09, near clouds 0.5 -> 0.22, the cloud term
+        squared, the white-hot core shrunk to about 6 degrees.
+      - Problem: sectors with a yellow or yellow-green tint had an olive-mud sky (a dim yellow is brown). Hues between 45
+        and 105 degrees are folded to gold or green for the SKY only (rocks, portals and the HUD keep the tint).
+    - **Lights and rocks.** Sun 4 -> 6. The fill light (1 -> 2.2) now shines from where the core cloud of the sector's sky
+      stands, in its colour: `AHCJUniverse::ApplySectorLighting`, called by the backdrop when the view changes sector (the
+      core is always at least about 80 degrees away from the sun, so it lights the side the sun leaves dark). `M_Asteroid`
+      got a fresnel rim light in the emissive (colour of the back light, stronger on the side that faces it) and craters
+      (the crater map over the mesh UVs: bends the normal, darkens the bowls). The four Megascans boulders are the same
+      meshes: they are still angular boulders, not the round cratered rocks of the movie.
+    - **Decorative rocks** (`World/HCJSectorDecor.h`, plain C++; `AHCJSpaceBackdrop::BuildDecor`). Per sector 1600 pebbles
+      (radius 7-45 cm; 70 % hang around the real rocks, the rest float free) and a belt of 180 boulders (2.5-45 m) in a
+      flattened ring whose every surface is beyond the kill radius + 20 m (a ship is dead before it gets there, so
+      they need no collision). A pure function of the sector seed with its own hash; only the sector the view is in
+      is drawn, rebuilt on a jump; hierarchical instanced meshes without any collision, forced to the last LOD, pebbles
+      culled beyond 90 m. Nothing is replicated; bots, aim assist, the phaser trace and line-of-sight tests cannot see
+      them (they query collision; these have none). No pebble within 15 m of a portal, 6 m of a spawn point, 5 m of a
+      pad, inside the station's or the black hole's zone, or inside a real rock; a pebble nearer than 7 m to the camera
+      is not drawn (its vertices collapse into the camera in the vertex shader). Layout checksum for seed 1234 is
+      3976D716 as before (the generator is not touched; the new test checks the layout checksum before and after).
+      - Tried and not kept: hierarchical instances for the REAL rocks, expecting fewer triangles in a dense field. No
+        faster on this card (92 against 97 fps, editor binary, densest sector), so they stay plain instances.
+    - **Engines.** A jet behind every ship (`M_HCJ_EngineJet` on one quad from the tail straight back, rolled to the view:
+      white-hot core, coloured body, running shock diamonds), 0.45 hull lengths at rest to 2.4 under full boost; enemies
+      red, the own ship in its own colour. The own jet points at the chase camera, so it is 40 % of that length - it runs
+      down the screen from the ship as in the title frame of the movie and ends before the lower edge. One jet from the
+      middle of the tail, whatever the hull: the forty hulls have their nozzles in different places and nobody mapped them.
+    - **Weapons.** Phaser beam: quad 130 -> 210 uu wide, a thicker white core and a wide halo. Impact stars
+      (`UHCJEffectsDirector::PlayImpactStar`, a pool of ten quads with `M_HCJ_ImpactStar`: core, halo and two rings of thin
+      radial streaks of unequal length that fly outwards for a third of a second) at every bolt hit, every 0.12 s where
+      a beam burns, and on the shield bubble where a facing is hit. Bolts thicker (32 -> 44) and brighter (40 -> 70).
+    - **Portal.** Ring heavier (blocks 240 x 190 instead of 170 x 150) and nearly black; 22 rune quads on each face
+      (`M_HCJ_PortalRunes`, one of sixteen glyphs each by a hash of the two sectors, breathing one after the other, turning
+      against the lip); five thin loops of light through the middle of the swirl; rays radiating from behind the ring
+      on one quad in the portal's plane (`M_HCJ_PortalRays`). All in the destination colour; the passage flash drives
+      runes and rays too. Trigger, position and size of the opening are unchanged.
+      - Problem: the first ring was pale grey, not dark: albedo 0.07 under a sun of 6. Albedo 0.016.
+      - Problem: close up the swirl was a white disc again (item 24 had the same): swirl 0.4 -> 0.22, filaments up.
+    - **Post process and the setting.** An unbound post process component on the backdrop actor: bloom 0.8 above a
+      threshold of 1.0 (the engine default is 0.675 on everything, which fogs a bright sky), vignette 0.45, contrast 1.08,
+      saturation 1.1, shadows gained towards teal, highlights towards orange. Lens flare: the property is there
+      (`CineLensFlare`), 0 by default. SETTINGS > "Cinematic look" (on by default, `UHCJUserSettings::bCinematicLook`):
+      off disables the component - the picture the engine renders by default, as before this item - and keeps 35 % of
+      the decorative rocks. It does not switch the sky, the lights, the rim light, the jets or the portal look back.
+      The HUD is drawn after the post process and is not affected.
+    - **Seeing the enemy against the new sky** (the third-time request of item 24 must not be undone). An additive red
+      glint on a bright nebula turns pink-white. `M_HCJ_ShipGlint` is now "alpha composite": its `Backing` parameter
+      (0.85 for an enemy's glint, 0 for engine glows and portal landmarks) darkens the sky behind the glint in a soft disc
+      before the light is added; brightness 3.5 -> 4.2. Checked with two enemies parked in front of the brightest thing
+      in the game (the core cloud of sector 0000) at 38 m, 100 m and 250 m: see "Verification".
+    - **Problems found in the pictures and fixed** (besides those above): the star of a shield hit and of a turret bolt on
+      the OWN ship covered the ship (the chase camera is 11 m behind it) - a hit within 5 m of the ship the view follows
+      is now drawn at 40 % size and half brightness; the first enemy-to-enemy beam picture had no beam (the build had
+      failed: a local variable hid a class member) - found because the picture was unchanged.
+    - **Frame rate** (packaged, 1280x720, GTX 950, listen host with 7 bots, seed 1234, `-HCJNoEOS -HCJNoIntro`; the previous
+      package - a copy made before the first change - and the new one started in turn; fixed scenes set up with
+      development commands, bots held still, 2 s averages; "worst case" = the densest field with the phaser held while
+      ships are blown up, rocks broken and torpedoes fired every 2 s for 24 s; "standard" = the capture autopilot in a
+      bot match, 8 s averages over 88 s):
+
+      | scene | before (3-4 runs) | first package | after soft cards + one pebble mesh | final (3 runs) | change |
+      |---|---|---|---|---|---|
+      | dense field, sector 0101 (337 rocks) | 136.5-137.0 | 111-114 | 119-121 | 121.2-122.3 | -11 % |
+      | portal at 35 m | 158.3-159.2 | 137-138 | 140-141 | 138.6-140.0 | -12 % |
+      | dense field, sector 0011 (264 rocks, station) | 148.7-149.5 | 117-119 | 128-129 | 131.6-132.1 | -12 % |
+      | worst case, mean (lowest 2 s) | 120.1-120.2 (103-104) | 102-103 (91) | 109 (95) | 108.4-110.4 (97) | -9 % |
+      | standard: autopilot match, mean | 127.4-136.6 (mean 133.6) | 112-116 | 121.5, 124.2 | 118.2, 122.5 | -8 to -10 % |
+
+      So: about a tenth slower everywhere, 97 fps in the worst two seconds measured. The standard scene scatters by +-4 %
+      between runs of the same build (different fights), so "-8 to -10 %" is as fine as it gets.
+      - Where it goes (same scenes, the first package with settings overridden on the command line): without haze and
+        near clouds +8 %; without decorative rocks +7 % (sector 0101) to +13 % (0011); post process off: nothing
+        measurable (the gain of "Cinematic look off", +3 % to +8 % in the dense fields, is its smaller decoration);
+        5000 fewer stars: nothing; lens flare at 0.5: -2 % for a ghost one has to look for - left at 0.
+      - What was done about it: the soft cards (haze, near clouds) leave the shader after ONE texture sample; all pebbles
+        are drawn with the rock mesh that has the fewest triangles in its last LOD (420 instead of 1054-1406; at half a
+        metre the boulders cannot be told apart); pebbles are culled beyond 90 m; haze 3 -> 2 cards, near clouds 4 -> 3,
+        belt 260 -> 180, ray quad 3.2 -> 2.9 portal radii.
+      - A first "before" run (84 / 112 / 104 fps in the three fixed scenes) was thrown away: it ran right after an
+        editor session and was a third slower than the four later runs of the same package. Why was not looked into.
+        In one later "before" run the first scene read 120 instead of 137 for its first seconds; that value is left
+        out of the range above, its other scenes are in.
+      - The frame-rate table is from the package before the last two cosmetic changes (the small star on the own ship,
+        glint backing 0.7 -> 0.85); the final package was not measured again.
+    - **Verification** (final package unless said).
+      - 67 automation tests, all passing (new: `HypeCubeJam.World.SectorDecor` - the same rocks for the same sector, pebble
+        sizes, keep-outs, no pebble inside a real rock, the belt beyond the kill radius, the layout checksum untouched).
+      - Autopilot match, 91 s, listen host with 7 bots: 25 kills, 16 portal jumps, 16.5 kills per minute, time to kill
+        3.62 s; 4 warps, 1 cloak, 4 tractor holds by bots. 1 error line (the known CelestialVault CDO message) and 19
+        warning lines - the same lines, text for text with the numbers blanked, as a match of the previous package run
+        the same way. No "Default Material" line in any run (a material that fails to compile is drawn with it).
+      - Host + client on one PC (port 7795, two windows of 800x450, both on the autopilot, 95 / 72 s): layout 3976D716,
+        stations 41B00419, wormholes A385A205, pads D547574B, black holes 6ABCFA7F on both; 1 movement correction on the
+        client; the client logged its own decoration (`Backdrop: sector 0 decorated with 1600 pebbles and 180 belt
+        boulders`): each machine makes its own, nothing is sent.
+      - Seeing the enemy against the brightest sky (`Media/83`, `84`; the backlit core of sector 0000): at 38 m the hulls
+        with their red rim and engine glow are plain; at 100 m and 250 m with the HUD off each ship is a point with a
+        red halo - but in front of the white-hot middle of the core the point itself is pink-white, not red, and it is
+        one bright point among a few (the portal's landmark glint, pickups). With the HUD on, brackets, diamond and
+        arrows are unchanged. Weaker than on black sky (`Media/42` of item 24), better than without the backing.
+      - Mobile renderer: NOT run. One attempt with the editor binary and `-featureleveles31` did not get past the
+        start-up compilation of the engine's mobile shaders in 150 s and was stopped. By construction: no scene colour,
+        no custom depth, no refraction in anything new; `[branch]` + `Texture2DSampleLevel` in the nebula, per-instance
+        custom data in the nebula and rune materials (both used the same way by materials that existed before), a
+        second directional light (the fill) that the mobile forward renderer will not shade with, image-based lens
+        flare (off) that it does not have, world position offset in `M_HCJ_DecorRock`.
+    - Development aids: `HCJMenuCmd cinematic <0|1> | fly <0|1|2> | impact [uu] | enemyfire <0|1>[,<ship>[,<target>]]`,
+      `scene <sector>,backlight`; the `scene` log line names the theme, the number of rocks and the tint of the sector.
+    - Packaged: 1080 packages in the cook (1051 cooked, 29 skipped for the platform; 1068 before: five new materials, four
+      material instances, three textures). Zip `Packaged/mariuz_HypeCubeJam.zip`: 584.8 MB (883.6 MB unpacked, 48 files;
+      583.6 MB / 48 files before).
+    - Pictures, 1280x720, final package, real time unless said, scenes set up with development commands, bots held still:
+      `Media/73..82_*_before_after.png` (the previous package left, the new one right, same commands: sky in sectors 0000,
+      0101, 0011 and 1010, the dense field of 0101, portal at 35 m and at 140 m, station, two enemies at 38 m, the own
+      phaser beam - **game slowed to 0.2** for that one), `83_two_enemies_38m_against_the_brightest_nebula.png`,
+      `84_enemies_100m_and_250m_against_the_brightest_nebula_no_hud.png`, `85_phaser_hit_seen_from_the_side_slowed.png`
+      (one bot firing at another, **slowed to 0.15**), `86_own_engine_jet_cruise.png`, `87_own_engine_jet_boost.png`,
+      `88` / `89_backlit_core_sector_*.png`, `90_portal_close_30m_runes_filaments_rays.png`,
+      `91_settings_cinematic_look.png`, `92..94_no_hud_*.png`, `95_game_next_to_intro_frame_56.png`,
+      `96_portal_next_to_intro_frame_57.png`, `97` / `98_match_*.png` (the autopilot match of the verification),
+      `99_worst_case_scene_explosion_in_the_dense_field.png` (from a frame-rate run of the package before the last two
+      cosmetic changes).
+    - **What is still far from the movie.** The rocks are four angular scanned boulders with craters painted on, not
+      round cratered bodies, and far fewer are near the camera (the movie's field would be solid rock to fly through;
+      the pebbles are below half a metre on purpose). Enemy ships are the same bright Star Sparrow hulls in a red rim,
+      not dark angular ships with red lights (not attempted: a paint is also the pilot's colour on the HUD). One jet
+      per ship from the middle of the tail instead of one per nozzle. No volumetric nebula: cards, flat when a ship
+      could fly near one (it cannot). No motion blur, no depth of field, no lens flare. The own phaser beam is seen
+      from behind by the chase camera and reads as a short orange wedge, not as the long beam of the movie. The station
+      is unchanged (item 24's half fit). Sectors with a gold or olive tint (1010) are the least like the movie's teal.
+    - Judged from logs and still pictures only. Nobody has flown through the pebbles, watched the near clouds shift, seen
+      the jets or the runes move, or looked at a whole fight with the stars of the hits going off.
+
 ## Measurements
-- Automation tests: 9 at the start, 66 now, all passing (added: ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
+- Automation tests: 9 at the start, 67 now, all passing (added: decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station
   placement, lead aim).
 - Frame rate (editor binary, -game, 8 s averages): 101-128 fps with basic shapes (`-HCJNoAssets`), 98-129 fps
@@ -1225,6 +1381,19 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
   also with basic shapes only.
 
 ## Not done / open
+- Item 26 (the look of the intro movie) was judged from logs and still pictures.
+  - About a tenth slower than the build before (table in item 26); 97 fps in the worst two seconds measured. "Cinematic
+    look" off gives back 3-8 % in dense fields (fewer decorative rocks); the post process itself costs nothing measurable.
+  - Not run with the mobile renderer (the web build that is planned): see item 26, "Verification", for what to expect.
+  - Against the white-hot middle of a sector's core cloud the glint of a far enemy is pink-white rather than red.
+  - Rocks are still the four angular boulders; enemy ships are not dark; one jet per ship, not one per nozzle; no lens
+    flare (2 % for almost nothing); bots were not given a dark paint (optional target 7, not attempted).
+  - The pebbles vanish within 7 m of the camera by a hard step in the vertex shader (a pebble may pop in or out for a
+    frame); nobody has flown through them. A destroyed rock leaves its halo of pebbles behind.
+  - The own phaser beam, 210 uu wide now, reads as an orange wedge from the chase camera.
+  - The frame-rate table is from the package before the last two cosmetic changes; the final package was not re-measured.
+  - `Content/Megascans` and `SourceAssets` are not tracked by git here: the rebuilt `M_Asteroid` and the three source
+    textures of `SourceAssets/Cinematic` exist on this disk (both scripts recreate them).
 - Item 25 (ship types, warp drive, cloak, tractor beam) was judged from logs, bot matches and still pictures.
   - Ship types are balanced for EASY bots only (kills / deaths inside +-25 % of the mean in the last batch, gunship at
     the edge). On normal and hard the scout is 30-40 % below the others; not retuned. How the types feel to a pilot

@@ -7,7 +7,11 @@
 #                      Parameters: Color (vector), Brightness, Far (0 = next to the view .. 1 = far away), Floor.
 #   M_HCJ_ShipGlint    a point of light on a quad facing the view: a hot core, a soft halo, a thin horizontal streak and
 #                      four fine spikes. Used for the "minimum apparent size" glow of a distant ship and (Spikes = 0)
-#                      for the glow of its engine. Parameters: Color (vector), Brightness, Spikes (0..1).
+#                      for the glow of its engine. Parameters: Color (vector), Brightness, Spikes (0..1), Backing.
+#                      Since item 26 its blend mode is "alpha composite" (premultiplied): Backing (0..1) darkens what is
+#                      BEHIND the glint in a soft disc before the light is added, so that the red point of an enemy also
+#                      reads against a bright nebula. Backing = 0 is the plain additive glint of before (engine glow,
+#                      portal landmark). No scene colour is read: it works in the mobile renderer too.
 #   M_HCJ_EngineTrail  the engine trail on a quad from the tail of the ship (U = 0) to where the tail was a moment ago
 #                      (U = 1), rolled towards the view: white-hot at the ship, tapering and fading to the end.
 #                      Parameters: Color (vector), Brightness.
@@ -51,6 +55,13 @@ float3 col = Color * (halo + core * 0.6) * round + float3(1.0, 0.97, 0.92) * cor
 return col * Brightness;
 """
 
+GLINT_BACKING = r"""
+// How much of what lies behind is taken away: a soft disc, strongest in the middle, nothing at the edge of the quad.
+float2 p = (UV - 0.5) * 2.0;
+float r = length(p);
+return saturate(Backing) * exp(-r * r * 7.0) * (1.0 - smoothstep(0.55, 0.98, r));
+"""
+
 TRAIL = r"""
 // UV.x: 0 at the ship .. 1 at the far end. UV.y: across.
 float u = saturate(UV.x);
@@ -80,7 +91,7 @@ def vector(mat, name, value, x, y):
     return e
 
 
-def build(name, code, sources, scalars, default_color):
+def build(name, code, sources, scalars, default_color, opacity_code=None):
     """One additive unlit two-sided material: Custom(<sources>, Color, <scalars>) -> emissive.
     sources: list of (input name, expression class, output pin)."""
     path = DST + "/" + name
@@ -89,7 +100,7 @@ def build(name, code, sources, scalars, default_color):
         MEL.delete_all_material_expressions(mat)
     else:
         mat = tools.create_asset(name, DST, unreal.Material, unreal.MaterialFactoryNew())
-    mat.set_editor_property("blend_mode", unreal.BlendMode.BLEND_ADDITIVE)
+    mat.set_editor_property("blend_mode", unreal.BlendMode.BLEND_ALPHA_COMPOSITE if opacity_code else unreal.BlendMode.BLEND_ADDITIVE)
     mat.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_UNLIT)
     mat.set_editor_property("two_sided", True)
 
@@ -113,6 +124,21 @@ def build(name, code, sources, scalars, default_color):
     for n, e in params:
         ok.append(MEL.connect_material_expressions(e, "", custom, n))
     ok.append(MEL.connect_material_property(custom, "", MP.MP_EMISSIVE_COLOR))
+    if opacity_code:
+        # A second Custom node with the same inputs gives the opacity (how much of the background is removed).
+        alpha = MEL.create_material_expression(mat, unreal.MaterialExpressionCustom, -500, 500)
+        alpha.set_editor_property("code", opacity_code)
+        alpha.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT1)
+        alpha.set_editor_property("description", name + "Opacity")
+        alpha_inputs = []
+        for n in [n for n, _, _ in nodes] + [n for n, _ in params]:
+            ci = unreal.CustomInput()
+            ci.set_editor_property("input_name", n)
+            alpha_inputs.append(ci)
+        alpha.set_editor_property("inputs", alpha_inputs)
+        ok += [MEL.connect_material_expressions(e, pin, alpha, n) for n, e, pin in nodes]
+        ok += [MEL.connect_material_expressions(e, "", alpha, n) for n, e in params]
+        ok.append(MEL.connect_material_property(alpha, "", MP.MP_OPACITY))
     EAL.save_asset(path, only_if_is_dirty=False)
     res["log"].append("%s: connections %s, %d expressions" % (path, ok, MEL.get_num_material_expressions(mat)))
     return all(ok)
@@ -123,7 +149,7 @@ try:
                        [("N", unreal.MaterialExpressionVertexNormalWS, ""), ("V", unreal.MaterialExpressionCameraVectorWS, "")],
                        [("Brightness", 2.0), ("Far", 0.5), ("Floor", 0.03)], (1.0, 0.25, 0.1))
     res["glint"] = build("M_HCJ_ShipGlint", GLINT, [("UV", unreal.MaterialExpressionTextureCoordinate, "")],
-                         [("Brightness", 3.0), ("Spikes", 1.0)], (1.0, 0.3, 0.12))
+                         [("Brightness", 3.0), ("Spikes", 1.0), ("Backing", 0.0)], (1.0, 0.3, 0.12), opacity_code=GLINT_BACKING)
     res["trail"] = build("M_HCJ_EngineTrail", TRAIL,
                          [("UV", unreal.MaterialExpressionTextureCoordinate, ""), ("T", unreal.MaterialExpressionTime, "")],
                          [("Brightness", 3.0)], (1.0, 0.4, 0.1))

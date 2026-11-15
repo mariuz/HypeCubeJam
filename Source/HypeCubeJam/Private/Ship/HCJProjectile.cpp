@@ -738,6 +738,11 @@ void AHCJProjectile::PlayImpactEffects(const FVector& Location, const FVector& N
 	const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
 	UHCJAssetSettings::PlaySoundAt(this, bHitShip ? Settings.ImpactShipSounds : Settings.ImpactRockSounds,
 		bHitShip ? TEXT("impact sound on a ship") : TEXT("impact sound on a rock"), Location, Settings.ImpactVolume, 0.1f, EHCJSoundGroup::Impact);
+	if (UHCJEffectsDirector* Effects = UHCJEffectsDirector::Get(this))
+	{
+		// A star of streaks at the hit (item 26): orange on a hull, paler and smaller on rock.
+		Effects->PlayImpactStar(Location + Normal * 20.0, bHitShip ? 1.0f : 0.6f, bHitShip ? FLinearColor(1.0f, 0.55f, 0.15f) : FLinearColor(1.0f, 0.75f, 0.5f));
+	}
 	UNiagaraComponent* Impact = UHCJAssetSettings::SpawnEffect(this, bHitShip ? Settings.ImpactShipEffect : Settings.ImpactRockEffect,
 		bHitShip ? TEXT("impact on a ship") : TEXT("impact on a rock"), Location, FRotator::ZeroRotator, Settings.ImpactScale);
 	if (Impact != nullptr)

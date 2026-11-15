@@ -324,6 +324,13 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Ship", meta = (ClampMin = "0.0"))
 	float ShipGlintBrightness = 3.0f;
 
+	/**
+	 * How much the glint of another ship darkens the sky right behind it before its light is added (parameter "Backing"
+	 * of M_HCJ_ShipGlint, 0..1; item 26): keeps the red point red against a bright nebula. 0 = the plain additive glint.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Ship", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float ShipGlintBacking = 0.85f;
+
 	/** Glow at the tail of every ship (the glint material without spikes): edge of the quad at rest and at top speed (uu). */
 	UPROPERTY(Config, EditAnywhere, Category = "Ship", meta = (ClampMin = "0.0"))
 	float EngineGlowSize = 330.0f;
@@ -1012,16 +1019,167 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Backdrop", meta = (ClampMin = "0.0"))
 	float BlackHoleBrightness = 3.0f;
 
-	/** Additive instanced card material taking 4 custom floats (R, G, B, seed) and a scalar "Intensity" (M_HCJ_Nebula). */
+	/** Additive instanced card material taking 6 custom floats (R, G, B, seed, core, soft) and a scalar "Intensity" (M_HCJ_Nebula, docs/tools/make_cinematic_materials.py). */
 	UPROPERTY(Config, EditAnywhere, Category = "Backdrop", meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
 	FSoftObjectPath NebulaMaterial;
 
-	/** Quality / cost: each card is one large additive quad with 4 octaves of noise per pixel. */
+	/** Quality / cost: each card is one large additive quad with three texture samples per pixel. */
 	UPROPERTY(Config, EditAnywhere, Category = "Backdrop", meta = (ClampMin = "0", ClampMax = "4"))
 	int32 NebulaCardsPerSector = 3;
 
 	UPROPERTY(Config, EditAnywhere, Category = "Backdrop", meta = (ClampMin = "0.0"))
 	float NebulaBrightness = 0.35f;
+
+	// ---- cinematic look (devlog item 26): layered sky, decorative rocks, rim light, post process ----
+
+	/** Brightness of the backlit core cloud of each sector's sky (the M_HCJ_Nebula card with Core = 1), times NebulaBrightness. */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float SkyCoreBrightness = 0.9f;
+
+	/** Large soft haze cards per sector at infinity, so that no direction of the sky is black (0..6), and their brightness. */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0", ClampMax = "6"))
+	int32 SkyHazeCards = 2;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float SkyHazeBrightness = 0.11f;
+
+	/** Soft cloud cards per sector that stand IN the world, 600 to 1000 m from the sector origin: they shift against the sky at infinity as a ship flies (0..8). */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0", ClampMax = "8"))
+	int32 SkyNearClouds = 3;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float SkyNearCloudBrightness = 0.22f;
+
+	/** How far the colours of the sky are pulled from the sector tint towards teal / blue (0 = the tint alone). */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float SkyTealMix = 0.35f;
+
+	/** Made-up faint stars added to the catalogue stars (same material, magnitudes 5.5 to 7.5). */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0", ClampMax = "20000"))
+	int32 ExtraStars = 5000;
+
+	/** Key light (the sun) and the cool fill light that comes from the back light of the sector's sky. */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float SunIntensity = 6.0f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float FillIntensity = 2.2f;
+
+	/** Rim light of the rock material (parameters "Rim Strength" / "Rim Power" of M_Asteroid and M_HCJ_DecorRock; 0 = none). */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float RockRimStrength = 0.6f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.5"))
+	float RockRimPower = 3.0f;
+
+	/** Craters laid over the rocks (parameter "Crater Strength" of M_Asteroid; 0 = the boulders as scanned). */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0", ClampMax = "1.5"))
+	float RockCraterStrength = 0.6f;
+
+	/**
+	 * Decorative rocks (AHCJSpaceBackdrop; World/HCJSectorDecor.h): drawn only, on this machine, for the sector the view is
+	 * in. One material per entry of AsteroidMeshes, in that order (MI_HCJ_DecorRock_n); empty = no decoration.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+	TArray<FSoftObjectPath> DecorRockMaterials;
+
+	/** Pebbles (radius below 0.5 m) inside the field, most of them around the real rocks; culled beyond DecorPebbleCullDistance. */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0", ClampMax = "6000"))
+	int32 DecorPebbleCount = 1600;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "1000.0"))
+	float DecorPebbleCullDistance = 9000.0f;
+
+	/** Boulders of a belt outside the kill radius of the sector (never reachable). */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0", ClampMax = "2000"))
+	int32 DecorBeltCount = 180;
+
+	/** Share of the decorative rocks that is kept when the player switches "Cinematic look" off. */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float DecorLowShare = 0.35f;
+
+	/** Post process of the "Cinematic look" setting (an unbound post process component on the backdrop actor). */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float CineBloomIntensity = 0.8f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic")
+	float CineBloomThreshold = 1.0f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float CineVignette = 0.45f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.5", ClampMax = "1.5"))
+	float CineContrast = 1.08f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.5", ClampMax = "1.5"))
+	float CineSaturation = 1.1f;
+
+	/** Teal-and-orange grade: gain of the shadows and of the highlights (white = none). */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic")
+	FLinearColor CineShadowTint = FLinearColor(0.9f, 1.02f, 1.1f);
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic")
+	FLinearColor CineHighlightTint = FLinearColor(1.06f, 1.0f, 0.93f);
+
+	/** Image-based lens flare of the brightest pixels (desktop renderer only; 0 = off). */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float CineLensFlare = 0.0f;
+
+	/** Engine jet (M_HCJ_EngineJet): one quad from the tail backwards, rolled to the view. Length in hull lengths at rest and at full boost. */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+	FSoftObjectPath EngineJetMaterial;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float EngineJetIdleLength = 0.45f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float EngineJetBoostLength = 2.4f;
+
+	/** The jet of the own ship points at the chase camera: it is this share of the length of the others, so that it stays on the screen. */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float EngineJetOwnShare = 0.4f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float EngineJetWidth = 140.0f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float EngineJetBrightness = 3.0f;
+
+	/** Impact star (M_HCJ_ImpactStar): a pool of quads in UHCJEffectsDirector for bolt hits, phaser hits and shield hits. */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+	FSoftObjectPath ImpactStarMaterial;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0", ClampMax = "24"))
+	int32 MaxImpactStars = 10;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float ImpactStarSize = 700.0f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.05"))
+	float ImpactStarSeconds = 0.34f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float ImpactStarBrightness = 3.6f;
+
+	/** Portal: rune glyphs on both faces of the ring (M_HCJ_PortalRunes) and rays behind it (M_HCJ_PortalRays). */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+	FSoftObjectPath PortalRuneMaterial;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float PortalRuneBrightness = 3.5f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+	FSoftObjectPath PortalRayMaterial;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float PortalRayBrightness = 0.4f;
+
+	/** Size of the ray quad in portal radii. */
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "1.0"))
+	float PortalRayReach = 2.9f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Cinematic", meta = (ClampMin = "0.0"))
+	float PortalFilaments = 1.8f;
 
 	// ---- audio: Lyra Starter Game sounds (Epic Games, Fab) under /Game/Audio; classes and submixes under /Game/HCJ/Audio ----
 

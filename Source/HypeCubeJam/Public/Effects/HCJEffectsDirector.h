@@ -51,6 +51,13 @@ public:
 	/** A rock of that bounding radius was destroyed (bSplit: it broke into pieces that stay): flare, rock chunks, dust, sound, shake. */
 	void PlayRockBreak(const FVector& Location, float Radius, bool bSplit);
 
+	/**
+	 * Something was hit at Location (a bolt, a phaser beam, a shield facing): a short star of radial streaks on a quad
+	 * facing the view (M_HCJ_ImpactStar; a pool of UHCJAssetSettings::MaxImpactStars quads, the oldest is reused).
+	 * Scale multiplies ImpactStarSize. Cosmetic, local; skipped far from the local view.
+	 */
+	void PlayImpactStar(const FVector& Location, float Scale, const FLinearColor& Color);
+
 	/** Creates the meshes and quads now (when a match is built) instead of in the frame of the first explosion. */
 	void Prewarm() { EnsureReady(); }
 
@@ -65,6 +72,7 @@ public:
 	/** Totals since the world started (for the log). */
 	int32 GetNumDebrisSpawned() const { return NumDebrisSpawned; }
 	int32 GetNumFlaresSpawned() const { return NumFlaresSpawned; }
+	int32 GetNumImpactStarsSpawned() const { return NumStarsSpawned; }
 
 	/**
 	 * SERVER ONLY (gameplay): the shockwave of an explosion pushes every living ship within Radius of Origin away from
@@ -107,6 +115,17 @@ private:
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> DebrisMaterials;
 
 	TArray<FFlare> Flares;
+
+	/** Impact stars: the same kind of pool as the flares, with their own material. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UStaticMeshComponent>> StarQuads;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> StarMaterials;
+
+	TArray<FFlare> Stars;
+	int32 NumStarsSpawned = 0;
+	int32 NumActiveStars = 0;
 	FHCJDebrisPool Debris;
 	/** Size of each debris mesh (largest side of its bounds, uu) so that pieces can be given a size in uu. */
 	TArray<float> DebrisMeshSizes;

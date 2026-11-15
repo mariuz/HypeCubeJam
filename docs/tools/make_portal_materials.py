@@ -5,8 +5,11 @@
 #                      (parallax from the camera vector in the quad's own space: it reads as a tunnel, not a disc), a bright
 #                      core, a glowing rim, six sparks circling the rim, and - while Flash is above 0 - a ripple running
 #                      from the centre to the rim and a brighter whole (a ship has just gone through).
+#                      Since item 26 also five thin bright loops of light through the middle (the "energy filaments").
 #                      Parameters: Color (vector: the colour of the sector the portal leads to), Brightness, Speed,
-#                      Twist (how tightly the arms wind; negative winds the other way), Flash (1 -> 0 after a passage).
+#                      Twist (how tightly the arms wind; negative winds the other way), Flash (1 -> 0 after a passage),
+#                      Filaments (their strength; 0 = the swirl as it was).
+# The rune glyphs and the rays of the portal are built by make_cinematic_materials.py.
 # Writes a short report: Saved/Logs/make_portal_materials.json
 import json
 import traceback
@@ -53,11 +56,28 @@ for (int k = 0; k < 6; k++)
 	float d = length(p - c);
 	sparks += exp(-d * d * 700.0);
 }
+// Filaments: five thin loops of light (ellipses through the middle) that turn against each other and wobble.
+float fil = 0.0;
+for (int j = 0; j < 5; j++)
+{
+	float dirj = (j % 2 == 0) ? 1.0 : -1.0;
+	float ang = t * (0.45 + 0.17 * j) * dirj + j * 1.2566;
+	float cs = cos(ang);
+	float sn = sin(ang);
+	float2 e = float2(p.x * cs + p.y * sn, -p.x * sn + p.y * cs);
+	float ax = 0.80 - 0.05 * j;
+	float bx = 0.18 + 0.10 * j + 0.06 * sin(t * 0.9 + j * 2.0);
+	e.y += 0.03 * sin(e.x * 9.0 + t * 3.0 + j);
+	float d = abs(length(e / float2(ax, bx)) - 1.0) * min(ax, bx);
+	float pulse = 0.55 + 0.45 * sin(t * 6.0 + j * 3.1 + e.x * 5.0);
+	fil += exp(-d * d * 3000.0) * pulse + exp(-d * d * 140.0) * 0.10;
+}
+fil *= Filaments * (1.0 - smoothstep(0.86, 0.97, r));
 float flash = saturate(Flash);
 float wave = (r - (1.0 - flash)) * 8.0;
 float ripple = exp(-wave * wave) * flash * 3.0;
 float3 hot = lerp(Color, float3(1.0, 1.0, 1.0), 0.6);
-float3 col = Color * (total * total * 0.45 + rim * 0.8 + 0.02) + hot * (core + sparks * 2.0 + ripple);
+float3 col = Color * (total * total * 0.45 + rim * 0.8 + 0.02) + hot * (core + sparks * 2.0 + ripple + fil * 1.4);
 return col * (mask * Brightness * (1.0 + 1.5 * flash));
 """
 
@@ -90,7 +110,7 @@ def build_swirl():
     color = MEL.create_material_expression(mat, unreal.MaterialExpressionVectorParameter, -1300, 150)
     color.set_editor_property("parameter_name", "Color")
     color.set_editor_property("default_value", unreal.LinearColor(0.2, 1.0, 0.6, 1.0))
-    params = [(n, scalar(mat, n, v, -1300, 350 + 110 * i)) for i, (n, v) in enumerate([("Brightness", 0.4), ("Speed", 1.0), ("Twist", 1.0), ("Flash", 0.0)])]
+    params = [(n, scalar(mat, n, v, -1300, 350 + 110 * i)) for i, (n, v) in enumerate([("Brightness", 0.4), ("Speed", 1.0), ("Twist", 1.0), ("Flash", 0.0), ("Filaments", 1.0)])]
 
     custom = MEL.create_material_expression(mat, unreal.MaterialExpressionCustom, -600, 100)
     custom.set_editor_property("code", SWIRL)

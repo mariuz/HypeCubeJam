@@ -13,6 +13,7 @@
 #include "Materials/MaterialInterface.h"
 #include "Ship/HCJShipCharacter.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Hypercube/HCJHypercubeGraph.h"
 #include "World/HCJSectorLayout.h"
 
 namespace
@@ -23,10 +24,14 @@ namespace
 	constexpr int32 HCJPortalFrameSegments = 28;
 	constexpr float HCJPortalDiscThickness = 30.0f;
 	/** The ring: how far its middle line lies outside the disc, how thick it is across and along the portal axis. */
-	constexpr float HCJPortalRingOffset = 95.0f;
-	constexpr float HCJPortalRingWidth = 170.0f;
-	constexpr float HCJPortalRingDepth = 150.0f;
+	constexpr float HCJPortalRingOffset = 130.0f;
+	constexpr float HCJPortalRingWidth = 240.0f;
+	constexpr float HCJPortalRingDepth = 190.0f;
+	/** Short glowing dashes on the outer edge of the ring, and the rune quads on each of its two faces. */
 	constexpr int32 HCJPortalGlyphs = 14;
+	constexpr int32 HCJPortalRunesPerFace = 22;
+	constexpr int32 HCJPortalRuneGlyphs = 16;
+	constexpr float HCJPortalRuneSize = 185.0f;
 	/** Seconds the flash of a passage lasts, and the distance from the local view beyond which a portal does nothing per frame. */
 	constexpr float HCJPortalFlashSeconds = 0.9f;
 	constexpr double HCJPortalTickDistance = 70000.0;
@@ -137,12 +142,13 @@ void AHCJPortal::InitPortal(int32 InSectorId, int32 InDim, int32 InDestSector, c
 		{
 			const double AngleDegrees = 360.0 * Index / double(HCJPortalFrameSegments);
 			const FRotator Rotation(0.0, 0.0, AngleDegrees);
-			// Every other block stands a little proud, so the ring has a rhythm instead of being a plain band.
-			const float Proud = (Index % 2) == 0 ? 1.0f : 0.82f;
+			// Every other block is a little narrower across the ring, so its outline has a rhythm; the two faces stay
+			// flush (the runes lie on them).
+			const float Proud = (Index % 2) == 0 ? 1.0f : 0.86f;
 			Segments.Add(FTransform(
 				Rotation,
 				Rotation.RotateVector(FVector(0.0, RimRadius, 0.0)),
-				FVector(HCJPortalRingDepth * Proud / HCJ::BasicShapeSize, HCJPortalRingWidth * Proud / HCJ::BasicShapeSize, SegmentLength / HCJ::BasicShapeSize)));
+				FVector(HCJPortalRingDepth / HCJ::BasicShapeSize, HCJPortalRingWidth * Proud / HCJ::BasicShapeSize, SegmentLength / HCJ::BasicShapeSize)));
 		}
 		FrameMesh->AddInstances(Segments, /*bShouldReturnIndices*/ false, /*bWorldSpace*/ false, /*bUpdateNavigation*/ false);
 	}
@@ -162,8 +168,8 @@ void AHCJPortal::InitPortal(int32 InSectorId, int32 InDim, int32 InDestSector, c
 	// The ring itself: dark metal with a breath of the destination colour (lit, BasicShapeMaterial).
 	if (UMaterialInstanceDynamic* FrameMaterial = FrameMesh->CreateDynamicMaterialInstance(0))
 	{
-		FrameMaterial->SetVectorParameterValue(HCJPortalColorParameter, FMath::Lerp(FLinearColor(0.10f, 0.11f, 0.13f), InTint, 0.12f));
-		FrameMaterial->SetScalarParameterValue(HCJPortalRoughnessParameter, 0.35f);
+		FrameMaterial->SetVectorParameterValue(HCJPortalColorParameter, FMath::Lerp(FLinearColor(0.016f, 0.017f, 0.02f), InTint, 0.05f));
+		FrameMaterial->SetScalarParameterValue(HCJPortalRoughnessParameter, 0.62f);
 	}
 
 	// Glyph blocks on both faces of the ring and a thin lip inside it, glowing in the destination colour; they turn.
@@ -181,10 +187,9 @@ void AHCJPortal::InitPortal(int32 InSectorId, int32 InDim, int32 InDestSector, c
 		for (int32 Index = 0; Index < HCJPortalGlyphs; ++Index)
 		{
 			const FRotator Rotation(0.0, 0.0, 360.0 * Index / double(HCJPortalGlyphs));
-			// A bar across the ring, a little deeper than it, so it shows on both faces; every other one is a short dash.
-			const bool bLong = (Index % 2) == 0;
-			Glyphs.Add(FTransform(Rotation, Rotation.RotateVector(FVector(0.0, RimRadius, 0.0)),
-				FVector((HCJPortalRingDepth + 24.0f) / HCJ::BasicShapeSize, (bLong ? 0.62f : 0.3f) * HCJPortalRingWidth / HCJ::BasicShapeSize, (bLong ? 46.0f : 110.0f) / HCJ::BasicShapeSize)));
+			// A short glowing dash on the outer edge of the ring (the faces belong to the runes).
+			Glyphs.Add(FTransform(Rotation, Rotation.RotateVector(FVector(0.0, RimRadius + 0.5f * HCJPortalRingWidth - 4.0f, 0.0)),
+				FVector(0.55f * HCJPortalRingDepth / HCJ::BasicShapeSize, 14.0f / HCJ::BasicShapeSize, 150.0f / HCJ::BasicShapeSize)));
 		}
 		const float LipRadius = HCJ::PortalVisualRadius + 6.0f;
 		const float LipLength = 1.03f * UE_TWO_PI * LipRadius / float(HCJPortalFrameSegments);
@@ -223,6 +228,7 @@ void AHCJPortal::InitPortal(int32 InSectorId, int32 InDim, int32 InDestSector, c
 		SwirlMaterial->SetScalarParameterValue(TEXT("Twist"), 1.0f);
 		SwirlMaterial->SetScalarParameterValue(TEXT("Speed"), 1.0f);
 		SwirlMaterial->SetScalarParameterValue(TEXT("Flash"), 0.0f);
+		SwirlMaterial->SetScalarParameterValue(TEXT("Filaments"), Settings.PortalFilaments);
 		DiscMesh->SetMaterial(0, SwirlMaterial);
 	}
 	else
@@ -250,6 +256,68 @@ void AHCJPortal::InitPortal(int32 InSectorId, int32 InDim, int32 InDestSector, c
 				}
 			}
 		}
+	}
+
+	// Runes: one glyph per quad on both faces of the ring, glowing in the destination colour.
+	UStaticMesh* RunePlane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+	UMaterialInterface* RuneBase = UHCJAssetSettings::Load<UMaterialInterface>(Settings.PortalRuneMaterial, TEXT("portal runes"));
+	if (RuneBase != nullptr && RunePlane != nullptr)
+	{
+		RuneMaterial = UMaterialInstanceDynamic::Create(RuneBase, this);
+		RuneMaterial->SetVectorParameterValue(TEXT("Color"), GlowColor);
+		RuneMaterial->SetScalarParameterValue(TEXT("Brightness"), Settings.PortalRuneBrightness);
+		RuneMaterial->SetScalarParameterValue(TEXT("Flash"), 0.0f);
+		RuneMesh = NewObject<UInstancedStaticMeshComponent>(this, TEXT("RuneMesh"));
+		RuneMesh->SetupAttachment(Trigger);
+		RuneMesh->SetStaticMesh(RunePlane);
+		RuneMesh->SetMaterial(0, RuneMaterial);
+		RuneMesh->SetNumCustomDataFloats(1);
+		RuneMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		RuneMesh->SetGenerateOverlapEvents(false);
+		RuneMesh->SetCanEverAffectNavigation(false);
+		RuneMesh->SetCastShadow(false);
+		RuneMesh->RegisterComponent();
+		for (int32 Face = 0; Face < 2; ++Face)
+		{
+			const double Side = Face == 0 ? 1.0 : -1.0;
+			for (int32 Index = 0; Index < HCJPortalRunesPerFace; ++Index)
+			{
+				const double Angle = UE_DOUBLE_TWO_PI * (Index + 0.5 * Face) / double(HCJPortalRunesPerFace);
+				const FVector Radial(0.0, FMath::Cos(Angle), FMath::Sin(Angle));
+				const FVector Normal(Side, 0.0, 0.0);
+				// The quad lies on the face (its normal out of it), the top of the glyph towards the outside of the ring.
+				const FQuat Rotation = FRotationMatrix::MakeFromZY(Normal, -Radial).ToQuat();
+				const FVector Location = Radial * RimRadius + Normal * (0.5 * HCJPortalRingDepth + 3.0);
+				const int32 Instance = RuneMesh->AddInstance(FTransform(Rotation, Location, FVector(HCJPortalRuneSize / HCJ::BasicShapeSize)), /*bWorldSpace*/ false);
+				// Which glyph: a hash of the two sectors and the place on the ring (every machine shows the same runes).
+				const float Glyph = float(static_cast<uint32>(HCJ::MixSeed(HCJ::MixSeed(InSectorId * 64 + InDestSector, 0x0000A11E), Face * 100 + Index)) % HCJPortalRuneGlyphs);
+				RuneMesh->SetCustomData(Instance, MakeArrayView(&Glyph, 1), /*bMarkRenderStateDirty*/ true);
+			}
+		}
+	}
+
+	// Rays: a quad in the plane of the portal, larger than the ring; the material draws nothing inside the ring.
+	UMaterialInterface* RayBase = UHCJAssetSettings::Load<UMaterialInterface>(Settings.PortalRayMaterial, TEXT("portal rays"));
+	if (RayBase != nullptr && RunePlane != nullptr && Settings.PortalRayBrightness > 0.0f)
+	{
+		const float HalfSize = FMath::Max(Settings.PortalRayReach, 1.5f) * HCJ::PortalVisualRadius;
+		RayMaterial = UMaterialInstanceDynamic::Create(RayBase, this);
+		RayMaterial->SetVectorParameterValue(TEXT("Color"), GlowColor);
+		RayMaterial->SetScalarParameterValue(TEXT("Brightness"), Settings.PortalRayBrightness);
+		RayMaterial->SetScalarParameterValue(TEXT("Inner"), (RimRadius + 0.5f * HCJPortalRingWidth) / HalfSize);
+		RayMaterial->SetScalarParameterValue(TEXT("Flash"), 0.0f);
+		RayMesh = NewObject<UStaticMeshComponent>(this, TEXT("RayMesh"));
+		RayMesh->SetupAttachment(Trigger);
+		RayMesh->SetStaticMesh(RunePlane);
+		RayMesh->SetMaterial(0, RayMaterial);
+		RayMesh->SetRelativeRotation(FRotator(90.0, 0.0, 0.0));
+		RayMesh->SetRelativeScale3D(FVector(2.0f * HalfSize / HCJ::BasicShapeSize));
+		RayMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		RayMesh->SetGenerateOverlapEvents(false);
+		RayMesh->SetCanEverAffectNavigation(false);
+		RayMesh->SetCastShadow(false);
+		RayMesh->SetTranslucentSortPriority(-1);
+		RayMesh->RegisterComponent();
 	}
 
 	SetupFarGlow(GlowColor);
@@ -399,6 +467,23 @@ void AHCJPortal::Tick(float DeltaSeconds)
 	if (SwirlMaterial != nullptr)
 	{
 		SwirlMaterial->SetScalarParameterValue(TEXT("Flash"), Flash);
+	}
+	if (RuneMesh != nullptr)
+	{
+		// The runes turn the other way, slowly.
+		RuneMesh->SetRelativeRotation(FRotator(0.0, 0.0, -0.5f * GlyphAngle));
+	}
+	if (bFlashShown || Flash > 0.0f)
+	{
+		bFlashShown = Flash > 0.0f;
+		if (RuneMaterial != nullptr)
+		{
+			RuneMaterial->SetScalarParameterValue(TEXT("Flash"), Flash);
+		}
+		if (RayMaterial != nullptr)
+		{
+			RayMaterial->SetScalarParameterValue(TEXT("Flash"), Flash);
+		}
 	}
 	if (CoreMaterial != nullptr && bWormhole && !Settings.PortalBrightnessParameter.IsNone())
 	{

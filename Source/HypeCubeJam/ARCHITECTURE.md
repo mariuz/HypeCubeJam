@@ -75,6 +75,48 @@ The public headers are the contract; every function comment says which machine r
   (`bCloakLook`). `UHCJUserSettings::bEnemyHighlight` switches the rim off and shrinks the glint.
 - HUD: `AHCJHUD::DrawTargets` draws brackets and arrows with `DrawMarkerLine` (a line over a dark line).
 
+## Cinematic look (cosmetic, every machine that draws; devlog item 26)
+Nothing here is replicated, has collision or is read by gameplay, bots, aim assist or traces. Numbers: `UHCJAssetSettings`,
+category "Cinematic" (`DefaultGame.ini`). Materials and textures: `docs/tools/make_cinematic_textures.py` (plain Python +
+Pillow -> `SourceAssets/Cinematic/*.png`) and `docs/tools/make_cinematic_materials.py` (editor Python -> `/Game/HCJ/Cinematic`,
+`M_HCJ_Nebula`, `M_Asteroid`, `M_HCJ_EngineJet`, `M_HCJ_ImpactStar`, `M_HCJ_PortalRunes`, `M_HCJ_PortalRays`).
+- Sky (`AHCJSpaceBackdrop::ShowSector`): every cloud is an instance of `M_HCJ_Nebula` (6 custom floats: R, G, B, seed, core,
+  soft; three samples of one noise texture, no per-pixel noise maths). Per sector: the seeded clouds of `FHCJSectorSky`
+  (unchanged, tested), one backlit CORE cloud at `AHCJSpaceBackdrop::MakeBacklight(seed, sector, tint, sun)` (a pure static
+  function with its own hash), `SkyHazeCards` soft cards at infinity, and `NearClouds` - soft cards that stand in the world
+  600-1000 m from the sector origin (parallax against the sky at infinity). `MakeSkyColor` = sector tint, hue-shifted,
+  pulled towards teal (`SkyTealMix`), the yellow band of hues folded to gold / green. `ExtraStars` made-up faint stars
+  are added to the catalogue stars (same instanced draw).
+- Lights (`AHCJUniverse::ApplySectorLighting(Sector)`, called by the backdrop when the view changes sector): the sun keeps
+  its direction (`SunIntensity`); the fill light shines from the back light of that sector's sky in its colour
+  (`FillIntensity`). The mobile renderer shades with one directional light: there the fill is missing and the rim light
+  of the rock material stands in for it.
+- Rocks: `M_Asteroid` (same parameters as before plus "Rim Color / Strength / Power / Dir" - a fresnel term in the
+  emissive, stronger on the side of the back light - and "Crater Tiling / Strength" - a crater normal + cavity texture over
+  the mesh UVs). `AHCJUniverse::CreateRockComponent` sets them per sector. Collision shapes, layout and checksums untouched.
+- Decorative rocks (`World/HCJSectorDecor.h`, plain C++, tested: `HypeCubeJam.World.SectorDecor`): `FHCJSectorDecor::Make(layout,
+  keep-out spheres, counts, variants)` -> pebbles (radius 7-45 uu, 70 % around the real rocks, none near portals, spawn
+  points, pads, wormhole, station, black hole) and a belt of boulders wholly beyond `HCJ::SectorKillRadius + 2000`. Own hash
+  of the sector seed. `AHCJSpaceBackdrop::BuildDecor` draws them for the sector the view is in only, as
+  `UHierarchicalInstancedStaticMeshComponent`s without collision (forced to the last LOD; pebbles culled beyond
+  `DecorPebbleCullDistance`), with `M_HCJ_DecorRock` (base colour + normal + rim; a vertex nearer than "Near Cull" to the
+  camera collapses into it, so no pebble flashes across the view).
+- Post process: an unbound `UPostProcessComponent` on the backdrop actor (`ApplyCinematicLook`): bloom intensity /
+  threshold, vignette, contrast, saturation, shadow / highlight gain (teal and orange), optional lens flare
+  (`CineLensFlare`, 0 = off). `UHCJUserSettings::bCinematicLook` (SETTINGS page "Cinematic look", on by default; read every
+  frame by the backdrop's Tick): off disables the component (engine defaults, as before item 26) and keeps
+  `DecorLowShare` of the decorative rocks. Sky, lights, rim light, jets and portal look are NOT switched by it.
+- Engines: `EngineJetMesh` (`AHCJShipCharacter::TickShipEffects`): one quad with `M_HCJ_EngineJet` from the tail straight
+  back, rolled to the view, length `EngineJetIdleLength..EngineJetBoostLength` hull lengths by speed; the own jet is
+  `EngineJetOwnShare` of that (it points at the chase camera). Colours as the glow: enemies red, the own ship its own.
+- Hits: `UHCJEffectsDirector::PlayImpactStar(location, scale, colour)` - a pool of `MaxImpactStars` quads with
+  `M_HCJ_ImpactStar` (core, halo, radial streaks that fly out). Called from `AHCJProjectile::PlayImpactEffects`,
+  `AHCJShipCharacter::TickPhaserEffects` (every `PhaserSparkInterval`) and `StartShieldFlare` (on the bubble's surface).
+- Enemy glint: `M_HCJ_ShipGlint` is "alpha composite" now; its `Backing` parameter (`ShipGlintBacking`) darkens the sky
+  behind an enemy's glint before the light is added, so the red point stays red against a bright nebula.
+- Development: `HCJMenuCmd cinematic <0|1> | fly <0|1|2> | impact [uu] | enemyfire <0|1>[,<ship>[,<target ship>]]`,
+  `scene <sector>,backlight`.
+
 ## Portals (cosmetic part)
 - `AHCJPortal::InitPortal`: ring blocks (`FrameMesh`), turning glyphs and lip (`GlyphMesh`), the swirl quad (`DiscMesh`
   with `M_HCJ_PortalSwirl`, colour = tint of the destination sector), a far glow quad (`FarGlowMesh`, the ship glint
@@ -82,6 +124,11 @@ The public headers are the contract; every function comment says which machine r
   fades the passage flash and sizes the far glow. `AHCJPortal::NotifyPassage(location)` (static, every machine) is called
   from `AHCJShipCharacter::TickShipEffects` when a ship's position jumps by a sector, for both ends. Wormhole mouths
   (`InitWormhole`) keep core + swirl card and share the far glow and the flash. Trigger and transform are untouched.
+- Item 26: the ring is heavier and darker; `RuneMesh` (44 instanced quads with `M_HCJ_PortalRunes`, one of sixteen
+  glyphs of a script-made atlas each, picked by a hash of the two sectors; they lie on both faces of the ring and turn
+  against the lip), `RayMesh` (one quad in the portal's plane with `M_HCJ_PortalRays`: rays radiating from behind the
+  ring) and five thin loops of light in `M_HCJ_PortalSwirl` (parameter `Filaments`). All in the destination colour; the
+  passage flash drives runes and rays too.
 
 ## Intro movie (local, once per process)
 - `UI/HCJIntroLogic.h` (plain C++, tested): `FHCJIntroFlow` (ends on: played, key, open timeout, error, time limit; title
@@ -186,7 +233,7 @@ assist / design targets, weapon slots); asteroids (`HypeCubeJam.Asteroids.*`: sp
 round trip in any order); effects (`HypeCubeJam.Effects.*`: shockwave falloff, debris caps); music (`HypeCubeJam.Audio.MusicTracks`); online logic (config validation and the unavailable states, lobby attribute packing / parsing, join
 address, stat tracker, leaderboard page); ship systems (`HypeCubeJam.Systems.*`: warp state machine, warp and boost followed
 by the server, tractor pull, cloak device) and ship types (`HypeCubeJam.ShipTypes.*`: table, server validation); the intro (`HypeCubeJam.UI.IntroFlow`: every way it ends, title and fade
-timing; `HypeCubeJam.UI.IntroCommandLine`: which command lines play it); rock variant and visual transform envelope; ship hull/skin selection; sector sky; black hole placement
+timing; `HypeCubeJam.UI.IntroCommandLine`: which command lines play it); decorative rocks (`HypeCubeJam.World.SectorDecor`: determinism, keep-outs, belt beyond the kill radius, layout untouched); rock variant and visual transform envelope; ship hull/skin selection; sector sky; black hole placement
 (determinism, clearances, share of sectors) and gravity curve (direction, monotonic, clamp, tuning).
 
 ## File -> owner group
@@ -205,6 +252,7 @@ A = Hypercube + World (+ Tests), B = Ship, C = Game, D = AI. Each header `X.h` h
 | `Public/Game/HCJGameplaySettings.h` | C |
 | `Public/Audio/HCJAudioDirector.h` | C |
 | `Public/World/HCJSpaceBackdrop.h` | A |
+| `Public/World/HCJSectorDecor.h` | A |
 | `Public/Assets/HCJAssetSettings.h` | shared |
 | `Private/Tests/*.cpp` | A |
 | `Public/Ship/HCJShipCharacter.h` | B |

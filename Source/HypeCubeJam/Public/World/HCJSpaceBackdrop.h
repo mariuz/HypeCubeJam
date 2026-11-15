@@ -5,7 +5,10 @@
 #include "HCJSpaceBackdrop.generated.h"
 
 class AHCJUniverse;
+class UHierarchicalInstancedStaticMeshComponent;
 class UInstancedStaticMeshComponent;
+class UMaterialInterface;
+class UPostProcessComponent;
 class UMaterialInstanceDynamic;
 class USceneComponent;
 class UStaticMeshComponent;
@@ -89,6 +92,18 @@ struct HYPECUBEJAM_API FHCJSectorSky
  *    FHCJBlackHole; this actor only draws it: one translucent card with M_HCJ_BlackHole at the hole's world
  *    position, turned to the camera every frame, sized so that the dark disc is exactly the event horizon.
  *    It is the one part of the backdrop that is NOT at infinity.
+ *
+ * CINEMATIC LOOK (devlog item 26; all cosmetic, all local, numbers in UHCJAssetSettings "Cinematic"):
+ *  - Sky layers per sector, all instances of M_HCJ_Nebula (6 custom floats: R, G, B, seed, core, soft): the seeded
+ *    clouds of FHCJSectorSky, one BACKLIT CORE cloud in the direction MakeBacklight gives (the universe turns its
+ *    fill light to shine from there and tints the rim light of the rocks with its colour), a few soft haze cards so
+ *    that no direction is black, and NearClouds: soft cards that stand in the world 600-1000 m from the sector origin
+ *    and therefore shift against the rest as a ship flies. Made-up faint stars thicken the catalogue stars.
+ *  - Decorative rocks of the sector the view is in (FHCJSectorDecor: pebbles around the real rocks and a belt of
+ *    boulders beyond the kill radius), as instances without collision; rebuilt when the view changes sector.
+ *  - An unbound post process component (bloom, vignette, contrast, a teal-and-orange grade), enabled by
+ *    UHCJUserSettings::bCinematicLook; switched off, the game renders with the engine defaults as before and keeps
+ *    DecorLowShare of the decorative rocks.
  */
 UCLASS(NotBlueprintable, NotPlaceable, Transient)
 class HYPECUBEJAM_API AHCJSpaceBackdrop : public AActor
@@ -118,6 +133,19 @@ public:
 	/** The sky of Sector for the current match (FHCJSectorSky::Make with the loaded catalogue and the settings). */
 	FHCJSectorSky MakeSky(int32 Sector) const;
 
+	/**
+	 * Where the backlit core cloud of a sector's sky stands and its colour: a pure function of its arguments (own hash),
+	 * at least about 80 degrees away from SunDirection so that the fill light from there lights the side the sun leaves
+	 * dark. Used by this actor (the cloud), by AHCJUniverse (fill light, rim light of the rocks) and by the scene command.
+	 */
+	static void MakeBacklight(int32 InMatchSeed, int32 Sector, const FLinearColor& Tint, const FVector& SunDirection, FVector& OutDirection, FLinearColor& OutColor);
+
+	/** A colour of the sky of a sector: the tint turned by HueShiftDegrees and pulled towards teal by UHCJAssetSettings::SkyTealMix. */
+	static FLinearColor MakeSkyColor(const FLinearColor& Tint, float HueShiftDegrees);
+
+	/** Decorative rocks drawn right now (pebbles + belt), for the log and the frame-rate notes. */
+	int32 GetNumDecorRocks() const { return NumDecorRocks; }
+
 protected:
 	/** Loads the dome, the star catalogue and the body catalogue; creates the star instances. Once per actor. */
 	void BuildFixedSky(const FVector& SunDirection);
@@ -125,6 +153,12 @@ protected:
 	void ShowSector(int32 Sector);
 	/** Puts the black hole card on the hole of the shown sector, facing ViewLocation. */
 	void UpdateBlackHoleCard(const FVector& ViewLocation);
+	/** Replaces the decorative rocks and the near clouds with those of Sector (INDEX_NONE: none). */
+	void BuildDecor(int32 Sector);
+	/** Creates the decor components on first use; false when there is nothing to draw them with. */
+	bool EnsureDecorComponents();
+	/** Sets the post process component from the settings and switches it on or off. */
+	void ApplyCinematicLook(bool bOn);
 
 	UPROPERTY(VisibleAnywhere, Category = "HCJ")
 	TObjectPtr<USceneComponent> SceneRoot;
@@ -174,6 +208,24 @@ protected:
 	UPROPERTY(VisibleAnywhere, Category = "HCJ")
 	TObjectPtr<UInstancedStaticMeshComponent> Nebulae;
 
+	/** Soft cloud cards of the current sector that stand in the world around the sector origin (not at infinity). */
+	UPROPERTY(VisibleAnywhere, Category = "HCJ")
+	TObjectPtr<UInstancedStaticMeshComponent> NearClouds;
+
+	/** Decorative rocks of the current sector, one component per rock mesh: pebbles (culled by distance) and the far belt. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UHierarchicalInstancedStaticMeshComponent>> DecorPebbles;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UHierarchicalInstancedStaticMeshComponent>> DecorBelt;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> DecorMaterials;
+
+	/** Bloom, vignette and grade of the "Cinematic look" setting; unbound. */
+	UPROPERTY(VisibleAnywhere, Category = "HCJ")
+	TObjectPtr<UPostProcessComponent> PostProcess;
+
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> MoonMaterial;
 
@@ -206,5 +258,12 @@ protected:
 	int32 MatchSeed = 0;
 	int32 ShownSector = INDEX_NONE;
 	int32 NumStars = 0;
+	int32 NumDecorRocks = 0;
 	bool bFixedSkyBuilt = false;
+	bool bDecorTried = false;
+	/** Which decor component draws every pebble: the rock mesh with the fewest triangles in its last LOD (and that count). */
+	int32 DecorPebbleVariant = 0;
+	int32 DecorPebbleTriangles = MAX_int32;
+	/** What ApplyCinematicLook was last called with (-1: never). */
+	int32 CinematicApplied = -1;
 };

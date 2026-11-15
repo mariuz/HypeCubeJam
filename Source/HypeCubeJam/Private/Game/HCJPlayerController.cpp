@@ -18,6 +18,7 @@
 #include "Engine/GameViewportClient.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Assets/HCJAssetSettings.h"
+#include "Effects/HCJEffectsDirector.h"
 #include "Game/HCJGameMode.h"
 #include "Game/HCJHUD.h"
 #include "Game/HCJPlayerState.h"
@@ -426,6 +427,18 @@ void AHCJPlayerController::PlayerTick(float DeltaTime)
 	}
 
 	UpdateOnline(DeltaTime);
+
+#if !UE_BUILD_SHIPPING
+	// Development ("HCJMenuCmd fly 1|2"): the own ship flies straight ahead at cruise or under boost, for pictures of its engine.
+	if (DebugFlyMode > 0)
+	{
+		if (AHCJShipCharacter* Ship = GetShip())
+		{
+			Ship->SetBoosting(DebugFlyMode == 2);
+			Ship->AddThrustInput(FVector(DebugFlyMode == 2 ? 1.0 : 0.5, 0.0, 0.0));
+		}
+	}
+#endif
 
 	// The pilot name of the settings, once: a join by address or a start without the menu does not carry it.
 	if (!bNameSent && PlayerState != nullptr)
@@ -1354,6 +1367,31 @@ void AHCJPlayerController::HCJMenuCmd(const FString& Action, const FString& Argu
 			}
 		}
 	}
+	else if (Action == TEXT("enemyfire"))
+	{
+		// Listen host, with "peace": "enemyfire <0|1>[,<which ship>[,<which other ship it aims at; -1 = the own ship>]]" -
+		// that ship turns to its target and holds its trigger (a phaser beam seen from the side, a hit on a shield).
+		const AHCJShipCharacter* Own = HasAuthority() ? GetShip() : nullptr;
+		TArray<FString> Parts;
+		Argument.ParseIntoArray(Parts, TEXT(","));
+		const bool bOn = Parts.Num() == 0 || FCString::Atoi(*Parts[0]) != 0;
+		AHCJShipCharacter* Shooter = FindNthOtherShip(Own, Parts.Num() > 1 ? FCString::Atoi(*Parts[1]) : 0);
+		const int32 TargetIndex = Parts.Num() > 2 ? FCString::Atoi(*Parts[2]) : -1;
+		AHCJShipCharacter* AimTarget = TargetIndex < 0 ? const_cast<AHCJShipCharacter*>(Own) : FindNthOtherShip(Own, TargetIndex);
+		AHCJBotController::SetDebugIdleKeepsFire(bOn);
+		if (Shooter != nullptr && AimTarget != nullptr && Shooter != AimTarget)
+		{
+			const FRotator Aim = (AimTarget->GetActorLocation() - Shooter->GetActorLocation()).Rotation();
+			if (AController* Other = Shooter->GetController())
+			{
+				Other->SetControlRotation(Aim);
+			}
+			Shooter->SetActorRotation(Aim);
+			Shooter->SetLockTarget(AimTarget);
+			Shooter->SetFiring(bOn);
+			UE_LOG(LogHCJ, Log, TEXT("Debug: %s %s at %s"), *Shooter->GetName(), bOn ? TEXT("fires") : TEXT("stops firing"), *AimTarget->GetName());
+		}
+	}
 	else if (Action == TEXT("holdplayer"))
 	{
 		// Listen host: the own ship is put 30 m behind the nearest ship flown by another player, facing it, made
@@ -1384,6 +1422,31 @@ void AHCJPlayerController::HCJMenuCmd(const FString& Action, const FString& Argu
 			Own->SetLockTarget(Other);
 			Own->SetTractoring(true);
 			UE_LOG(LogHCJ, Log, TEXT("Debug: holding %s with the tractor beam"), *Other->GetName());
+		}
+	}
+	else if (Action == TEXT("cinematic"))
+	{
+		// The "Cinematic look" setting, without the menu and without saving it ("cinematic 0" off).
+		UHCJUserSettings::Get().bCinematicLook = Argument != TEXT("0");
+	}
+	else if (Action == TEXT("fly"))
+	{
+		// The own ship flies straight ahead from now on: "fly 1" at cruise, "fly 2" under boost, "fly 0" stops that.
+		DebugFlyMode = FMath::Clamp(FCString::Atoi(*Argument), 0, 2);
+		if (AHCJShipCharacter* Ship = DebugFlyMode == 0 ? GetShip() : nullptr)
+		{
+			Ship->SetBoosting(false);
+		}
+	}
+	else if (Action == TEXT("impact"))
+	{
+		// An impact star Argument uu ahead of the own ship (default 2500), for pictures.
+		if (const AHCJShipCharacter* Ship = GetShip())
+		{
+			if (UHCJEffectsDirector* Effects = UHCJEffectsDirector::Get(this))
+			{
+				Effects->PlayImpactStar(Ship->GetActorLocation() + GetControlRotation().Vector() * (Argument.IsEmpty() ? 2500.0f : FCString::Atof(*Argument)), 1.0f, FLinearColor(1.0f, 0.6f, 0.2f));
+			}
 		}
 	}
 	else if (Action == TEXT("skipintro"))
@@ -1452,6 +1515,12 @@ void AHCJPlayerController::HCJMenuCmd(const FString& Action, const FString& Argu
 				LookTarget = Universe->GetStationLocation(Sector);
 				bHasLookTarget = true;
 			}
+			else if (Look == TEXT("backlight"))
+			{
+				// The backlit core cloud of the sector's sky (item 26).
+				FLinearColor BackColor;
+				AHCJSpaceBackdrop::MakeBacklight(Universe->GetConfig().Seed, Sector, Layout->Tint, FRotator(-35.0, 40.0, 0.0).Vector() * -1.0, Direction, BackColor);
+			}
 			else if (Look == TEXT("dark"))
 			{
 				// Of 300 evenly spread directions the one farthest (by angle) from every body, nebula centre and the sun.
@@ -1485,7 +1554,8 @@ void AHCJPlayerController::HCJMenuCmd(const FString& Action, const FString& Argu
 			Ship->TeleportTo(Location, Rotation, false, true);
 			SetControlRotation(Rotation);
 			ClientSetRotation(Rotation);
-			UE_LOG(LogHCJ, Log, TEXT("Debug: scene in sector %d at spawn point %d, looking at %s (%s)"), Sector, SpawnIndex, *Look, *Direction.ToCompactString());
+			UE_LOG(LogHCJ, Log, TEXT("Debug: scene in sector %d at spawn point %d, looking at %s (%s); theme %d, %d asteroids, tint %s"), Sector, SpawnIndex, *Look, *Direction.ToCompactString(),
+				int32(Layout->Theme), Layout->Asteroids.Num(), *Layout->Tint.ToString());
 		}
 	}
 #endif

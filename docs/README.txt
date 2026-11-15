@@ -6,7 +6,8 @@ Start:  HypeCubeJam.exe            plays a 10 s intro (any key, mouse button or 
                                     HANGAR: choose your ship - type, hull and paint (see "Ship types").
                                     The menu also has: number of bots, hypercube size (3D-5D), bot difficulty,
                                     seed, pilot name, JOIN by address, CONTROLS (all keys), SETTINGS (mouse
-                                    sensitivity, volumes, hints, camera shake, enemy highlight, music), QUIT.
+                                    sensitivity, volumes, hints, camera shake, enemy highlight, cinematic look,
+                                    music), QUIT.
                                     Enter = PLAY.
 Join:   type the host's address in the menu and press JOIN,
         or start with the address:  HypeCubeJam.exe <ip>       e.g. HypeCubeJam.exe 127.0.0.1
@@ -42,6 +43,8 @@ only a few times. H or SETTINGS switches them off.
 Enemies glow: every other ship has a red rim, a red engine glow and trail, and from a distance a bright red glint
 that never gets smaller on the screen (your own ship keeps its own colour). SETTINGS > Enemy highlight switches the
 rim and the big glint off. A cloaked ship shows none of it: only a faint shimmer of its hull.
+SETTINGS > Cinematic look (on by default) is the bloom, the colour grade and the full amount of drifting pebbles;
+switch it off for a plainer, slightly faster picture. The pebbles and the far boulders are scenery: you fly through them.
 On screen: every enemy in the sector has a heavy red bracket with name, distance and hull (dimmer when behind a rock);
 red arrows at the screen edge point to enemies out of view. The enemy nearest your crosshair is the target
 (orange diamond): put the crosshair on its yellow lead circle - it turns green and says FIRE when you are on it.

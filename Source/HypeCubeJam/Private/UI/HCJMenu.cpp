@@ -541,6 +541,11 @@ TSharedRef<SWidget> SHCJMenu::BuildSettings()
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
 		[
+			MakeStepper(TEXT("Cinematic look (bloom, colour grade, more debris)"), []() { return FString(UHCJUserSettings::Get().bCinematicLook ? TEXT("On") : TEXT("Off")); },
+				[](int32 Step) { UHCJUserSettings& S = UHCJUserSettings::Get(); S.bCinematicLook = !S.bCinematicLook; })
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
+		[
 			MakeStepper(TEXT("Music"), []() { return FString(UHCJUserSettings::Get().MusicSet == 0 ? TEXT("Lyria tracks") : TEXT("Lyra stems")); },
 				[](int32 Step) { UHCJUserSettings& S = UHCJUserSettings::Get(); S.MusicSet = S.MusicSet == 0 ? 1 : 0; })
 		]

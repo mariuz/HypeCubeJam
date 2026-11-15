@@ -72,6 +72,14 @@ public:
 	UPROPERTY(Config)
 	bool bEnemyHighlight = true;
 
+	/**
+	 * Cinematic look: bloom, vignette, contrast and the teal-and-orange grade (AHCJSpaceBackdrop::ApplyCinematicLook), and
+	 * the full number of decorative rocks. Off = the picture as the engine renders it by default and about a third of the
+	 * decoration. Settings page.
+	 */
+	UPROPERTY(Config)
+	bool bCinematicLook = true;
+
 	/** Hangar: ship type (EHCJShipType), hull within the type and paint; -1 = let the game pick hull / paint. */
 	UPROPERTY(Config)
 	int32 ShipType = 1;

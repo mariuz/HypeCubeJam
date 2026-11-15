@@ -561,6 +561,13 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> EngineTrailMaterial;
 
+	/** The engine jet (item 26): one quad from the tail straight backwards with M_HCJ_EngineJet, as long as the ship is fast. */
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMeshComponent> EngineJetMesh;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> EngineJetMaterial;
+
 	/** The beacon is the glint quad (UHCJAssetSettings::ShipGlintMaterial) and not the older glowing sphere. */
 	bool bBeaconIsGlint = false;
 	/** Where the far end of the engine trail is: it follows the tail of the ship with a lag. */
