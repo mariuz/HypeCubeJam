@@ -336,6 +336,12 @@
 			]
 		},
 		{
+			"ShaderMapHash": "30CDE744272CBE88",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_ShockRing"
+			]
+		},
+		{
 			"ShaderMapHash": "30E588F84B4F9597",
 			"Assets": [
 				"/Game/HCJ/Effects/M_HCJ_ImpactStar"
@@ -471,6 +477,12 @@
 			]
 		},
 		{
+			"ShaderMapHash": "4CDF50F258EB87F9",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_HullDebris"
+			]
+		},
+		{
 			"ShaderMapHash": "4DD10C601386E4FE",
 			"Assets": [
 				"/InterchangeAssets/gltf/MaterialInstances/MI_ClearCoat_Mask"
@@ -600,6 +612,12 @@
 			"ShaderMapHash": "6EDFF11C1B167728",
 			"Assets": [
 				"/Game/NiagaraExamples/FX_Weapons/Impacts/NS_Impact_Metal"
+			]
+		},
+		{
+			"ShaderMapHash": "6F782504B73AA0DF",
+			"Assets": [
+				"/Game/HCJ/Effects/M_HCJ_Fireball"
 			]
 		},
 		{
