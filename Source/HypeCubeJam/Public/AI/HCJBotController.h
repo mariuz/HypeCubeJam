@@ -57,6 +57,24 @@ enum class EHCJBotState : uint8
  *           GetCurrentSector() != INDEX_NONE), excluding the bot's own sector. If H is not empty take the one
  *           with the smallest FHCJHypercubeGraph::ShortestDistance and return NextHopDim(current, it); otherwise
  *           return a random open dimension of the current sector.
+ *  TACTICS (difficulty-scaled: FHCJBotSkill::Tactics is the chance, rolled once per ship, that a bot flies "smart" at all, and
+ *           again per occasion; EHCJBotTactic counts what was done):
+ *           - target: PickTarget scores every hostile in sight - near, hull low, the facing it shows us weak or down, shooting
+ *             at us (a flanker whose side of our shield is weak gets more), its tail towards us; minus one share for every
+ *             other bot already on it, so that not everybody piles on one victim. The current target keeps a bonus.
+ *           - breaking off (ThinkDisengage / TickDisengage): the facing towards the attacker is down and the hull is low (a
+ *             light hull a little earlier), and there is a way out - a rock near enough to get behind
+ *             (AHCJUniverse::FindCoverPoint), the cloak, a repair / shield pad -> away under boost (and at warp when the drive gets its charge), the
+ *             best facing turned to the attacker (TickShieldFacing); back into the fight when the shields are back or
+ *             after a few seconds. Without a way out the bot fights on.
+ *           - torpedoes: at once through a facing that is down (FHCJBotSkill::ComboChance), the tractor beam first on a
+ *             target in reach, so that it cannot dodge.
+ *           - ship type (FHCJBotStyle in the .cpp): interceptor and scout fight close and make boosted passes around hulls
+ *             that turn slower than they do; the scout cloaks readily to get away (the cloak costs the shields, so not
+ *             for every approach) and, when it does approach under cloak, drops it behind its target; the gunship
+ *             stands off and fires torpedoes twice as readily; the cruiser reaches for its tractor beam.
+ *           - surroundings: a small rock in the line of fire is shot away with the phaser, the reach of a station's
+ *             turrets is steered out of unless the bot attacks the turrets, a fight far away is reached at warp.
  *  Avoidance (always on): sphere sweep BY OBJECT TYPE ECC_WorldStatic (only asteroid ISMs have that type; ships are
  *           Pawn, portal triggers and projectiles WorldDynamic), radius AvoidanceProbeRadius, from the ship along the
  *           desired direction over AvoidanceLookAhead; on a hit, steer along the desired direction projected on
@@ -84,6 +102,8 @@ public:
 	virtual void UpdateControlRotation(float DeltaTime, bool bUpdatePawn = true) override;
 
 	EHCJBotState GetBotState() const { return BotState; }
+	/** What the bot is doing, as key=value tokens for a "Playthrough:" line (the stuck-ship report of the game mode). */
+	FString DescribeForLog() const;
 	/** The possessed ship when it exists and is not dead, else nullptr. */
 	AHCJShipCharacter* GetShip() const;
 	AHCJShipCharacter* GetTargetShip() const { return TargetShip.Get(); }
@@ -165,6 +185,23 @@ protected:
 	void TickSystems(AHCJShipCharacter& Ship);
 	/** Nothing solid between the ship and Point for the first MaxDistance uu (a sphere sweep the size of the ship). */
 	bool IsWayClear(const AHCJShipCharacter& Ship, const FVector& Point, float MaxDistance) const;
+	// ---- tactics (see the class comment) ----
+
+	/**
+	 * The ship to attack: for a bot that flies "smart" the best-scored hostile in sight within MaxRange (Current keeps a
+	 * bonus and need not be in sight), else the nearest visible one - Current unless another is clearly nearer.
+	 * bOutSpread: the choice is not the nearest because the nearest has more bots on it.
+	 */
+	AHCJShipCharacter* PickTarget(const AHCJShipCharacter& Ship, const AHCJUniverse& Universe, float MaxRange, AHCJShipCharacter* Current, bool& bOutSpread) const;
+	/** Every Think: starts and ends breaking off (shields gone on the attacker's side and the hull low). */
+	void ThinkDisengage(AHCJShipCharacter& Ship, const AHCJUniverse& Universe);
+	/** Every tick while breaking off: flies to cover / a pad / away and holds fire. False when the bot is not breaking off. */
+	bool TickDisengage(AHCJShipCharacter& Ship, const AHCJUniverse& Universe);
+	bool IsDisengaging() const;
+	/** Every Think while attacking a target behind a rock: a small rock in the way is shot at with the phaser for a moment. */
+	void ThinkRockShot(AHCJShipCharacter& Ship, const AHCJUniverse& Universe, const AHCJShipCharacter& Target, float TargetDistance);
+	void NotifyTactic(EHCJBotTactic Tactic) const;
+
 	/** Turns the control rotation towards DesiredAimPoint, limited by AimTurnRateDeg. */
 	void TickAim(float DeltaTime, const AHCJShipCharacter& Ship);
 	/** Angle in degrees between the ship's aim direction and the direction to WorldPoint. */
@@ -314,6 +351,40 @@ protected:
 	/** A target that cloaked: the bot fires at where it last saw it for a moment. */
 	FVector LostTargetPoint = FVector::ZeroVector;
 	float LostTargetFireUntil = 0.0f;
+	// ---- tactics ----
+
+	/** This ship is flown "smart" (rolled once per ship against FHCJBotSkill::Tactics at its first Think). */
+	bool bSmart = false;
+	bool bSmartRolled = false;
+	/** Breaking off until this time (0: not), towards DisengagePoint; the next one not before NextDisengageTime. */
+	float DisengageUntilTime = 0.0f;
+	float NextDisengageTime = 0.0f;
+	FVector DisengagePoint = FVector::ZeroVector;
+	bool bDisengageCover = false;
+	bool bCoverCounted = false;
+	/** The chance to break off was rolled for this occasion. */
+	bool bDisengageRolled = false;
+	TWeakObjectPtr<AHCJShipCharacter> DisengageThreat;
+	/** bRetreating of the last Think (its rising edge is counted). */
+	bool bWasRetreating = false;
+	/** A rock in the line of fire that is being shot away. */
+	uint32 RockShotKey = MAX_uint32;
+	float RockShotUntil = 0.0f;
+	float NextRockShotTime = 0.0f;
+	/** The station of this sector has live turrets and the bot is not attacking them: keep this far from StationDangerLocation (0: nothing to avoid). */
+	float StationDangerRadius = 0.0f;
+	FVector StationDangerLocation = FVector::ZeroVector;
+	mutable float NextStationSteerCountTime = 0.0f;
+	/** In a fight: the target is in sight and in reach of the weapon, so the bot need not follow it into the station's reach (set by TickAttack). */
+	bool bStationHoldEdge = false;
+	/** The wander point is a hostile the bot is closing in on; warp towards it was started / may be tried again from this time. */
+	bool bChasing = false;
+	bool bWarpChase = false;
+	float NextWarpChaseTime = 0.0f;
+	/** A boosted pass close around the target runs until this time; the next one not before NextClosePassTime. */
+	float ClosePassUntil = 0.0f;
+	float NextClosePassTime = 0.0f;
+
 	/** Per-bot randomness for behaviour (never used for world generation). */
 	FRandomStream BotRandom;
 };

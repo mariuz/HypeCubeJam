@@ -71,6 +71,14 @@ public:
 
 	/** Actions of the menu widget (local). */
 	void MenuPlay();
+	/**
+	 * QUICK PLAY: searches the lobbies of Epic Online Services for an open match of this version and joins the best
+	 * one; hosts a match (advertised as a lobby, bots filling in) when there is none or the join fails; plays a local
+	 * match against bots when the service is not there. The steps are FHCJQuickPlay (Online/HCJEosLogic.h), kept by
+	 * the online subsystem so that they survive the world change of a join; UpdateQuickPlay drives them.
+	 */
+	void MenuQuickPlay();
+	void MenuCancelQuickPlay();
 	void MenuJoin(const FString& Address);
 	/** JOIN on the FIND GAMES page: the Index-th lobby of UHCJEOSSubsystem::GetLobbies, joined by its advertised address. */
 	void MenuJoinLobby(int32 Index);
@@ -362,6 +370,14 @@ protected:
 	bool bIntroFirstFrameLogged = false;
 	/** Seconds until the next lobby update of UpdateOnline. */
 	float OnlineHostTimer = 0.0f;
+	/** Every frame while Quick Play runs: feeds FHCJQuickPlay and searches / joins / hosts as it says. */
+	void UpdateQuickPlay();
+	/** Seconds until the next "Playthrough: event=client" line (clients only; what the playthrough tests compare with the host). */
+	float PlaythroughLogTimer = 5.0f;
+	/** UHCJEOSSubsystem::GetSearchSerial when Quick Play asked for its search; negative: not asked yet. */
+	int32 QuickPlaySearchSerial = -1;
+	/** The status line of Quick Play that was last logged. */
+	FString QuickPlayLoggedStatus;
 	bool bHelpToggled = false;
 	/** Local world time at which the first ship of this controller appeared; negative before. */
 	float FirstShipTime = -1.0f;

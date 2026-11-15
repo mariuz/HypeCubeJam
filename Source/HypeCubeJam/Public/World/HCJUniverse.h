@@ -218,6 +218,14 @@ public:
 	bool GetAsteroidSphere(uint32 Key, FVector& OutLocation, float& OutRadius) const;
 	/** Key of the existing rock nearest to WorldLocation in its sector (development commands), or MAX_uint32. MinRadius: only rocks at least that big. */
 	uint32 FindNearestAsteroid(const FVector& WorldLocation, float MinRadius) const;
+	/**
+	 * Bots: a point behind a rock, seen from Threat - the rock of at least MinRadius nearest to From within MaxDistance
+	 * (same sector), and the point Clearance beyond its far side on the line from Threat through its centre. False
+	 * when there is no such rock.
+	 */
+	bool FindCoverPoint(const FVector& From, const FVector& Threat, float MaxDistance, float MinRadius, float Clearance, FVector& OutPoint) const;
+	/** SERVER, bots: hit points a rock has left (a fresh one: its full health); negative when Key names none or rocks cannot be damaged. */
+	float GetAsteroidHealth(uint32 Key) const;
 	/** GetWorld()->GetTimeSeconds() of the last Rebuild on this machine. */
 	float GetBuildTime() const { return BuildTime; }
 

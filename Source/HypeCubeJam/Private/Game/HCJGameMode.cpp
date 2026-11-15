@@ -32,6 +32,214 @@ AHCJGameMode::AHCJGameMode()
 	BotControllerClass = AHCJBotController::StaticClass();
 
 	bStartPlayersAsSpectators = false;
+
+	// Only to measure the server's frames for the playthrough tests (Tick).
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = true;
+}
+
+void AHCJGameMode::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	// Frames of the running match, without its first seconds (the world is still being built then).
+	const UWorld* World = GetWorld();
+	if (World != nullptr && World->GetTimeSeconds() - MatchStats.StartTime > 5.0f)
+	{
+		++MatchStats.Ticks;
+		MatchStats.TickSeconds += DeltaSeconds;
+		MatchStats.MaxTickSeconds = FMath::Max(MatchStats.MaxTickSeconds, DeltaSeconds);
+		MatchStats.SlowTicks += DeltaSeconds > 0.25f ? 1 : 0;
+	}
+}
+
+void AHCJGameMode::NotifyTorpedoThroughOpenFacing(const AHCJShipCharacter* Victim)
+{
+	LastOpenTorpedoVictim = Victim;
+	LastOpenTorpedoTime = GetWorld() != nullptr ? static_cast<float>(GetWorld()->GetTimeSeconds()) : 0.0f;
+}
+
+AHCJGameMode::FPlaythroughSnapshot AHCJGameMode::GetPlaythroughSnapshot() const
+{
+	FPlaythroughSnapshot Snapshot;
+	Snapshot.MatchNumber = CurrentConfig.MatchNumber;
+	Snapshot.Seed = CurrentConfig.Seed;
+	const AHCJUniverse* Universe = GetUniverse();
+	Snapshot.LayoutChecksum = Universe != nullptr ? Universe->GetLayoutChecksum() : 0;
+	Snapshot.Kills = MatchStats.Kills;
+	Snapshot.Deaths = MatchStats.Kills + MatchStats.TurretDeaths + MatchStats.UncreditedDeaths;
+	Snapshot.PortalJumps = MatchStats.PortalJumps;
+	Snapshot.WormholeJumps = MatchStats.WormholeJumps;
+	for (const int32 Taken : MatchStats.Pickups)
+	{
+		Snapshot.PickupsTaken += Taken;
+	}
+	Snapshot.Shots = MatchStats.Shots;
+	Snapshot.StuckEvents = MatchStats.StuckEvents;
+	Snapshot.OutOfBoundsEvents = MatchStats.OutOfBoundsEvents;
+	Snapshot.NaNEvents = MatchStats.NaNEvents;
+	Snapshot.MatchesEnded = NumMatchesEnded;
+	Snapshot.LastWinner = LastWinnerName;
+	Snapshot.LastWinnerKills = LastWinnerKills;
+	Snapshot.LastBoardRows = LastBoardRows;
+	return Snapshot;
+}
+
+namespace
+{
+	/** A name as one token of a "Playthrough:" line. */
+	FString PlaythroughToken(const FString& Text)
+	{
+		FString Token = Text;
+		Token.ReplaceInline(TEXT(" "), TEXT("_"));
+		Token.ReplaceInline(TEXT("="), TEXT("_"));
+		return Token.IsEmpty() ? FString(TEXT("-")) : Token;
+	}
+}
+
+void AHCJGameMode::LogPlaythroughMatchStart() const
+{
+	const AHCJUniverse* Universe = GetUniverse();
+	UE_LOG(LogHCJ, Log, TEXT("Playthrough: event=match_start match=%d seed=%d layout=%08X dim=%d difficulty=%d frag_limit=%d time_limit=%.0f bots=%d humans=%d rocks=%d"),
+		CurrentConfig.MatchNumber, CurrentConfig.Seed, Universe != nullptr ? Universe->GetLayoutChecksum() : 0, CurrentConfig.Dimension, BotDifficulty, FragLimit, TimeLimitSeconds,
+		GetDesiredBotCount(), GetNumHumanPlayers(), Universe != nullptr ? Universe->GetNumLiveAsteroids() : 0);
+}
+
+void AHCJGameMode::LogPlaythroughStats() const
+{
+	const UWorld* World = GetWorld();
+	if (World == nullptr)
+	{
+		return;
+	}
+	const AHCJUniverse* Universe = GetUniverse();
+	FString Line = FString::Printf(TEXT("event=stats match=%d t=%.0f match_t=%.0f kills=%d deaths=%d shots=%d hits=%d portal_jumps=%d wormhole_jumps=%d turret_deaths=%d turrets_destroyed=%d turret_shots=%d black_hole_deaths=%d uncredited_deaths=%d"),
+		CurrentConfig.MatchNumber, World->GetTimeSeconds(), World->GetTimeSeconds() - MatchStats.StartTime, MatchStats.Kills,
+		MatchStats.Kills + MatchStats.TurretDeaths + MatchStats.UncreditedDeaths, MatchStats.Shots, MatchStats.Hits, MatchStats.PortalJumps, MatchStats.WormholeJumps,
+		MatchStats.TurretDeaths, MatchStats.TurretsDestroyed, MatchStats.TurretShots, MatchStats.BlackHoleDeaths, MatchStats.UncreditedDeaths);
+	const TCHAR* WeaponKeys[] = { TEXT("blaster"), TEXT("scatter"), TEXT("rail"), TEXT("missiles"), TEXT("pulse"), TEXT("torpedo"), TEXT("phaser") };
+	for (int32 Index = 0; Index < static_cast<int32>(EHCJWeapon::Count); ++Index)
+	{
+		Line += FString::Printf(TEXT(" kills_%s=%d"), Index < UE_ARRAY_COUNT(WeaponKeys) ? WeaponKeys[Index] : *FString::Printf(TEXT("weapon%d"), Index), MatchStats.KillsByWeapon[Index]);
+	}
+	for (int32 Type = 0; Type < HCJShipTypes::NumTypes; ++Type)
+	{
+		const FString Short = FString(HCJShipTypes::Get(Type).ShortName).ToLower();
+		Line += FString::Printf(TEXT(" kills_%s=%d deaths_%s=%d"), *Short, MatchStats.KillsByType[Type], *Short, MatchStats.DeathsByType[Type]);
+	}
+	int32 PickupsTaken = 0;
+	for (int32 Index = 0; Index < static_cast<int32>(EHCJPickupItem::Count); ++Index)
+	{
+		PickupsTaken += MatchStats.Pickups[Index];
+		Line += FString::Printf(TEXT(" pickup_%s=%d"), *PlaythroughToken(FString(HCJ::GetItemName(static_cast<EHCJPickupItem>(Index))).ToLower()), MatchStats.Pickups[Index]);
+	}
+	Line += FString::Printf(TEXT(" pickups=%d rocks_destroyed=%d rocks_by_bots=%d rocks_alive=%d destroyed_count=%d destroyed_checksum=%08X warps=%d cloaks=%d tractor_holds=%d torpedoes_fired=%d torpedo_open_hits=%d torpedo_open_kills=%d facing_turns=%d"),
+		PickupsTaken, MatchStats.RocksDestroyed, MatchStats.RocksDestroyedByBots, Universe != nullptr ? Universe->GetNumLiveAsteroids() : 0,
+		Universe != nullptr ? Universe->GetNumDestroyedAsteroids() : 0, Universe != nullptr ? Universe->GetDestroyedChecksum() : 0, MatchStats.Warps, MatchStats.Cloaks,
+		MatchStats.TractorHolds, MatchStats.TorpedoesFired, MatchStats.TorpedoHitsOpen, MatchStats.TorpedoOpenFacingKills, MatchStats.BotShieldTurns);
+	for (int32 Index = 0; Index < static_cast<int32>(EHCJBotTactic::Count); ++Index)
+	{
+		Line += FString::Printf(TEXT(" %s=%d"), HCJBalance::GetTacticKey(static_cast<EHCJBotTactic>(Index)), MatchStats.BotTactics[Index]);
+	}
+	Line += FString::Printf(TEXT(" stuck=%d out_of_bounds=%d nan=%d ticks=%d tick_mean_ms=%.1f tick_max_ms=%.0f slow_ticks=%d layout=%08X humans=%d bots=%d"),
+		MatchStats.StuckEvents, MatchStats.OutOfBoundsEvents, MatchStats.NaNEvents, MatchStats.Ticks,
+		MatchStats.Ticks > 0 ? 1000.0 * MatchStats.TickSeconds / MatchStats.Ticks : 0.0, MatchStats.MaxTickSeconds * 1000.0f, MatchStats.SlowTicks,
+		Universe != nullptr ? Universe->GetLayoutChecksum() : 0, GetNumHumanPlayers(), Bots.Num());
+	UE_LOG(LogHCJ, Log, TEXT("Playthrough: %s"), *Line);
+
+	// The humans' score lines (the tests check that a client that joined gets kills and deaths).
+	if (const AHCJGameState* HCJGameState = GetHCJGameState())
+	{
+		for (const APlayerState* PlayerState : HCJGameState->PlayerArray)
+		{
+			const AHCJPlayerState* HCJPlayerState = Cast<AHCJPlayerState>(PlayerState);
+			if (HCJPlayerState != nullptr && !HCJPlayerState->IsABot())
+			{
+				UE_LOG(LogHCJ, Log, TEXT("Playthrough: event=human match=%d t=%.0f name=%s kills=%d deaths=%d type=%s spectator=%d"), CurrentConfig.MatchNumber, World->GetTimeSeconds(),
+					*PlaythroughToken(HCJPlayerState->GetPlayerName()), HCJPlayerState->GetKills(), HCJPlayerState->GetDeaths(),
+					*FString(HCJShipTypes::Get(HCJPlayerState->GetShipType()).ShortName).ToLower(), HCJPlayerState->IsOnlyASpectator() ? 1 : 0);
+			}
+		}
+	}
+}
+
+void AHCJGameMode::UpdatePlaythroughWatch()
+{
+	UWorld* World = GetWorld();
+	const AHCJUniverse* Universe = GetUniverse();
+	const AHCJGameState* HCJGameState = GetHCJGameState();
+	if (World == nullptr || Universe == nullptr || !Universe->IsBuilt() || HCJGameState == nullptr || World->GetTimeSeconds() < NextWatchTime)
+	{
+		return;
+	}
+	const float Now = static_cast<float>(World->GetTimeSeconds());
+	NextWatchTime = Now + 1.0f;
+	if (HCJGameState->GetMatchPhase() != EHCJMatchPhase::Playing)
+	{
+		ShipWatches.Reset();
+		return;
+	}
+	// A ship that has not moved this far in this long is stuck (a bot waiting in front of a portal moves on within a few seconds).
+	constexpr float StuckSeconds = 20.0f;
+	constexpr double StuckDistance = 250.0;
+	for (TActorIterator<AHCJShipCharacter> It(World); It; ++It)
+	{
+		AHCJShipCharacter* Ship = *It;
+		AController* Controller = IsValid(Ship) ? Ship->GetController() : nullptr;
+		if (Controller == nullptr || Ship->IsDead())
+		{
+			continue;
+		}
+		const FVector Location = Ship->GetActorLocation();
+		FShipWatch& Watch = ShipWatches.FindOrAdd(Controller);
+		if (Location.ContainsNaN() || Ship->GetVelocity().ContainsNaN())
+		{
+			++MatchStats.NaNEvents;
+			UE_LOG(LogHCJ, Warning, TEXT("Playthrough: event=nan name=%s t=%.0f"), *PlaythroughToken(GetNameSafe(Ship)), Now);
+			continue;
+		}
+		if (Watch.AnchorTime <= 0.0f || FVector::DistSquared(Location, Watch.Anchor) > FMath::Square(StuckDistance))
+		{
+			Watch.Anchor = Location;
+			Watch.AnchorTime = Now;
+			Watch.bStuckReported = false;
+		}
+		else if (!Watch.bStuckReported && Now - Watch.AnchorTime > StuckSeconds && Cast<AHCJBotController>(Controller) != nullptr)
+		{
+			// (Only bots: a human may leave the ship alone for as long as it likes.)
+			Watch.bStuckReported = true;
+			++MatchStats.StuckEvents;
+			const AHCJBotController* Bot = CastChecked<AHCJBotController>(Controller);
+			UE_LOG(LogHCJ, Warning, TEXT("Playthrough: event=stuck name=%s t=%.0f seconds=%.0f sector=%d x=%.0f y=%.0f z=%.0f state=%d speed=%.0f %s"),
+				*PlaythroughToken(Ship->GetPlayerState() != nullptr ? Ship->GetPlayerState()->GetPlayerName() : GetNameSafe(Ship)), Now, Now - Watch.AnchorTime, Ship->GetCurrentSector(),
+				Location.X, Location.Y, Location.Z, static_cast<int32>(Bot->GetBotState()), Ship->GetVelocity().Size(), *Bot->DescribeForLog());
+		}
+		// Alive outside every sector, or beyond the radius at which a ship is destroyed, for more than a moment.
+		const int32 Sector = Universe->GetSectorAtLocation(Location);
+		const bool bOutside = Sector == INDEX_NONE || FVector::DistSquared(Location, Universe->GetSectorOrigin(Sector)) > FMath::Square(static_cast<double>(HCJ::SectorKillRadius) + 1500.0);
+		if (!bOutside)
+		{
+			Watch.OutsideSince = -1.0f;
+		}
+		else if (Watch.OutsideSince < 0.0f)
+		{
+			Watch.OutsideSince = Now;
+		}
+		else if (Now - Watch.OutsideSince > 3.0f)
+		{
+			Watch.OutsideSince = Now + 1.0e6f;
+			++MatchStats.OutOfBoundsEvents;
+			UE_LOG(LogHCJ, Warning, TEXT("Playthrough: event=out_of_bounds name=%s t=%.0f sector=%d x=%.0f y=%.0f z=%.0f"), *PlaythroughToken(GetNameSafe(Ship)), Now, Sector, Location.X, Location.Y, Location.Z);
+		}
+	}
+	for (auto It = ShipWatches.CreateIterator(); It; ++It)
+	{
+		const AController* Controller = It.Key().Get();
+		const AHCJShipCharacter* Ship = Controller != nullptr ? Cast<AHCJShipCharacter>(Controller->GetPawn()) : nullptr;
+		if (Ship == nullptr || Ship->IsDead())
+		{
+			It.RemoveCurrent();
+		}
+	}
 }
 
 void AHCJGameMode::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
@@ -121,6 +329,7 @@ void AHCJGameMode::InitGameState()
 		HCJGameState->SetMatchPhase(EHCJMatchPhase::Playing, TimeLimitSeconds, nullptr);
 		RebuildPickups();
 		RebuildStations();
+		LogPlaythroughMatchStart();
 	}
 	else
 	{
@@ -153,6 +362,31 @@ void AHCJGameMode::PostLogin(APlayerController* NewPlayer)
 	UE_LOG(LogHCJ, Log, TEXT("Player joined: %s (%s) -> %d humans, %d bots"),
 		NewPlayer && NewPlayer->PlayerState ? *NewPlayer->PlayerState->GetPlayerName() : TEXT("?"),
 		NewPlayer && NewPlayer->IsLocalController() ? TEXT("local") : TEXT("remote"), GetNumHumanPlayers(), Bots.Num());
+}
+
+void AHCJGameMode::ChangeName(AController* Controller, const FString& NewName, bool bNameChange)
+{
+	FString Name = NewName;
+	if (Controller != nullptr && GameState != nullptr && !NewName.IsEmpty())
+	{
+		for (int32 Suffix = 2; Suffix < 100; ++Suffix)
+		{
+			const bool bTaken = GameState->PlayerArray.ContainsByPredicate([Controller, &Name](const APlayerState* Other)
+			{
+				return Other != nullptr && Other != Controller->PlayerState && Other->GetPlayerName().Equals(Name, ESearchCase::IgnoreCase);
+			});
+			if (!bTaken)
+			{
+				break;
+			}
+			Name = FString::Printf(TEXT("%s-%d"), *NewName.Left(17), Suffix);
+		}
+		if (Name != NewName)
+		{
+			UE_LOG(LogHCJ, Log, TEXT("Player name '%s' is taken: this one is '%s'"), *NewName, *Name);
+		}
+	}
+	Super::ChangeName(Controller, Name, bNameChange);
 }
 
 void AHCJGameMode::Logout(AController* Exiting)
@@ -466,6 +700,11 @@ void AHCJGameMode::NotifyShipKilled(AController* VictimController, AController* 
 		const bool bPhaserKill = Projectile == nullptr && Cast<AHCJShipCharacter>(Causer) != nullptr && Causer != VictimShip;
 		const EHCJWeapon KillWeapon = Projectile != nullptr ? Projectile->GetWeapon() : bPhaserKill ? EHCJWeapon::Phaser : EHCJWeapon::Blaster;
 		++MatchStats.KillsByWeapon[static_cast<int32>(KillWeapon < EHCJWeapon::Count ? KillWeapon : EHCJWeapon::Blaster)];
+		if (Projectile != nullptr && Projectile->IsTorpedo() && LastOpenTorpedoVictim.Get() == VictimShip && GetWorld()->GetTimeSeconds() - LastOpenTorpedoTime < 0.05)
+		{
+			// The torpedo went through a facing that was down and that was the end of the ship.
+			++MatchStats.TorpedoOpenFacingKills;
+		}
 		// A kill credited without a bolt of the killer: the victim was shot and then finished off by the environment.
 		Cause = (Projectile != nullptr || bPhaserKill) ? UHCJGameplaySettings::Get().GetWeapon(KillWeapon).Name : FString();
 		UE_LOG(LogHCJ, Log, TEXT("Kill: %s destroyed %s (%s)"), *KillerName, *VictimName, *UHCJGameplaySettings::Get().GetWeapon(KillWeapon).Name);
@@ -613,6 +852,7 @@ void AHCJGameMode::GameUpdate()
 	UpdatePlayerSectors();
 	UpdateBotCount();
 	EnsureRespawnsScheduled();
+	UpdatePlaythroughWatch();
 	CheckMatchEnd();
 
 	if (const UWorld* World = GetWorld(); World && StatusLogInterval > 0.0f && World->GetTimeSeconds() >= NextStatusLogTime)
@@ -708,6 +948,17 @@ void AHCJGameMode::LogStatus() const
 			FMath::Max(MatchStats.UncreditedDeaths - MatchStats.BlackHoleDeaths, 0), LiveTurrets, NumTurrets, MatchStats.TurretsDestroyed, MatchStats.TurretShots);
 	}
 
+	{
+		FString Tactics;
+		for (int32 Index = 0; Index < static_cast<int32>(EHCJBotTactic::Count); ++Index)
+		{
+			Tactics += FString::Printf(TEXT("%s%s %d"), Index > 0 ? TEXT(", ") : TEXT(""), HCJBalance::GetTacticName(static_cast<EHCJBotTactic>(Index)), MatchStats.BotTactics[Index]);
+		}
+		UE_LOG(LogHCJ, Log, TEXT("Tactics t=%.0fs (bots): %s, facing turns %d, open-facing torpedo kills %d"), World->GetTimeSeconds(), *Tactics, MatchStats.BotShieldTurns,
+			MatchStats.TorpedoOpenFacingKills);
+	}
+	LogPlaythroughStats();
+
 	if (CurrentConfig.Pickups.bEnabled)
 	{
 		int32 ActivePads = 0;
@@ -789,6 +1040,23 @@ void AHCJGameMode::EndMatch()
 	GetWorldTimerManager().SetTimer(IntermissionTimerHandle, this, &AHCJGameMode::StartNewMatch, Duration, false);
 
 	UE_LOG(LogHCJ, Log, TEXT("Match %d over, winner: %s"), CurrentConfig.MatchNumber, Winner ? *Winner->GetPlayerName() : TEXT("nobody"));
+
+	// For the playthrough tests: the result, the board every machine shows now, and the counters of the match.
+	++NumMatchesEnded;
+	LastWinnerName = Winner != nullptr ? Winner->GetPlayerName() : FString();
+	LastWinnerKills = Winner != nullptr ? Winner->GetKills() : 0;
+	LastBoardRows = Sorted.Num();
+	const bool bFragEnd = FragLimit > 0 && Winner != nullptr && Winner->GetKills() >= FragLimit;
+	UE_LOG(LogHCJ, Log, TEXT("Playthrough: event=match_end match=%d winner=%s winner_kills=%d frag_limit=%d reason=%s duration=%.0f board_rows=%d intermission=%.0f"),
+		CurrentConfig.MatchNumber, *PlaythroughToken(LastWinnerName), LastWinnerKills, FragLimit, bFragEnd ? TEXT("frag_limit") : TEXT("time_or_command"),
+		GetWorld()->GetTimeSeconds() - MatchStats.StartTime, Sorted.Num(), Duration);
+	for (int32 Rank = 0; Rank < Sorted.Num(); ++Rank)
+	{
+		const AHCJPlayerState* Row = Sorted[Rank];
+		UE_LOG(LogHCJ, Log, TEXT("Playthrough: event=board match=%d rank=%d name=%s kills=%d deaths=%d type=%s bot=%d"), CurrentConfig.MatchNumber, Rank + 1,
+			*PlaythroughToken(Row->GetPlayerName()), Row->GetKills(), Row->GetDeaths(), *FString(HCJShipTypes::Get(Row->GetShipType()).ShortName).ToLower(), Row->IsABot() ? 1 : 0);
+	}
+	LogPlaythroughStats();
 }
 
 void AHCJGameMode::StartNewMatch()
@@ -824,6 +1092,8 @@ void AHCJGameMode::BeginMatch(int32 InMatchNumber)
 	}
 
 	MatchStats = FMatchStats();
+	MatchStats.StartTime = GetWorld() != nullptr ? static_cast<float>(GetWorld()->GetTimeSeconds()) : 0.0f;
+	ShipWatches.Reset();
 	// Not Playing while the world is rebuilt, so bots added now get no ship before the delayed respawn below.
 	HCJGameState->SetMatchPhase(EHCJMatchPhase::Intermission, 0.0f, nullptr);
 	CurrentConfig = MakeMatchConfig(InMatchNumber);
@@ -836,6 +1106,7 @@ void AHCJGameMode::BeginMatch(int32 InMatchNumber)
 
 	HCJGameState->SetFragLimit(FragLimit);
 	HCJGameState->SetMatchPhase(EHCJMatchPhase::Playing, TimeLimitSeconds, nullptr);
+	LogPlaythroughMatchStart();
 
 	ForEachCombatant([this](AController* Controller)
 	{

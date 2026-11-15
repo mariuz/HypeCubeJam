@@ -52,7 +52,7 @@ void SHCJMenu::Construct(const FArguments& InArgs)
 
 void SHCJMenu::SetPage(EHCJMenuPage NewPage, const FString& InNotice)
 {
-	if (!IsRootPage(NewPage) && NewPage != EHCJMenuPage::Connecting && IsRootPage(Page))
+	if (!IsRootPage(NewPage) && NewPage != EHCJMenuPage::Connecting && NewPage != EHCJMenuPage::QuickPlay && IsRootPage(Page))
 	{
 		SettingsReturnPage = Page;
 	}
@@ -77,6 +77,7 @@ void SHCJMenu::SetPage(EHCJMenuPage NewPage, const FString& InNotice)
 		: Page == EHCJMenuPage::Lobbies ? BuildLobbies()
 		: Page == EHCJMenuPage::Leaderboards ? BuildLeaderboards()
 		: Page == EHCJMenuPage::Hangar ? BuildHangar()
+		: Page == EHCJMenuPage::QuickPlay ? BuildQuickPlay()
 		: Page == EHCJMenuPage::Connecting ? BuildConnecting() : BuildMain();
 	// The hangar stands at the left and leaves the world clear: the hull turns there, next to the page.
 	const bool bHangar = Page == EHCJMenuPage::Hangar;
@@ -140,6 +141,10 @@ FReply SHCJMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEv
 			}
 			UHCJUserSettings::Get().Save();
 			SetPage(SettingsReturnPage);
+		}
+		else if (Page == EHCJMenuPage::QuickPlay)
+		{
+			if (AHCJPlayerController* Controller = Owner.Get()) { Controller->MenuCancelQuickPlay(); }
 		}
 		else if (AHCJPlayerController* Controller = Owner.Get())
 		{
@@ -361,7 +366,11 @@ TSharedRef<SWidget> SHCJMenu::BuildMain()
 
 	Box->AddSlot().AutoHeight().Padding(Row)
 	[
-		MakeButton(TEXT("PLAY   (host a match with bots)"), [WeakOwner]() { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuPlay(); } }, true, 24.0f)
+		MakeButton(TEXT("QUICK PLAY   (join an open match, or host one)"), [WeakOwner]() { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuQuickPlay(); } }, true, 24.0f)
+	];
+	Box->AddSlot().AutoHeight().Padding(Row)
+	[
+		MakeButton(TEXT("PLAY   (host a match with bots)"), [WeakOwner]() { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuPlay(); } }, false, 20.0f)
 	];
 	Box->AddSlot().AutoHeight().Padding(Row)
 	[
@@ -489,7 +498,7 @@ TSharedRef<SWidget> SHCJMenu::BuildMain()
 	];
 	Box->AddSlot().AutoHeight()
 	[
-		MakeKeyLegend(TEXT("[Enter] play     [F1] controls     in a match:  [Esc] menu   [F1] help   [H] hints"))
+		MakeKeyLegend(TEXT("[Enter] play with bots     [F1] controls     in a match:  [Esc] menu   [F1] help   [H] hints"))
 	];
 	return Box;
 }
@@ -842,6 +851,43 @@ TSharedRef<SWidget> SHCJMenu::BuildConnecting()
 		];
 }
 
+TSharedRef<SWidget> SHCJMenu::BuildQuickPlay()
+{
+	const TWeakObjectPtr<AHCJPlayerController> WeakOwner = Owner;
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 10.0f))
+		[
+			MakeLabel(TEXT("QUICK PLAY"), 32.0f, MenuAccent, true)
+		]
+		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 6.0f))
+		[
+			// Live text: the steps follow each other without a rebuild of the page.
+			SNew(SBox).MinDesiredWidth(620.0f).HAlign(HAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text_Lambda([WeakOwner]()
+				{
+					const UHCJEOSSubsystem* Online = UHCJEOSSubsystem::Get(WeakOwner.Get());
+					return FText::FromString(Online != nullptr ? Online->GetQuickPlay().GetStatus() : FString());
+				})
+				.Font(FCoreStyle::GetDefaultFontStyle("Bold", 18))
+				.ColorAndOpacity(FSlateColor(MenuText))
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 16.0f))
+		[
+			MakeLabel(TEXT("Finds an open match through Epic Online Services; hosts one when there is none."), 13.0f, MenuDim)
+		]
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			MakeButton(TEXT("CANCEL"), [WeakOwner]() { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuCancelQuickPlay(); } }, false, 20.0f)
+		]
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			MakeKeyLegend(TEXT("[Esc] cancel"))
+		];
+}
+
 TSharedRef<SWidget> SHCJMenu::BuildOnlineUnavailable(const FString& Title, const FString& InStatus)
 {
 	// The headline already says "unavailable": keep the reason only.
@@ -862,7 +908,7 @@ TSharedRef<SWidget> SHCJMenu::BuildOnlineUnavailable(const FString& Title, const
 		]
 		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 4.0f))
 		[
-			MakeLabel(TEXT("Everything else works: PLAY hosts a match, and JOIN on the title page"), 15.0f, MenuText)
+			MakeLabel(TEXT("Everything else works: PLAY and QUICK PLAY host a match, and JOIN on the title page"), 15.0f, MenuText)
 		]
 		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 16.0f))
 		[

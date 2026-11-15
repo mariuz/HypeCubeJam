@@ -116,11 +116,16 @@ bool FHCJEosLobbyAttributesTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("empty public address stays empty"), Back.PublicAddress.IsEmpty());
 	TestEqual(TEXT("both LAN addresses"), Back.LanAddresses.Num(), 2);
 
-	// Every attribute is required.
+	// Every attribute is required - but the time of the last write, which builds before it existed do not send.
 	for (int32 Index = 0; Index < Attributes.Num(); ++Index)
 	{
 		TArray<FHCJLobbyAttribute> Missing = Attributes;
 		Missing.RemoveAt(Index);
+		if (Attributes[Index].Key == TEXT("HCJTIME"))
+		{
+			TestTrue(TEXT("accepted without HCJTIME"), FHCJLobbyInfo::FromAttributes(Missing, Back));
+			continue;
+		}
 		TestFalse(*FString::Printf(TEXT("refused without %s"), *Attributes[Index].Key), FHCJLobbyInfo::FromAttributes(Missing, Back));
 	}
 	TestFalse(TEXT("an empty set is refused"), FHCJLobbyInfo::FromAttributes(TArray<FHCJLobbyAttribute>(), Back));
@@ -349,6 +354,230 @@ bool FHCJEosLeaderboardPageTest::RunTest(const FString& Parameters)
 	Records.SetNum(3);
 	TestEqual(TEXT("a short board is shown as it is"), HCJEos::MakeLeaderboardPage(Records, 10).Num(), 3);
 	TestEqual(TEXT("an empty board gives no rows"), HCJEos::MakeLeaderboardPage(TArray<FHCJLeaderboardRow>(), 10).Num(), 0);
+	return true;
+}
+
+/** Lobby hygiene: only joinable games are offered (no other version, no full, stale or unreachable ones), the best first. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHCJEosLobbyFilterTest, "HypeCubeJam.Online.LobbyFilter", HCJEosTestFlags)
+
+bool FHCJEosLobbyFilterTest::RunTest(const FString& Parameters)
+{
+	const FString Version = TEXT("1A2B3C4D");
+	const TArray<FString> Local = { TEXT("192.168.1.50") };
+	const int64 Now = 1800000000;
+
+	FHCJLobbyInfo Good = MakeLobby();
+	Good.UpdatedUnix = Now - 30;
+	TestTrue(TEXT("a fresh lobby of this version with room is joinable"), HCJEos::ClassifyLobby(Good, Version, Local, Now) == EHCJLobbyFit::Joinable);
+
+	FHCJLobbyInfo Other = Good;
+	Other.Version = TEXT("00000000");
+	TestTrue(TEXT("another network version"), HCJEos::ClassifyLobby(Other, Version, Local, Now) == EHCJLobbyFit::OtherVersion);
+
+	FHCJLobbyInfo Full = Good;
+	Full.Players = Full.MaxPlayers;
+	TestTrue(TEXT("no free slot"), HCJEos::ClassifyLobby(Full, Version, Local, Now) == EHCJLobbyFit::Full);
+
+	FHCJLobbyInfo Stale = Good;
+	Stale.UpdatedUnix = Now - HCJEos::LobbyStaleSeconds - 1;
+	TestTrue(TEXT("not written for too long"), HCJEos::ClassifyLobby(Stale, Version, Local, Now) == EHCJLobbyFit::Stale);
+	Stale.UpdatedUnix = Now - HCJEos::LobbyStaleSeconds + 5;
+	TestTrue(TEXT("just inside the limit"), HCJEos::ClassifyLobby(Stale, Version, Local, Now) == EHCJLobbyFit::Joinable);
+	Stale.UpdatedUnix = 0;
+	TestTrue(TEXT("a lobby that does not say when it was written is not called stale"), HCJEos::ClassifyLobby(Stale, Version, Local, Now) == EHCJLobbyFit::Joinable);
+	Stale.UpdatedUnix = Now + 5000;
+	TestTrue(TEXT("a host whose clock runs ahead is not called stale"), HCJEos::ClassifyLobby(Stale, Version, Local, Now) == EHCJLobbyFit::Joinable);
+	TestTrue(TEXT("the heartbeat is well inside the stale limit"), HCJEos::LobbyHeartbeatSeconds * 3 <= HCJEos::LobbyStaleSeconds);
+
+	FHCJLobbyInfo NoAddress = Good;
+	NoAddress.PublicAddress.Reset();
+	NoAddress.LanAddresses.Reset();
+	TestTrue(TEXT("nothing to connect to"), HCJEos::ClassifyLobby(NoAddress, Version, Local, Now) == EHCJLobbyFit::NoAddress);
+
+	// The time travels with the other attributes and does not count as a change of the advertisement.
+	FHCJLobbyInfo Back;
+	TestTrue(TEXT("attributes with the time parse"), FHCJLobbyInfo::FromAttributes(Good.ToAttributes(), Back));
+	TestEqual(TEXT("the time survives"), Back.UpdatedUnix, Good.UpdatedUnix);
+	FHCJLobbyInfo Later = Good;
+	Later.UpdatedUnix += 100;
+	TestTrue(TEXT("a newer time alone is the same advertisement"), Later.AdvertisesSameAs(Good));
+	TArray<FHCJLobbyAttribute> Old = Good.ToAttributes();
+	Old.RemoveAll([](const FHCJLobbyAttribute& A) { return A.Key == TEXT("HCJTIME"); });
+	TestTrue(TEXT("a lobby of a build without the time attribute still parses"), FHCJLobbyInfo::FromAttributes(Old, Back));
+	TestEqual(TEXT("and has no time"), Back.UpdatedUnix, static_cast<int64>(0));
+
+	// The list: three joinable ones in the order most players, then most free slots; the rest counted by reason.
+	FHCJLobbyInfo Busy = Good;
+	Busy.HostName = TEXT("Busy");
+	Busy.Players = 9;
+	FHCJLobbyInfo Small = Good;
+	Small.HostName = TEXT("Small");
+	Small.Players = 2;
+	Small.MaxPlayers = 4;
+	TArray<FHCJLobbyInfo> List = { Other, Small, Full, Good, Stale, Busy, NoAddress };
+	List[4].UpdatedUnix = Now - 100000;
+	FString Why;
+	const int32 Hidden = HCJEos::FilterJoinableLobbies(List, Version, Local, Now, &Why);
+	TestEqual(TEXT("four are not offered"), Hidden, 4);
+	TestEqual(TEXT("three are"), List.Num(), 3);
+	if (List.Num() == 3)
+	{
+		TestEqual(TEXT("most players first"), List[0].HostName, FString(TEXT("Busy")));
+		TestEqual(TEXT("then, with equal players, the one with more room"), List[1].HostName, FString(TEXT("Ada")));
+		TestEqual(TEXT("then the small one"), List[2].HostName, FString(TEXT("Small")));
+	}
+	TestTrue(TEXT("the reasons are counted"), Why.Contains(TEXT("1 other version")) && Why.Contains(TEXT("1 full")) && Why.Contains(TEXT("1 stale")) && Why.Contains(TEXT("1 no address")));
+	return true;
+}
+
+/** QUICK PLAY: search, join the best, fall back to hosting; a local match when the service is not there. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHCJEosQuickPlayTest, "HypeCubeJam.Online.QuickPlay", HCJEosTestFlags)
+
+bool FHCJEosQuickPlayTest::RunTest(const FString& Parameters)
+{
+	const TArray<FString> Local = { TEXT("192.168.1.50") };
+	const auto MakeInput = [&Local](double Now, EHCJEosState State)
+	{
+		FHCJQuickPlayInput Input;
+		Input.Now = Now;
+		Input.State = State;
+		Input.LocalAddresses = Local;
+		return Input;
+	};
+
+	// (The cases below jump in time from step to step; the frame clamp has its own case at the end.)
+	const auto MakeQuickPlay = []()
+	{
+		FHCJQuickPlay QuickPlay;
+		QuickPlay.MaxStepSeconds = 1.0e9;
+		return QuickPlay;
+	};
+
+	// 1. Service ready, one open match: search, then join it.
+	{
+		FHCJQuickPlay QuickPlay = MakeQuickPlay();
+		TestFalse(TEXT("idle before the start"), QuickPlay.IsActive());
+		QuickPlay.Start(100.0);
+		TestTrue(TEXT("active"), QuickPlay.IsActive());
+		TestTrue(TEXT("ready: asks for a search"), QuickPlay.Step(MakeInput(100.1, EHCJEosState::Ready)) == EHCJQuickPlayAction::Search);
+		TestTrue(TEXT("says so"), QuickPlay.GetStatus().Contains(TEXT("Searching")));
+		TestTrue(TEXT("waits for the search"), QuickPlay.Step(MakeInput(101.0, EHCJEosState::Ready)) == EHCJQuickPlayAction::None);
+		FHCJQuickPlayInput Found = MakeInput(102.0, EHCJEosState::Ready);
+		Found.bSearchDone = true;
+		Found.Lobbies = { MakeLobby() };
+		TestTrue(TEXT("a match: join"), QuickPlay.Step(Found) == EHCJQuickPlayAction::Join);
+		TestEqual(TEXT("at the address of the same network"), QuickPlay.GetJoinAddress(), FString(TEXT("192.168.1.20:7777")));
+		TestTrue(TEXT("names the host and the players"), QuickPlay.GetStatus().Contains(TEXT("Joining Ada (2/16 players)")));
+		TestTrue(TEXT("waits for the connection"), QuickPlay.Step(MakeInput(104.0, EHCJEosState::Ready)) == EHCJQuickPlayAction::None);
+		QuickPlay.NotifyJoined();
+		TestFalse(TEXT("done once joined"), QuickPlay.IsActive());
+	}
+
+	// 2. Nothing found: says so, then hosts.
+	{
+		FHCJQuickPlay QuickPlay = MakeQuickPlay();
+		QuickPlay.Start(0.0);
+		QuickPlay.Step(MakeInput(0.1, EHCJEosState::Ready));
+		FHCJQuickPlayInput Empty = MakeInput(1.0, EHCJEosState::Ready);
+		Empty.bSearchDone = true;
+		TestTrue(TEXT("nothing found: an announcement first"), QuickPlay.Step(Empty) == EHCJQuickPlayAction::None);
+		TestEqual(TEXT("the text"), QuickPlay.GetStatus(), FString(TEXT("No open match found - hosting one")));
+		TestTrue(TEXT("still showing it"), QuickPlay.Step(MakeInput(1.0 + QuickPlay.AnnounceSeconds * 0.5, EHCJEosState::Ready)) == EHCJQuickPlayAction::None);
+		TestTrue(TEXT("then host"), QuickPlay.Step(MakeInput(1.1 + QuickPlay.AnnounceSeconds, EHCJEosState::Ready)) == EHCJQuickPlayAction::Host);
+		TestFalse(TEXT("an online match"), QuickPlay.IsLocalOnly());
+		TestFalse(TEXT("done"), QuickPlay.IsActive());
+	}
+
+	// 3. The join fails: the next match is tried, then a match is hosted. A join that times out asks for a cancel.
+	{
+		FHCJQuickPlay QuickPlay = MakeQuickPlay();
+		QuickPlay.Start(0.0);
+		QuickPlay.Step(MakeInput(0.1, EHCJEosState::Ready));
+		FHCJLobbyInfo Second = MakeLobby();
+		Second.HostName = TEXT("Grace");
+		Second.LanAddresses = { TEXT("192.168.1.30") };
+		FHCJLobbyInfo Third = MakeLobby();
+		Third.HostName = TEXT("Linus");
+		FHCJQuickPlayInput Found = MakeInput(1.0, EHCJEosState::Ready);
+		Found.bSearchDone = true;
+		Found.Lobbies = { MakeLobby(), Second, Third };
+		TestTrue(TEXT("join the first"), QuickPlay.Step(Found) == EHCJQuickPlayAction::Join);
+		FHCJQuickPlayInput Failed = MakeInput(3.0, EHCJEosState::Ready);
+		Failed.bJoinFailed = true;
+		TestTrue(TEXT("failed: join the second"), QuickPlay.Step(Failed) == EHCJQuickPlayAction::Join);
+		TestEqual(TEXT("its address"), QuickPlay.GetJoinAddress(), FString(TEXT("192.168.1.30:7777")));
+		TestTrue(TEXT("says what happened"), QuickPlay.GetStatus().Contains(TEXT("Could not join Ada")) && QuickPlay.GetStatus().Contains(TEXT("Joining Grace")));
+		TestFalse(TEXT("a failure reported by the engine needs no cancel"), QuickPlay.TakeCancelRequest());
+		TestTrue(TEXT("no connection in time: no third try, an announcement"), QuickPlay.Step(MakeInput(3.5 + QuickPlay.JoinTimeout, EHCJEosState::Ready)) == EHCJQuickPlayAction::None);
+		TestTrue(TEXT("the pending connection is to be cancelled"), QuickPlay.TakeCancelRequest());
+		TestFalse(TEXT("only once"), QuickPlay.TakeCancelRequest());
+		TestTrue(TEXT("names the fallback"), QuickPlay.GetStatus().Contains(TEXT("Could not join Grace")) && QuickPlay.GetStatus().Contains(TEXT("hosting a match instead")));
+		TestTrue(TEXT("then host"), QuickPlay.Step(MakeInput(100.0, EHCJEosState::Ready)) == EHCJQuickPlayAction::Host);
+	}
+
+	// 4. No service: a local match, and the text says why. The reason never carries more than the state's own words.
+	{
+		FHCJQuickPlay QuickPlay = MakeQuickPlay();
+		QuickPlay.Start(0.0);
+		FHCJQuickPlayInput Off = MakeInput(0.1, EHCJEosState::NotConfigured);
+		Off.StateDetail = TEXT("ClientSecret is empty in [HypeCubeJam.EOS]");
+		TestTrue(TEXT("not configured: an announcement"), QuickPlay.Step(Off) == EHCJQuickPlayAction::None);
+		TestTrue(TEXT("says local and why"), QuickPlay.GetStatus().StartsWith(TEXT("Online services unavailable (not configured")) && QuickPlay.GetStatus().EndsWith(TEXT("starting a local match against bots")));
+		TestTrue(TEXT("then host"), QuickPlay.Step(MakeInput(0.2 + QuickPlay.AnnounceSeconds, EHCJEosState::NotConfigured)) == EHCJQuickPlayAction::Host);
+		TestTrue(TEXT("a local match"), QuickPlay.IsLocalOnly());
+	}
+
+	// 5. A sign-in that does not finish, a search that fails, a search without an answer: all end in a hosted match.
+	{
+		FHCJQuickPlay QuickPlay = MakeQuickPlay();
+		QuickPlay.Start(0.0);
+		TestTrue(TEXT("signing in: wait"), QuickPlay.Step(MakeInput(1.0, EHCJEosState::Connecting)) == EHCJQuickPlayAction::None);
+		TestTrue(TEXT("still signing in"), QuickPlay.GetPhase() == EHCJQuickPlayPhase::SigningIn);
+		QuickPlay.Step(MakeInput(1.0 + QuickPlay.SignInTimeout, EHCJEosState::Connecting));
+		TestTrue(TEXT("gives up waiting"), QuickPlay.GetPhase() == EHCJQuickPlayPhase::Announcing && QuickPlay.GetStatus().Contains(TEXT("no answer")));
+		TestTrue(TEXT("local match"), QuickPlay.Step(MakeInput(1000.0, EHCJEosState::Connecting)) == EHCJQuickPlayAction::Host && QuickPlay.IsLocalOnly());
+
+		QuickPlay.Start(0.0);
+		QuickPlay.Step(MakeInput(0.1, EHCJEosState::Ready));
+		FHCJQuickPlayInput Broken = MakeInput(1.0, EHCJEosState::Ready);
+		Broken.bSearchDone = true;
+		Broken.SearchError = TEXT("Search failed (EOS_NoConnection)");
+		QuickPlay.Step(Broken);
+		TestEqual(TEXT("a failed search is named"), QuickPlay.GetStatus(), FString(TEXT("Search failed (EOS_NoConnection) - hosting a match instead")));
+		TestTrue(TEXT("and a match is hosted"), QuickPlay.Step(MakeInput(100.0, EHCJEosState::Ready)) == EHCJQuickPlayAction::Host);
+
+		QuickPlay.Start(0.0);
+		QuickPlay.Step(MakeInput(0.1, EHCJEosState::Ready));
+		QuickPlay.Step(MakeInput(0.2 + QuickPlay.SearchTimeout, EHCJEosState::Ready));
+		TestTrue(TEXT("a search without an answer ends"), QuickPlay.GetPhase() == EHCJQuickPlayPhase::Announcing);
+
+		QuickPlay.Start(0.0);
+		QuickPlay.Step(MakeInput(0.1, EHCJEosState::Ready));
+		TestFalse(TEXT("cancel while searching: nothing to cancel in the engine"), QuickPlay.Cancel());
+		TestFalse(TEXT("and it is over"), QuickPlay.IsActive());
+		TestTrue(TEXT("a step after that does nothing"), QuickPlay.Step(MakeInput(5.0, EHCJEosState::Ready)) == EHCJQuickPlayAction::None);
+	}
+
+	// 6. One frame of 20 s (a process compiling its first shaders) does not run the sign-in wait out: the next frame,
+	// which brings the sign-in, still finds Quick Play waiting. Thirty seconds of ordinary frames do run it out.
+	{
+		FHCJQuickPlay QuickPlay;
+		QuickPlay.Start(0.0);
+		QuickPlay.Step(MakeInput(0.016, EHCJEosState::Connecting));
+		QuickPlay.Step(MakeInput(20.0, EHCJEosState::Connecting));
+		TestTrue(TEXT("still waiting for the sign-in after a 20 s frame"), QuickPlay.GetPhase() == EHCJQuickPlayPhase::SigningIn);
+		TestTrue(TEXT("the sign-in of the next frame starts the search"), QuickPlay.Step(MakeInput(20.016, EHCJEosState::Ready)) == EHCJQuickPlayAction::Search);
+
+		QuickPlay.Start(100.0);
+		double Now = 100.0;
+		for (int32 Frame = 0; Frame < 30 * 60 && QuickPlay.GetPhase() == EHCJQuickPlayPhase::SigningIn; ++Frame)
+		{
+			Now += 1.0 / 60.0;
+			QuickPlay.Step(MakeInput(Now, EHCJEosState::Connecting));
+		}
+		TestTrue(TEXT("ordinary frames run the wait out"), QuickPlay.GetPhase() == EHCJQuickPlayPhase::Announcing);
+		TestTrue(TEXT("after the sign-in timeout, not before"), Now - 100.0 > QuickPlay.SignInTimeout && Now - 100.0 < QuickPlay.SignInTimeout + 1.0);
+	}
 	return true;
 }
 

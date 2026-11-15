@@ -30,12 +30,13 @@ Source/HypeCubeJam/Public|Private/
   Ship/        ship character, projectile, health
   Game/        game mode/state, player state/controller, HUD, user settings, UI logic
   UI/          the Slate menu widget, the hint logic (Public/UI/HCJHints.h) and the hint / banner part of the HUD
-  Online/      Epic Online Services: lobby browser, stats, leaderboards (UHCJEOSSubsystem, HCJEosLogic.h)
+  Online/      Epic Online Services: quick play, lobby browser, stats, leaderboards (UHCJEOSSubsystem, HCJEosLogic.h)
   Effects/     explosions: shockwave rule, debris pool, flares, camera shake (HCJEffectsLogic.h, UHCJEffectsDirector)
   Assets/      UHCJAssetSettings: the one place that names every authored asset
   AI/          bot controller
   Audio/       local music and cue director
-  Private/Tests/   automation tests (HypeCubeJam.*)
+  Private/Tests/   automation tests (HypeCubeJam.*), two of them whole matches (HCJPlaythroughTests.cpp)
+docs/tools/playthrough.py   playthrough runner: whole matches as processes, judged from their logs (see "Tests")
 ```
 
 ## Build
@@ -110,7 +111,8 @@ canvas (`AHCJHUD`, in `HCJHUD.cpp` and `HCJHUDReadability.cpp`) with the engine'
 Menu sizes follow the engine's DPI scaling of viewport widgets, HUD sizes `HCJUi::ComputeUIScale` (1 at 1920x1080,
 0.67 at 1280x720; text never below 0.8).
 
-- Title menu: PLAY (host with bots - one click), HANGAR (ship type, hull and paint with a turning 3D preview and stat
+- Title menu: QUICK PLAY (first button: joins an open match found through Epic Online Services, hosts one when there is
+  none - see "Online"), PLAY (host with bots - one click; Enter), HANGAR (ship type, hull and paint with a turning 3D preview and stat
   bars; see "Ship types, warp drive, cloak, tractor beam"), bots 0-15, hypercube 3D-5D, bot difficulty, seed, pilot name, JOIN
   by address, FIND GAMES and LEADERBOARDS (see "Online"), SETTINGS (mouse sensitivity, music / effects /
   interface volume), QUIT. The choices are kept in the
@@ -266,7 +268,7 @@ Beyond 90 m a glint in the portal's colour keeps it visible as a landmark (the s
 keep their own look - a white-blue core in a flat swirl that faces the view - and get the same landmark glint (in the
 wormhole colour) and a flare of the core on a passage. Settings: `PortalSwirl*`, `PortalRingTurnRate`, `PortalGlow*`.
 
-## Online: lobby browser and leaderboards (Epic Online Services)
+## Online: quick play, lobby browser and leaderboards (Epic Online Services)
 
 `UHCJEOSSubsystem` (`Public/Online/HCJEOSSubsystem.h`, a game-instance subsystem) talks to the EOS C SDK directly,
 through the engine's `EOSShared` plugin (the only plugin added: it loads `EOSSDK-Win64-Shipping.dll`, initialises
@@ -287,13 +289,35 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
   `-HCJNoEOS`, the state says why (`LogHCJ: EOS: ...`, one line), the title menu shows "Online services
   unavailable: ..." and the two online pages show the same instead of their lists; everything else is unchanged.
   A failed sign-in is retried after 20 s, 60 s and then every 2 minutes. Never active on a dedicated server.
+- **QUICK PLAY** (title menu, first button; `-HCJQuickPlay` on the command line does the same once the title menu is
+  up; `HCJMenuCmd quickplay`): one click into a match with people when there is one.
+  1. "Signing in to Epic Online Services..." - waits up to 15 s for a sign-in that is under way.
+  2. "Searching for open matches..." - one lobby search (10 s at most). Offered are only lobbies this build can join:
+     the same network version, a free slot, an address this machine can use, not stale (see FIND GAMES).
+  3. "Joining <host> (<n>/<max> players)..." - the best one: most players, then most free slots. **The ping is not
+     known** (there is no connection to a host before the join), so it does not rank. The join is the ordinary IP
+     join to the advertised address, 15 s at most; when it fails or takes too long the next lobby is tried (two
+     hosts at most): "Could not join <host> - Joining <next>...".
+  4. "No open match found - hosting one" / "Could not join <host> - hosting a match instead" / "Search failed (...) -
+     hosting a match instead": shown for 2 s, then the same as PLAY - a match with the bots of the menu, advertised
+     as a lobby, so the next player who presses QUICK PLAY lands in it.
+  5. Without the service (not configured, `-HCJNoEOS`, no network): "Online services unavailable (<why>) - starting a
+     local match against bots", then PLAY.
+  The ship chosen in the HANGAR applies either way. CANCEL / Esc stops it (and cancels a connection that is under
+  way). The steps are `FHCJQuickPlay` in `Online/HCJEosLogic.h` (no SDK, no world; tested), kept by the subsystem so
+  that they survive the world change of a join; `AHCJPlayerController::UpdateQuickPlay` feeds them every frame and
+  logs each status line as `Quick play: ...`.
 - **FIND GAMES** (title menu): the list of advertised matches (host, players / maximum, bots, map), REFRESH, JOIN.
   A listen host that is past the title menu (PLAY, `-AutoHost`, a `?listen` URL) creates one public EOS lobby in
   the bucket `HCJ_FFA`; its attributes carry the host name, the LAN addresses of the machine, an optional public
   address, the port, players, maximum, bots, hypercube dimension, seed and the network version of the build
-  (`FHCJLobbyInfo`). The lobby is updated when one of these changes (at most every 2 s) and destroyed when the
-  host returns to the title menu, leaves the world or quits. Matches of another build version are listed but
-  cannot be joined.
+  and the time of the last write (`FHCJLobbyInfo`; nothing about ship types: any ship may join any match). The lobby
+  is updated when one of these changes (at most every 2 s; the player count follows joins and leaves), written again
+  every 2 minutes as a heartbeat, and destroyed when the host returns to the title menu, leaves the world or quits.
+  **Listed are only matches this build can join** (`HCJEos::FilterJoinableLobbies`): another network version, a full
+  match, a lobby not written for 10 minutes (a host that crashed; the service also drops lobbies without an owner by
+  itself) and one without a usable address are left out, and the status line says how many and why ("2 not shown: 1
+  other version, 1 full"). The same list feeds QUICK PLAY.
 - **Transport: plain IP, not EOS P2P.** The lobby is an advertisement only; nobody but the host is a member. JOIN
   travels to an advertised address by the same path as "Join a host at address" (`HCJEos::PickJoinAddress`):
   loopback when the host is this machine, the host's LAN address when it shares a /24 with one of ours, else the
@@ -312,8 +336,10 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
   score) and the local player's row when it is further down. EOS updates leaderboards some minutes after an ingest.
   The end-of-match board says whether the stats were sent.
 - Development: `-HCJEosDemo` fills both pages with made-up rows without contacting any service (pictures, and
-  JOIN on the first row reaches a host on this machine); `HCJMenuCmd lobbies | leaderboards | refresh |
-  joinlobby <index>`.
+  JOIN / QUICK PLAY reach a host on this machine through the first row; `-HCJEosDemoPort=<port>` is the port that row
+  advertises); `-HCJNoStats` sends no stats (test runs against the live service); `HCJMenuCmd lobbies | leaderboards |
+  refresh | joinlobby <index> | quickplay | cancelquickplay`. No automation test and no playthrough run reaches the
+  service: the subsystem is off while automation tests run, and the playthrough runner passes `-HCJNoEOS`.
 
 ## Flight, rules and bots
 
@@ -379,6 +405,25 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
   URL `?Difficulty=0..2`): aim error 7 / 3.5 / 1.5 degrees, reaction 1.0 / 0.5 / 0.2 s before the first shot at
   a new target, turn rate, burst rhythm, opening range, strafe strength, and the hull fraction (45 / 30 / 20 %) at
   which a bot breaks off, stops firing and boosts for a repair pad in its sector. The default is easy.
+- Bot tactics (`AHCJBotController`, class comment; `FHCJBotSkill::Tactics` 0.25 / 0.7 / 1 is the chance that a ship is
+  flown "smart" at all and that a clever move is made when there is one, so easy bots mostly fly as before):
+  - **Target**: not simply the nearest - the ship that is shooting at the bot, a damaged one, one whose shield facing
+    towards the bot is weak or down, one whose tail points at it; each other bot already on a ship counts against
+    it, so they spread out.
+  - **Breaking off**: when the facing towards the attacker is down and the hull is low, and there is a way out - a
+    rock within 50 m to get behind, the cloak (it costs the shields, which are gone on that side anyway), a repair
+    or shield pad - the bot goes, under boost, with its best facing turned to the attacker, and comes back when its
+    shields are above 55 % or after 7 s. With no way out it fights on.
+  - **Torpedoes**: at once through a facing that the phasers have brought down (35 % / 70 % per decision on normal /
+    hard; easy as before); a smart bot holds a target in reach with the tractor beam first.
+  - **By ship type** (smart bots only; the ship numbers are unchanged): interceptor, fighter and scout make boosted
+    passes close around hulls that turn slower than they do; the scout cloaks readily to get away, goes for damaged
+    ships and drops an approach cloak behind its target; the gunship stands off and is twice as ready with
+    torpedoes; the cruiser uses its tractor beam more, above all on a fast ship close by.
+  - **Surroundings**: a small rock on the line to a hidden target is shot away with the phaser; the reach of a
+    station's turrets is steered out of unless the bot is attacking them; a fight far away is reached at warp.
+  - The `Tactics t=` line of the server log counts all of it (retreats, cover reached, torpedoes at an open facing
+    and kills by them, tractor then torpedo, turns on an attacker, rocks shot, ...).
 - Looks only: the hull banks into turns, the chase camera lags a little and widens under boost, a short camera
   shake and an edge flash when hit, hull lights brighter with thrust, debris bursts in the death explosion.
 
@@ -717,7 +762,8 @@ bodies, the nebulae and the black hole look are made up. Settings: "Backdrop" bl
 ### Capture runs (development builds)
 
 `-HCJCapture=<s>` saves `Saved/Screenshots/HCJCapture/Shot_NN.png` every `<s>` seconds and logs the frame rate of
-each interval. Add `-HCJAutoFly` (the local ship flies and fires by itself; with `-HCJAutoTorpedo` also torpedoes), `-HCJOrbit` (camera looks at the ship
+each interval. Add `-HCJAutoFly` (the local ship flies and fires by itself; with `-HCJAutoTorpedo` also torpedoes, with
+`-HCJAutoAim` its nose follows the nearest ship in sight - the autopilot of the playthrough tests), `-HCJOrbit` (camera looks at the ship
 from another side each picture), `-HCJTour` (listen server: hop to the next sector after each picture),
 `-HCJSkyCam`, `-HCJHoleTest=<f>`, `-HCJCaptureCmds="a;b;c"` (one console command per picture, `_` for a space). See the
 comment in `Private/HypeCubeJam.cpp`. For repeatable pictures: `HCJMenuCmd scene <sector>,<look>[,<spawn point>[,<distance>]]`
@@ -749,6 +795,42 @@ hardware.
 ```powershell
 & "F:\EpicGames\UE_5.9\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "F:\work\HypeCubeJam\HypeCubeJam.uproject" -ExecCmds="Automation RunTests HypeCubeJam; Quit" -unattended -nullrhi -nosplash -log "-ini:EditorPerProjectUserSettings:[/Script/ModelContextProtocol.ModelContextProtocolSettings]:bAutoStartServer=False"
 ```
+
+71 automation tests (about a minute). Two of them are playthroughs (`HypeCubeJam.Playthrough.*`): a real game world
+with the game mode, the universe and bots, ticked by hand at 30 frames per game second - a match of six hard bots to
+a frag limit of 4 and the start of the next one on another layout, and three minutes of an open match of eight bots
+(kills, portal jumps, pickups, every ship type, nobody stuck or outside its sector). About 15 and 20 s of real time.
+
+### Playthrough runner
+
+```powershell
+python docs\tools\playthrough.py                      # all scenarios, editor binary, headless; about 7 minutes
+python docs\tools\playthrough.py --binary packaged    # the packaged build (add --render for windows)
+python docs\tools\playthrough.py --only net_host_client_late,autopilot_hangar_match
+python docs\tools\playthrough.py --list
+```
+
+Starts whole matches as processes (`-nullrhi`, `-HCJNoEOS`, `-HCJNoStats`, ports 7791 upwards, each process quits by
+itself with `-HCJQuitAfter`), reads the `Playthrough: event=... key=value` lines of their logs and prints one row per
+scenario; exit code 1 when one failed. Logs go to `Saved/Playthrough/<time>/`. Scenarios:
+
+| scenario | what runs | what must hold |
+|---|---|---|
+| `match_cycle` | 8 normal bots, kill limit 5 | the match ends by the limit, winner first on a board of 8 rows sorted by kills, match 2 starts on another seed and layout checksum |
+| `difficulty_easy` / `_normal` / `_hard` | 8 bots, 230 s, no limits | at that difficulty: kills, every ship type kills and dies, portal and wormhole jumps, pickups, warp / cloak / tractor used |
+| `small_universe` | 8 easy bots on 4 sectors, 260 s | a crowd: kills; its turret and rock numbers go into the sum below |
+| `net_host_client_late` | listen host + client (25 s later) + late joiner (100 s later), all on the autopilot with aim; the client leaves after 48 s and joins again | same seed and layout checksum everywhere; every destroyed-rock set a client had is one the host had (count and checksum); client and late joiner get ships and have at least one kill and one death between them (an autopilot does not score every time); at most 30 movement corrections per 100 s; the host saw three remote joins and the client leave |
+| `autopilot_hangar_match` | title menu, hangar (cruiser, hull 2, paint 5), PLAY, kill limit 4 | the choice reaches the server, the match ends by the limit, the player is on the board as a cruiser with a kill or a death, the next match starts |
+| `all_matches_together` | the logs of the above | every weapon has a kill, every pad item was taken (cloak cells excepted), a turret shot a ship down, a turret was destroyed, a rock was destroyed |
+
+Every process must also: quit by itself, have no `Error:` / ensure / fatal line (one known engine plugin message
+excepted), no NaN, no `stuck` / `out_of_bounds` / `nan` event, a mean server frame below 60 ms and none above 3 s.
+Scenarios run four at a time, so kill rates are lower than in a single match; the thresholds are loose on purpose
+and say nothing about balance.
+
+Structured lines (server): `match_start`, `match_end`, `board`, `stats` (all counters of the match, every 15 s),
+`human`, and the warnings `stuck` (a bot's ship moved less than 2.5 m in 20 s; the line says what the bot was doing),
+`out_of_bounds`, `nan`; clients: `client` every 10 s.
 
 ## MCP (Unreal MCP server)
 

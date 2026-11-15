@@ -1001,6 +1001,14 @@ float AHCJShipCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Dama
 	float Applied = 0.0f;
 	if (bTorpedo)
 	{
+		if (FacingBefore <= 0.0f)
+		{
+			// Before the damage: the kill, if this is one, is reported from inside ApplyTorpedoOnFacing.
+			if (AHCJGameMode* TorpedoGameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>())
+			{
+				TorpedoGameMode->NotifyTorpedoThroughOpenFacing(this);
+			}
+		}
 		const UHCJGameplaySettings& Gameplay = UHCJGameplaySettings::Get();
 		const float FullDamage = FMath::Max(Gameplay.GetWeapon(EHCJWeapon::Torpedo).Damage, 1.0f);
 		Applied = HealthComponent->ApplyTorpedoOnFacing(Gameplay.TorpedoShieldDamage * ActualDamage / FullDamage, ActualDamage * FacingScale, HitFacing, EventInstigator, DamageCauser, &ShieldHit);
@@ -1117,6 +1125,18 @@ float AHCJShipCharacter::GetLastFacingCollapseTime() const
 		Latest = FMath::Max(Latest, Time);
 	}
 	return Latest;
+}
+
+AHCJShipCharacter* AHCJShipCharacter::GetRecentAttackerShip(float MaxAgeSeconds) const
+{
+	const UWorld* World = GetWorld();
+	const AController* Attacker = LastDamager.Get();
+	if (!HasAuthority() || World == nullptr || Attacker == nullptr || World->GetTimeSeconds() - LastDamagerTime > MaxAgeSeconds)
+	{
+		return nullptr;
+	}
+	AHCJShipCharacter* AttackerShip = Cast<AHCJShipCharacter>(Attacker->GetPawn());
+	return (IsValid(AttackerShip) && !AttackerShip->IsDead() && AttackerShip != this) ? AttackerShip : nullptr;
 }
 
 bool AHCJShipCharacter::GetRecentAttackerLocation(float MaxAgeSeconds, FVector& OutLocation) const

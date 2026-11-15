@@ -268,6 +268,8 @@ public:
 	 * it still has a ship. False for turrets and the environment.
 	 */
 	bool GetRecentAttackerLocation(float MaxAgeSeconds, FVector& OutLocation) const;
+	/** SERVER: the live ship of whoever damaged this ship in the last MaxAgeSeconds (never this ship), else nullptr. Bots: who is shooting me. */
+	AHCJShipCharacter* GetRecentAttackerShip(float MaxAgeSeconds) const;
 
 	/** Every machine: the ship is still under its spawn shield (takes no damage; firing drops it). */
 	bool IsSpawnShielded() const { return bSpawnShield && !bIsDead; }

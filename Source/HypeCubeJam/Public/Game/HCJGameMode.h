@@ -5,6 +5,7 @@
 #include "GameFramework/GameModeBase.h"
 #include "Math/RandomStream.h"
 #include "Templates/SubclassOf.h"
+#include "Game/HCJBalance.h"
 #include "Hypercube/HCJMatchConfig.h"
 #include "Ship/HCJWeapons.h"
 #include "Ship/HCJShipTypes.h"
@@ -64,6 +65,11 @@ public:
 	virtual void PostLogin(APlayerController* NewPlayer) override;
 	/** Also reached for bots (AController::Destroyed calls Logout): drops the bot from Bots, cancels its respawn timer. */
 	virtual void Logout(AController* Exiting) override;
+	/**
+	 * Names are unique in a match: a second "User" becomes "User-2" (found by the playthrough tests - three machines
+	 * with the default pilot name were three rows "User" on the board and "User destroyed User" in the kill feed).
+	 */
+	virtual void ChangeName(AController* Controller, const FString& NewName, bool bNameChange) override;
 	/**
 	 * Spawns and possesses a new ship for NewPlayer (human or bot) at a random spawn point of a random sector.
 	 * No-op when the phase is not Playing, the universe is not built, or the controller already has a live ship.
@@ -160,6 +166,36 @@ public:
 	void NotifyTractorRelease(bool bBroken) { MatchStats.TractorBreaks += bBroken ? 1 : 0; }
 	void NotifyTractorSeconds(float Seconds) { MatchStats.TractorSeconds += Seconds; }
 	void NotifyBotBrokeFree() { ++MatchStats.BotTractorEscapes; }
+	/** A bot did one of the things of EHCJBotTactic on purpose (the "Tactics" log line). */
+	void NotifyBotTactic(EHCJBotTactic Tactic) { ++MatchStats.BotTactics[static_cast<int32>(Tactic)]; }
+	int32 GetBotTacticCount(EHCJBotTactic Tactic) const { return MatchStats.BotTactics[static_cast<int32>(Tactic)]; }
+	/** A torpedo hit Victim through a facing that was down (a kill by that torpedo in the same instant counts as an open-facing torpedo kill). */
+	void NotifyTorpedoThroughOpenFacing(const AHCJShipCharacter* Victim);
+
+	// ---- playthrough tests: what the automated matches assert on (see docs/tools/playthrough.py) ----
+
+	/** Numbers of the running match the playthrough tests read without parsing a log. */
+	struct FPlaythroughSnapshot
+	{
+		int32 MatchNumber = 0;
+		int32 Seed = 0;
+		uint32 LayoutChecksum = 0;
+		int32 Kills = 0;
+		int32 Deaths = 0;
+		int32 PortalJumps = 0;
+		int32 WormholeJumps = 0;
+		int32 PickupsTaken = 0;
+		int32 Shots = 0;
+		int32 StuckEvents = 0;
+		int32 OutOfBoundsEvents = 0;
+		int32 NaNEvents = 0;
+		int32 MatchesEnded = 0;
+		FString LastWinner;
+		int32 LastWinnerKills = 0;
+		int32 LastBoardRows = 0;
+	};
+	FPlaythroughSnapshot GetPlaythroughSnapshot() const;
+	virtual void Tick(float DeltaSeconds) override;
 
 	/**
 	 * SERVER: a player's choice of ship (type, hull, paint; anything invalid becomes the fighter / "pick for me").
@@ -423,9 +459,44 @@ protected:
 		/** Credited kills and all deaths by EHCJShipType. */
 		int32 KillsByType[HCJShipTypes::NumTypes] = {};
 		int32 DeathsByType[HCJShipTypes::NumTypes] = {};
+		/** What bots did on purpose, by EHCJBotTactic, and torpedo kills through a facing that was down. */
+		int32 BotTactics[static_cast<int32>(EHCJBotTactic::Count)] = {};
+		int32 TorpedoOpenFacingKills = 0;
+		/** Playthrough watch: ships that sat still, were alive outside the sector, or had a broken position; server frames and the longest. */
+		int32 StuckEvents = 0;
+		int32 OutOfBoundsEvents = 0;
+		int32 NaNEvents = 0;
+		int32 Ticks = 0;
+		double TickSeconds = 0.0;
+		float MaxTickSeconds = 0.0f;
+		int32 SlowTicks = 0;
+		float StartTime = 0.0f;
 	};
 	FMatchStats MatchStats;
 	float NextStatusLogTime = 0.0f;
+
+	/** One structured "Playthrough: event=stats ..." line with every counter of the running match. */
+	void LogPlaythroughStats() const;
+	/** "Playthrough: event=match_start ..." for the match that just began. */
+	void LogPlaythroughMatchStart() const;
+	/** Once a second: ships that do not move, are alive outside the sector or have a broken position. */
+	void UpdatePlaythroughWatch();
+	struct FShipWatch
+	{
+		FVector Anchor = FVector::ZeroVector;
+		float AnchorTime = 0.0f;
+		float OutsideSince = -1.0f;
+		bool bStuckReported = false;
+	};
+	TMap<TWeakObjectPtr<AController>, FShipWatch> ShipWatches;
+	float NextWatchTime = 0.0f;
+	/** The last torpedo hit through an open facing: who and when (NotifyShipKilled reads it in the same instant). */
+	TWeakObjectPtr<const AHCJShipCharacter> LastOpenTorpedoVictim;
+	float LastOpenTorpedoTime = -1000.0f;
+	int32 NumMatchesEnded = 0;
+	FString LastWinnerName;
+	int32 LastWinnerKills = 0;
+	int32 LastBoardRows = 0;
 
 	/** Gameplay randomness (spawn sector/point). Seeded from MakeRandomSeed in InitGame; never used for world generation. */
 	FRandomStream GameplayRandom;

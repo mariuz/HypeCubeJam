@@ -1369,8 +1369,255 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
     - Judged from logs and still pictures only. Nobody has flown through the pebbles, watched the near clouds shift, seen
       the jets or the runes move, or looked at a whole fight with the stars of the hits going off.
 
+## 15 Nov 2026 (twelfth session) - bot tactics, playthrough tests, quick play
+27. "Add more playthrough tests, improve the bots' AI, add create server on the Epic games, also join to it if it is
+    available", then "yes, quick play". Three parts in one session. No ship number, weapon number, layout rule or
+    replicated property changed (`ProjectVersion` stays 0.2.0; layout checksum of seed 1234 still 7C0CB60C).
+    - **A. Bot tactics** (`AHCJBotController`; counters: `AHCJGameMode::NotifyBotTactic`, the `Tactics t=` log line).
+      One new number in the skill row carries the difficulty: `FHCJBotSkill::Tactics` = 0.25 / 0.7 / 1 (easy / normal /
+      hard) - the chance, rolled once per ship, that it is flown "smart" at all, and rolled again for single moves - and
+      `ComboChance` 0.08 / 0.35 / 0.7. So three of four easy ships fly as they did.
+      - Target (`PickTarget`): every hostile in sight gets a score - nearer is better (1 per 10 m), hull lost (x 5), the
+        facing it shows us weak (+2) or down (+4), it is the ship that hit us in the last 2.5 s (+5, and +2.5 more
+        when it sits on a side of ours that is weak), its tail towards us (+1.5), every other bot already on it (-2.5),
+        under its spawn shield (-8), the target we have (+3, so that it does not flip). A ship that is not smart keeps
+        the old rule (nearest, switch at 60 % of the distance).
+      - Breaking off (`ThinkDisengage`, `TickDisengage`). Decision after the first batch: a bot breaks off only when
+        it has a way out. The first version let light hulls run as soon as the facing towards the attacker was down
+        and the hull touched ("hit and run"); the pursuer has the same speed and the same range, so the runner just
+        stopped shooting and died - interceptor and scout lost K/D on hard (scout 0.64). Now: the facing towards the
+        attacker is down AND the hull is below the retreat line of the difficulty (45 / 30 / 20 %, +5 for the
+        interceptor, +12 for the scout) AND one of: a rock of at least 3.5 m within 50 m to get behind
+        (`AHCJUniverse::FindCoverPoint`), the cloak ready, a repair or shield pad in reach. Then up to 7 s away under
+        boost, fire held, the best facing turned to the attacker; back when the shields are above 55 % and nothing
+        hit for 2.5 s. The warp drive is tried on top (as before) but does not count as a way out: a hit stops its
+        charge.
+      - Shield facings in a duel: **not** turned while shooting, on purpose. A facing holds 22-34 points, a phaser
+        does about 47 a second: turning the nose 50 degrees away and back costs about a second of the bot's own fire
+        (about 45 damage not dealt) to save at most one facing (26). The facing turn therefore stays where the bot is
+        not shooting anyway - retreating, breaking off, travelling - and those cases became more frequent (table).
+        What a smart bot does instead when it is shot from the side or from behind: it turns on that ship (the +5).
+      - Cloak: a cloak takes all four facings down (item 25). The first version sent the scout into every fight under
+        cloak - it arrived without shields (scout K/D on hard 0.64). Now the type's readiness (scout x 3) applies to
+        getting away only, where the shields on that side are gone anyway and the cloak breaks every lock; an
+        approach under cloak is as rare as before, and a scout that makes one flies to the tail of its target and
+        drops the cloak at 26 m.
+      - Torpedoes: through a facing that is DOWN at once (`ComboChance` per decision, on top of the old rule); a
+        smart bot holds a target in beam reach with the tractor first (a held ship flies at 0.55 of its speed).
+      - Ship types (`FHCJBotStyle`, a table in the .cpp for smart bots; the ship table is untouched): interceptor,
+        fighter and scout make boosted passes (1.8 s at 15 m, every 12-18 s) around a hull that turns slower than
+        they do; gunship keeps 30 % more range and is twice as ready with torpedoes; cruiser 1.8 x with the tractor
+        (3 x in the first version - the beam feeds on the phaser bank and the cruiser's K/D fell) and tractors a fast
+        ship that is close; scout: damaged targets first, no fair fight with a heavy hull whose facing is whole.
+      - Surroundings: a rock of at most 140 hit points within 45 m on the line to a hidden target is shot with the
+        phaser (up to 3.2 s; the target is kept 2.5 s longer meanwhile); the reach of a station's live turrets (94 m
+        from its centre) is kept out of unless the bot attacks the turrets; a hostile far out of range is reached
+        at warp.
+      - **Measured**, same method before and after (standalone, headless, 8 bots of mixed types, seed 1234, no limits,
+        `-HCJBotsOnly -HCJNoEOS -HCJNoIntro`, 8 processes at once: 3 easy, 3 normal, 2 hard matches of about 410 s).
+        "Before" is the build of item 26, run at the start of this session; "after" the final code (fifth batch).
+
+        | | easy before | easy after | normal before | normal after | hard before | hard after |
+        |---|---|---|---|---|---|---|
+        | kills per minute | 14.5 | 14.1 | 18.2 | 17.6 | 19.3 | 18.4 |
+        | time to kill, s | 4.31 | 4.14 | 2.68 | 2.53 | 2.44 | 2.32 |
+        | kills by phaser / torpedo, % | 21 / 24 | 24 / 23 | 39 / 11 | 33 / 15 | 50 / 4 | 39 / 14 |
+        | by missiles / rail / pulse / scatter / blaster, % | 21 / 13 / 9 / 6 / 7 | 14 / 8 / 8 / 15 / 8 | 16 / 12 / 7 / 10 / 5 | 11 / 15 / 8 / 9 / 9 | 6 / 13 / 17 / 4 / 6 | 11 / 11 / 10 / 7 / 7 |
+        | K/D interceptor | 0.87 | 1.24 | 1.05 | 1.35 | 1.12 | 1.08 |
+        | K/D fighter | 1.02 | 0.93 | 0.92 | 0.88 | 1.00 | 1.24 |
+        | K/D gunship | 0.78 | 0.81 | 0.80 | 0.83 | 0.89 | 0.89 |
+        | K/D scout | 0.80 | 0.91 | 0.92 | 0.95 | 0.93 | 1.22 |
+        | K/D cruiser | 1.25 | 0.89 | 0.97 | 0.84 | 0.89 | 0.74 |
+        | phaser beam on a ship, % | 56 | 56 | 85 | 83 | 89 | 90 |
+        | per 10 min: warps / cloaks / tractor holds | 46 / 17 / 37 | 48 / 12 / 56 | 102 / 28 / 79 | 99 / 43 / 144 | 139 / 59 / 102 | 148 / 67 / 217 |
+        | torpedoes fired / hit a ship / on an open facing | 109 / 76 / 56 | 137 / 94 / 75 | 192 / 69 / 42 | 218 / 83 / 58 | 269 / 29 / 19 | 279 / 78 / 57 |
+        | facing turned to the attacker | 60 | 97 | 63 | 159 | 51 | 179 |
+        | deaths by station turrets | 9 | 4 | 9 | 4 | 7 | 4 |
+        | rocks destroyed by bots | 2 | 3 | 1 | 2 | 3 | 5 |
+        | new: retreats / back in the fight / cover reached | - | 75 / 9 / 1 | - | 117 / 16 / 10 | - | 152 / 14 / 8 |
+        | new: torpedoes at an open facing / kills by them | - | 118 / 30 | - | 180 / 24 | - | 212 / 24 |
+        | new: tractor then torpedo | - | 7 | - | 67 | - | 143 |
+        | new: turned on an attacker / less crowded target | - | 3 / 0 | - | 3 / 0 | - | 5 / 2 |
+        | new: close passes / cloak ambushes / warp chases | - | 22 / 0 / 0 | - | 73 / 2 / 19 | - | 101 / 7 / 30 |
+        | new: rocks shot out of the way / steered off a station | - | 1 / 20 | - | 2 / 53 | - | 8 / 89 |
+
+        ("retreats" counts the old run for a repair pad as well; "back in the fight" only the new breaking off.)
+        Five batches were run; the code changed a little between them (cloak rule, way-out rule, pass rhythm). Types
+        pooled over the last four (12 easy, 12 normal, 8 hard matches; 3560 kills) - K/D against the mean of the five:
+
+        | | interceptor | fighter | gunship | scout | cruiser |
+        |---|---|---|---|---|---|
+        | easy | 1.19 (+26 %) | 0.90 (-4 %) | 0.72 (-24 %) | 0.97 (+4 %) | 0.91 (-3 %) |
+        | normal | 1.33 (+36 %) | 0.88 (-10 %) | 0.82 (-16 %) | 1.08 (+11 %) | 0.78 (-20 %) |
+        | hard | 1.09 (+9 %) | 0.95 (-4 %) | 0.99 (0 %) | 1.04 (+4 %) | 0.90 (-9 %) |
+
+      - Read. (1) Easy is as lethal as it was: 14.1 against 14.5 kills a minute, 4.14 against 4.31 s (matches of one
+        batch: 3.5-4.7 s); beam on target 56 % as before, on purpose. (2) Torpedoes on hard: 4 % -> 14 % of the kills,
+        29 -> 78 hits per ten minutes; the bots still dodge most of them (197 of 279 lost their target). (3) The scout,
+        30-40 % below the others on normal and hard in item 25, is at +11 % / +4 % over twelve / eight matches. Today's
+        "before" did not show that gap (0.92, 0.93) - one bot type has about 150 kills and deaths per batch, and its
+        K/D moves by a quarter between batches of the same code (interceptor on normal in the four batches: 1.09,
+        1.78, 1.23, 1.35). (4) Hard is inside 10 % for every type. On normal and easy the interceptor is now clearly
+        the best and the two heavy hulls the worst: the fast ship gains most from choosing its fights. Halving the
+        passes did not change it; not tuned further. (5) Kill rate on hard a little lower (bots that live longer).
+      - Still weak: fights of two are still nose to nose (both aim at each other; the passes are the exception); rocks
+        are shot at once or twice a match; "turned on an attacker" and "less crowded target" are rare because a
+        sector seldom holds more than two or three ships; cover is reached about once a minute on normal and hard.
+        Nobody has played against these bots.
+    - **B. Playthrough tests.** Three layers on one set of facts.
+      - The server writes structured lines: `Playthrough: event=match_start | match_end | board | stats | human`, and
+        warnings `stuck` (a bot's ship moved less than 2.5 m in 20 s; with what the bot was doing), `out_of_bounds`
+        (alive beyond the kill radius for 3 s) and `nan`. `stats` carries every counter of the match (kills by weapon and
+        by ship type, jumps, pickups by item, turrets, rocks with the destroyed-set checksum, systems, tactics, server
+        frame times) every 15 s and at the end. Clients write `event=client` every 10 s (layout, destroyed set, own
+        score, movement corrections).
+      - In the automation suite (`HypeCubeJam.Playthrough.*`, `Private/Tests/HCJPlaythroughTests.cpp`): the engine's
+        `FTestWorldWrapper` with the game's URL options - the real game mode, universe, ships and bot controllers in a
+        world ticked by hand at 30 frames per game second. `MatchToFragLimitAndNext`: six hard bots, limit 4 - ended
+        after 74 s of game with a winner at 4 kills and a board of six, match 2 on seed -490612130 with layout
+        5671F10D (match 1: 7C0CB60C), 3106 frames in 13.7 s. `OpenMatchKeepsMoving`: eight normal bots, 180 s - 53
+        kills, 45 portal jumps, 53 pickups, all five types flew, no ship outside its sector or stuck, 5400 frames in
+        19.1 s. The online subsystem is switched off while automation tests run (a test world has a game instance).
+      - As processes: `docs/tools/playthrough.py` (see README, "Playthrough runner"): seven scenarios and one sum over
+        all of them, a pass / fail table, exit code 1 on a failure. Headless by default (`-nullrhi`, `-HCJNoEOS`),
+        ports 7791 upwards, four scenarios at a time.
+      - **What the tests found** (all fixed unless said):
+        1. *Bots standing still at the edge of a station's reach.* The new "keep out of a station's reach" removed the
+           inward part of a bot's wanted velocity; a bot whose portal, wormhole mouth, pad or wander point lay inside or
+           straight behind the reach stood at the edge - `stuck` events in three of eight matches of the fourth batch
+           (an interceptor 20 s in front of a wormhole mouth, a cruiser in front of a portal, a scout going back and
+           forth). Fixed in `SteerTowards`: a goal that lies under the guns is flown to; a fight holds the edge only
+           while the target can be hit from there; otherwise the bot goes round along the edge. No `stuck` event in
+           the 8 matches of the fifth batch and in the suite runs after it.
+        2. *Three players called "User".* Host, client and late joiner all had the default pilot name: three rows
+           "User" on the board, "User destroyed User" in the kill feed. `AHCJGameMode::ChangeName` now makes names
+           unique in a match (`User-2`, `User-3`). The `?Name=` option of a join URL is not what names a player (the
+           pilot name of the user settings is, sent after the join) - the runner sets it with an `-ini:` override.
+        3. *A world that is not a client says it is one.* Between "leave" and the next join the client's own local
+           world reported `NM_Client` for a moment (a connection was pending) and one `event=client` line carried the
+           local universe's checksum. The line - and Quick Play's "the join worked" - now also require a controller
+           without authority; otherwise a join that fails after that moment would have been taken for a success.
+        4. *Two bots nose to nose for 21 s* (second batch, easy, 1.7 m apart, both attacking, speed about 10 uu/s).
+           Seen once, before the stuck line said what a bot is doing; not seen again in 24 matches and the suite
+           runs. Not explained. It may have been case 1 (both at a station's edge); the watch stays in.
+        5. Of the runner itself: its NaN pattern matched the key `nan=0`; an easy match of 230 s need not contain a
+           cloak (asked of normal and hard only); a join is logged before the pilot name arrives (remote joins are
+           counted instead); headless there is no title menu (`FApp::CanEverRender`), so that check is made in
+           rendered runs only.
+      - **The suite**, last full run (editor binary, headless, four scenarios at a time, 518 s; exit code 0). The
+        first run passed 1 of 8 (findings 1-3 and 5 above), the second 7 of 8.
+
+        | scenario | result | checks | what it saw |
+        |---|---|---|---|
+        | `match_cycle` | pass | 21 | match 1 won with 5 kills after 33 s, board of 8; layouts 7C0CB60C -> 5671F10D |
+        | `difficulty_easy` | pass | 29 | 52 kills, 59 portal / 11 wormhole jumps, 68 pickups; every type killed and died |
+        | `difficulty_normal` | pass | 30 | 76 kills, 49 / 6 jumps, 54 pickups |
+        | `difficulty_hard` | pass | 30 | 62 kills, 73 / 10 jumps, 61 pickups |
+        | `small_universe` | pass | 13 | 92 kills on four sectors; 107 turret shots, 3 turrets destroyed |
+        | `net_host_client_late` | pass | 49 | client 2 kills / 4 deaths, 8 corrections in 180 s (4.4 per 100 s); late joiner 1 / 1, 3 in 110 s (2.7 per 100 s) and one rock that was already gone; host saw 3 remote joins, the client leave and come back |
+        | `autopilot_hangar_match` | pass | 17 | cruiser chosen, PLAY, three matches ended by the limit of 4; the player 3 kills / 6 deaths |
+        | `all_matches_together` | pass | 20 | kills: phaser 134, torpedo 82, missiles 69, blaster 43, pulse 33, rail 31, scatter 29; turrets shot 8 ships down, 11 turrets destroyed; 8 rocks destroyed |
+
+        Server frames in that run: mean 1.4-2.1 ms, longest 127 ms. No `stuck`, `out_of_bounds` or `nan` event, no
+        error line.
+      - With the packaged build: `autopilot_hangar_match` rendered (`--binary packaged --render`) passed 18 checks -
+        there the player starts in the title menu, and won one of its matches. `net_host_client_late` headless (`--binary packaged`) passed 49 checks on its second run (client 1 kill / 2 deaths, 3.7 corrections per 100 s; late joiner 0 / 4, 8.2 per 100 s, two rocks already gone); on the first the autopilot client had 4 deaths and no kill, which the test then demanded - it now asks for one kill between client and late joiner.
+        Rendered with three windows it does not run on this card: the client's device was removed (`DXGI_ERROR_DEVICE_REMOVED`,
+        video memory budget 118 MB, 770 MB used) when the third instance came up; until then its checks held.
+      - Movement corrections of the joined clients in all runs (autopilot with aim, boost every other 8 s): 1.8-8.9
+        per 100 s headless, 15-27 per 100 s in the rendered run that ran out of video memory; the limit of the test
+        is 30.
+      - The runner puts the user's ship choice back after the hangar scenario (PLAY saves the settings).
+    - **C. Quick play** (`FHCJQuickPlay` in `Online/HCJEosLogic.h`, `AHCJPlayerController::MenuQuickPlay` /
+      `UpdateQuickPlay`, menu page `QuickPlay`; README, "Online").
+      - QUICK PLAY is the first button of the title menu; PLAY (host with bots) stays the Enter key - Enter must not
+        take a player into a stranger's match by surprise. `-HCJQuickPlay` presses it once the title menu is up.
+      - Steps and texts: "Signing in to Epic Online Services..." (15 s at most) -> "Searching for open matches..."
+        (10 s at most) -> "Joining <host> (<n>/<max> players)..." (the ordinary IP join, 15 s at most, a second host
+        is tried) -> or "No open match found - hosting one" / "Could not join <host> - hosting a match instead" /
+        "Search failed (...) - hosting a match instead" for 2 s, then PLAY with the bots of the menu, advertised as a
+        lobby. No service: "Online services unavailable (<why>) - starting a local match against bots". The hangar
+        choice applies as for PLAY and JOIN (it is sent by every controller at its start).
+      - "Best" lobby: most players, then most free slots. Not by ping: there is no connection to a host before the
+        join and the lobby carries no region; said so in the README.
+      - Lobby hygiene: one more attribute, `HCJTIME` (seconds since 1970 when the host last wrote the lobby; written
+        again every 2 minutes). `HCJEos::FilterJoinableLobbies` leaves out other network versions, full matches,
+        lobbies older than 10 minutes and lobbies without a usable address - for FIND GAMES (which used to list other
+        versions and full matches greyed out) and for Quick Play; the status line says how many and why. A lobby
+        without the attribute (a 0.2.0 build of before today) is never called stale. Player count and bots follow
+        joins and leaves as before; the lobby is destroyed on leaving to the menu and at quit.
+      - Problem (second live run): the second instance started Quick Play, froze for 16 s in its first frames (two
+        instances compiling shaders on one GTX 950: `GPU timeout: a payload ... has not completed`), and the sign-in
+        wait - 8 s of wall clock then - was over when the next frame came, 0.6 s before the sign-in arrived: "no
+        answer from Epic Online Services - starting a local match". Now the time of a phase is the sum of its frames,
+        each counted as 0.25 s at most (tested), and the sign-in wait is 15 s.
+      - Problem (first live run): the playthrough suite ran at the same time; the second instance needed 96 s to
+        start and came up as the first one quit. Live tests are run alone.
+      - **EOS P2P / relay: not built; what was looked at.** The engine ships `Plugins/Online/SocketSubsystemEOS`
+        (`FSocketSubsystemEOS(IEOSPlatformHandlePtr, ISocketSubsystemEOSUtilsPtr)`, `UNetDriverEOS`, connect URL
+        `EOS:<product user id>:<socket>`): the glue to the game's own SDK login is one small utils object, less than
+        item 20 assumed. Two things stopped it. (1) A host listens on ONE game net driver: `UNetDriverEOS::InitListen`
+        is either an EOS P2P listener or (`?bUseIPSockets`) the plain IP one, not both - a host reachable through the
+        relay would no longer take "join by address" and LAN joins, i.e. the working path would change, not gain a
+        fallback. (2) It cannot be verified here: both instances on this PC are the same product user. Probe (a
+        temporary development switch, removed again): each of two running instances sent 20 packets to its own
+        product user id on one socket name through `EOS_P2P_SendPacket` - every packet came back to the process that
+        sent it (20 own, 0 from the other process, one connection request each, from itself). P2P between two
+        processes of one user stays inside each process. The condition for keeping it - a packaged host and client
+        on this PC that connect and play through it - cannot be met with one Windows user. Internet play still needs
+        the forwarded port and `-HCJPublicAddress`.
+      - **Live test** (two instances of the package on this PC = one EOS user, `-HCJNoStats`, ports 7801 / 7802, a
+        test bucket `-HCJEosBucket=HCJ_TEST_<time>` so that the run neither finds real matches nor shows in the
+        public list; third run, evidence is the two logs):
+        - A, 05:38:33 UTC: `Quick play: Signing in...`, signed in after 0.9 s, `Searching for open matches...`,
+          `EOS: lobby search: EOS_Success, 0 listed`, `Quick play: No open match found - hosting one`, 2 s later
+          `hosting a match (advertised through Epic Online Services)`, `EOS: lobby <id> created`, `lobby advertised:
+          'User' 1/16 players, 7 bots, 4D - 16 sectors, port 7801`.
+        - B, started when A's lobby was advertised: signed in after 1.1 s, `lobby search: EOS_Success, 1 listed`,
+          `lobby listed: 'User' 1/16 players, 7 bots, ..., port 7801, version FFB5210D`, `Quick play: Joining User
+          (1/16 players)...`, `connecting to 127.0.0.1:7801`, `Welcomed by server` 70 ms later, `Universe built
+          (client) ... layout checksum B3951D41` (A's match: B3951D41), `Quick play: joined the match of 'User'`.
+          A: `Player joined ... (remote) -> 2 humans, 6 bots`, `EOS: lobby updated: 'User' 2/16 players, 6 bots`.
+        - B left after 58 s (`Menu: leaving the server`). A: `Player left: User-2`, `lobby updated: 'User' 1/16
+          players, 7 bots` 0.6 s later.
+        - A quit at 05:41:03: `EOS: lobby <id> removed (EOS_Success)`, `shut down after 0.18 s, 0 request(s)
+          unanswered`.
+        - B, Quick Play again at 05:41:25: `lobby search: EOS_Success, 0 listed`, `No open match found - hosting one`,
+          `lobby <id> created`, `lobby advertised: ... port 7802`; at its quit `lobby <id> removed (EOS_Success)`.
+        - Each quit logged `EOS: stats not sent (-HCJNoStats): ...`; nothing was ingested. The first search of a
+          process took 3.2 s, later ones 0.2-0.3 s. One error line per log (the known CelestialVault message). The
+          client secret is in none of the nine logs of the three runs (compared in a script without printing it).
+        - First run (suite running alongside): A as above; B came up as A quit, no answer to its sign-in for 8 s
+          (frozen frames), local match; the sign-in arrived later and its match was advertised after all. Second run:
+          the 16 s freeze described above. Both ended in a playable match - the fallbacks work - but not in the join.
+        - Not tested: two different EOS users (two PCs); a join that fails with a second lobby to try and the
+          cancel after 15 s against a real host (unit-tested only); the real bucket `HCJ_FFA`; the menu by mouse.
+    - **Frame rate** (packaged, 1280x720, GTX 950, listen host with 7 bots, seed 1234, capture autopilot, `-HCJNoEOS
+      -HCJNoIntro`, 8 s averages over 92 s; the package of item 26 - a copy made before the first change - and the new
+      one in turn): before 108.1 and 104.7 fps (intervals 94-117), after 106.1 and 107.8 fps (96-121); the four runs had 20-26 kills.
+      Nothing new is drawn in a match and the bot code runs on the server's game thread: the two packages are in the same range. (Both are below the 118-122 fps of item 26's table: the machine had run builds and bot matches for two hours; only the alternated runs compare.)
+    - **Verification**: 71 automation tests, all passing (new: `HypeCubeJam.Playthrough.MatchToFragLimitAndNext`,
+      `.OpenMatchKeepsMoving`, `HypeCubeJam.Online.LobbyFilter`, `.QuickPlay`); the playthrough suite 8 of 8 (above);
+      layout checksum of seed 1234 unchanged (7C0CB60C; stations, wormholes, pads and black holes are derived from it and
+      were not touched). No error line in any bot match or suite log but the known CelestialVault message of the
+      packaged build.
+    - Development aids added: `-HCJQuickPlay`, `-HCJNoStats`, `-HCJEosBucket=<name>`, `-HCJEosDemoPort=<port>`,
+      `-HCJAutoAim`, `HCJMenuCmd quickplay | cancelquickplay`, the `Tactics t=` and `Playthrough:` log lines,
+      `docs/tools/playthrough.py`.
+    - Packaged: 1080 packages in the cook (1051 cooked, 29 skipped for the platform; as before - no content was added). Zip `Packaged/mariuz_HypeCubeJam.zip`: 584.9 MB (883.7 MB unpacked, 48 files; 584.8 MB / 48 files before).
+    - Pictures (packaged build, 1280x720, taken by the capture switch, one a second):
+      `Media/100_title_menu_quick_play.png` (signed in to the live service), `101_quick_play_searching.png`,
+      `102_quick_play_no_match_hosting_one.png` (live service, an empty test bucket), `103_quick_play_no_online_service_local_match.png`
+      (`-HCJNoEOS`), `104_find_games_live_lobby.png` (a second instance hosting in the same test bucket),
+      `105_quick_play_joining_demo_row.png`, `106_quick_play_join_failed_next_host_demo_rows.png`,
+      `107_quick_play_join_failed_hosting_instead_demo_rows.png` (**made-up rows of `-HCJEosDemo`** on a port where
+      nobody listens: the join to the first row ran out after 15 s, the second likewise, then a match was hosted - the
+      fallback chain in a real run). The "Joining ..." line of the live join lasted 0.4 s and is in no picture.
+    - Judged from logs, bot matches, the test runs and still pictures. Nobody has played against the new bots, clicked
+      QUICK PLAY with a mouse, or joined a match of another PC with it.
+
 ## Measurements
-- Automation tests: 9 at the start, 67 now, all passing (added: decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
+- Automation tests: 9 at the start, 71 now, all passing (added: two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station
   placement, lead aim).
 - Frame rate (editor binary, -game, 8 s averages): 101-128 fps with basic shapes (`-HCJNoAssets`), 98-129 fps
@@ -1381,6 +1628,22 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
   also with basic shapes only.
 
 ## Not done / open
+- Item 27 (bot tactics, playthrough tests, quick play) was judged from logs, bot matches, test runs and still pictures.
+  - Bots: on easy and normal the interceptor is now clearly the best type (K/D about a third above the mean of the five
+    over twelve matches each) and gunship and cruiser the worst (16-24 % below); on hard all five are inside 10 %. The
+    numbers of one batch move by a quarter per type. Fights of two are still nose to nose; bots do not turn a shield
+    facing while they shoot (it costs more fire than it saves); rocks are shot at once or twice a match; cover is
+    reached about once a minute on normal and hard. Nobody has played against them.
+  - Two bots sat nose to nose for 21 s once (second batch); not seen again, not explained.
+  - Quick Play was tested live with two instances on one PC, which are one EOS user, in a test bucket. Not tested: two
+    different users / PCs, a failing join against a real host (unit test and a run with made-up rows only), the mouse.
+    The best lobby is the fullest, not the nearest: the ping to a host is not known before the join.
+  - No EOS P2P / relay (see item 27 for what was looked at): a host listens either through the relay or by address, not
+    both, and P2P between two processes of one EOS user cannot be tested on one PC.
+  - The playthrough net scenario does not run rendered with three windows on the GTX 950 (video memory); headless it
+    passes. An autopilot does not score in every three minutes, so the test asks for one kill between client and late
+    joiner. The frame-time limits of the runner (mean 60 ms, longest 3 s) are loose because scenarios run side by side.
+  - Player names are unique per match now ("User-2"); the EOS display name stays the pilot name of the settings.
 - Item 26 (the look of the intro movie) was judged from logs and still pictures.
   - About a tenth slower than the build before (table in item 26); 97 fps in the worst two seconds measured. "Cinematic
     look" off gives back 3-8 % in dense fields (fewer decorative rocks); the post process itself costs nothing measurable.
@@ -1396,7 +1659,7 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
     textures of `SourceAssets/Cinematic` exist on this disk (both scripts recreate them).
 - Item 25 (ship types, warp drive, cloak, tractor beam) was judged from logs, bot matches and still pictures.
   - Ship types are balanced for EASY bots only (kills / deaths inside +-25 % of the mean in the last batch, gunship at
-    the edge). On normal and hard the scout is 30-40 % below the others; not retuned. How the types feel to a pilot
+    the edge). On normal and hard the scout was 30-40 % below the others (item 27: the bots fly their types differently now and the scout is level; the interceptor leads on easy and normal). How the types feel to a pilot
     (speed, the fore armour, a 30 % bigger cruiser) is untested.
   - The eight hulls of each type are the file order of the pack; nobody sorted the forty hulls by how they look.
   - The fix for the boost-meter corrections could not be shown in a run: the burst did not occur with the build before
@@ -1437,7 +1700,7 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
 - Phasers, destroyable asteroids, shockwaves, debris, flares and the Lyria music (item 23) were tuned from bot matches
   and looked at in three still pictures taken in slow motion. Nobody has played with them or heard anything.
   - The choice of base weapon (B: phaser / blaster) is forgotten when the ship is destroyed: a new ship has the phaser.
-  - Bots do not shoot at rocks on purpose; how fast a player can clear a field was not measured.
+  - Bots shoot at a rock on purpose only when a small one hides their target (item 27: once or twice a match); how fast a player can clear a field was not measured.
   - The push of a shockwave is not predicted on the owning client: it arrives as a movement correction of a metre or two.
   - The break effect of a rock was never seen on a client (state and checksums were compared; item 23, netcode).
   - The music loop seam ran only with an overridden loop point; no run reached the real one at 157 s. On the title

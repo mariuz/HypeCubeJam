@@ -968,6 +968,59 @@ uint32 AHCJUniverse::FindNearestAsteroid(const FVector& WorldLocation, float Min
 	return Best;
 }
 
+bool AHCJUniverse::FindCoverPoint(const FVector& From, const FVector& Threat, float MaxDistance, float MinRadius, float Clearance, FVector& OutPoint) const
+{
+	const int32 Sector = GetSectorAtLocation(From);
+	if (!bBuilt || Sector == INDEX_NONE)
+	{
+		return false;
+	}
+	const FVector Origin = GetSectorOrigin(Sector);
+	const FVector LocalFrom = From - Origin;
+	const FVector LocalThreat = Threat - Origin;
+	const FRock* Best = nullptr;
+	double BestScore = TNumericLimits<double>::Max();
+	for (const TPair<uint32, FRock>& Pair : Rocks)
+	{
+		const FHCJAsteroid& Asteroid = Pair.Value.Asteroid;
+		if (HCJAsteroids::GetKeySector(Pair.Key) != Sector || Asteroid.BoundingRadius < MinRadius)
+		{
+			continue;
+		}
+		const double Distance = FVector::Dist(Asteroid.LocalPosition, LocalFrom);
+		if (Distance > MaxDistance)
+		{
+			continue;
+		}
+		// Near, and not on the attacker's side of the ship: a rock between the two is the best there is.
+		const FVector ToRock = (Asteroid.LocalPosition - LocalFrom).GetSafeNormal();
+		const FVector ToThreat = (LocalThreat - LocalFrom).GetSafeNormal();
+		const double Score = Distance * (1.0 + 0.5 * FMath::Max(FVector::DotProduct(ToRock, ToThreat), 0.0)) - 2.0 * Asteroid.BoundingRadius;
+		if (Score < BestScore)
+		{
+			BestScore = Score;
+			Best = &Pair.Value;
+		}
+	}
+	if (Best == nullptr)
+	{
+		return false;
+	}
+	const FVector Away = (Best->Asteroid.LocalPosition - LocalThreat).GetSafeNormal();
+	OutPoint = Origin + Best->Asteroid.LocalPosition + Away * (Best->Asteroid.BoundingRadius + Clearance);
+	return true;
+}
+
+float AHCJUniverse::GetAsteroidHealth(uint32 Key) const
+{
+	const FRock* Rock = Rocks.Find(Key);
+	if (Rock == nullptr || !bBuilt || !Config.Asteroids.bEnabled)
+	{
+		return -1.0f;
+	}
+	return Rock->Health >= 0.0f ? Rock->Health : HCJAsteroids::ComputeHealth(Rock->Asteroid.BoundingRadius, Config.Asteroids);
+}
+
 bool AHCJUniverse::ServerDamageAsteroid(const UPrimitiveComponent* Component, int32 Item, float Damage, AController* DamageInstigator)
 {
 	const uint32 Key = FindAsteroidKey(Component, Item);

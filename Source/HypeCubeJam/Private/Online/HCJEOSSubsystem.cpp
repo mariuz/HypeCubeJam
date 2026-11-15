@@ -83,6 +83,39 @@ namespace
 		return LexToString(Result);
 	}
 
+	int64 NowUnix()
+	{
+		return FDateTime::UtcNow().ToUnixTimestamp();
+	}
+
+	/**
+	 * The bucket lobbies are created in and searched by. Development builds: -HCJEosBucket=<name> puts a test run
+	 * into a bucket of its own, so that it neither finds the matches of real players nor shows up in their lists.
+	 */
+	FString GetLobbyBucket()
+	{
+		FString Bucket = HCJEos::LobbyBucket();
+#if !UE_BUILD_SHIPPING
+		FString Override;
+		if (FParse::Value(FCommandLine::Get(), TEXT("HCJEosBucket="), Override))
+		{
+			FString Clean;
+			for (const TCHAR Char : Override)
+			{
+				if (FChar::IsAlnum(Char) || Char == TEXT('_'))
+				{
+					Clean.AppendChar(Char);
+				}
+			}
+			if (!Clean.IsEmpty())
+			{
+				Bucket = Clean.Left(32);
+			}
+		}
+#endif
+		return Bucket;
+	}
+
 	const TCHAR* LeaderboardId(int32 Index)
 	{
 		return Index == 0 ? HCJEos::LeaderboardKills() : HCJEos::LeaderboardWins();
@@ -198,10 +231,17 @@ void UHCJEOSSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 
-	if (IsRunningDedicatedServer() || IsRunningCommandlet() || FParse::Param(FCommandLine::Get(), TEXT("HCJNoEOS")))
+	bNoStats = FParse::Param(FCommandLine::Get(), TEXT("HCJNoStats"));
+	if (bNoStats)
+	{
+		UE_LOG(LogHCJ, Log, TEXT("EOS: -HCJNoStats: no stats are sent in this run"));
+	}
+
+	// (GIsAutomationTesting: the playthrough tests make game instances of their own; no test may reach the live service.)
+	if (IsRunningDedicatedServer() || IsRunningCommandlet() || GIsAutomationTesting || FParse::Param(FCommandLine::Get(), TEXT("HCJNoEOS")))
 	{
 		SetState(EHCJEosState::Disabled);
-		UE_LOG(LogHCJ, Log, TEXT("EOS: off for this process (dedicated server, commandlet or -HCJNoEOS)"));
+		UE_LOG(LogHCJ, Log, TEXT("EOS: off for this process (dedicated server, commandlet, automation test or -HCJNoEOS)"));
 		return;
 	}
 
@@ -211,11 +251,15 @@ void UHCJEOSSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		// Development aid for pictures and for the join path: no service is contacted, the pages show made-up
 		// rows. The first game advertises this machine's own addresses, so JOIN reaches a host running here.
 		SignedInName = TEXT("DemoPilot");
+		// -HCJEosDemoPort=<port>: the port the first row advertises (a host started here with -port=<port>).
+		int32 DemoPort = 7777;
+		FParse::Value(FCommandLine::Get(), TEXT("HCJEosDemoPort="), DemoPort);
 		const TCHAR* Names[] = { TEXT("Ada"), TEXT("Grace_H"), TEXT("Linus"), TEXT("Margaret") };
 		for (int32 Index = 0; Index < UE_ARRAY_COUNT(Names); ++Index)
 		{
 			FHCJLobbyInfo& Lobby = Lobbies.AddDefaulted_GetRef();
 			Lobby.HostName = Names[Index];
+			Lobby.Port = DemoPort;
 			Lobby.LanAddresses = Index == 0 ? GetLocalAddresses() : TArray<FString>{ FString::Printf(TEXT("198.51.100.%d"), 10 + Index) };
 			Lobby.Players = Index == 2 ? 16 : 1 + Index * 2;
 			Lobby.Bots = 7 - Index * 2;
@@ -224,7 +268,9 @@ void UHCJEOSSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 			Lobby.LobbyId = FString::Printf(TEXT("demo%d"), Index);
 			Lobby.Sanitize();
 		}
-		LobbyStatus = TEXT("4 games found  (made-up rows of -HCJEosDemo)");
+		// As a real search does: only what this build can join, best first.
+		const int32 NumHidden = HCJEos::FilterJoinableLobbies(Lobbies, GetBuildVersion(), GetLocalAddresses(), NowUnix(), &HiddenLobbies);
+		LobbyStatus = FString::Printf(TEXT("%d games found, %d not shown (%s)  (made-up rows of -HCJEosDemo)"), Lobbies.Num(), NumHidden, *HiddenLobbies);
 		for (FHCJLeaderboardView& View : Leaderboards)
 		{
 			TArray<FHCJLeaderboardRow> Records;
@@ -306,7 +352,7 @@ void UHCJEOSSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	TickHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UHCJEOSSubsystem::Tick), 0.25f);
 
-	UE_LOG(LogHCJ, Log, TEXT("EOS: platform created (SDK %s), signing in with the device id"), *Manager->GetSDKVersion());
+	UE_LOG(LogHCJ, Log, TEXT("EOS: platform created (SDK %s), signing in with the device id; lobby bucket %s"), *Manager->GetSDKVersion(), *GetLobbyBucket());
 	SetState(EHCJEosState::Connecting);
 	StartLogin();
 }
@@ -394,8 +440,9 @@ bool UHCJEOSSubsystem::Tick(float DeltaTime)
 					CreateLobby();
 				}
 			}
-			else if ((!bLobbyHasAttributes || !WantedInfo.AdvertisesSameAs(AdvertisedInfo)) && Now >= NextLobbyUpdateTime)
+			else if ((!bLobbyHasAttributes || !WantedInfo.AdvertisesSameAs(AdvertisedInfo) || Now - LastLobbyPushTime > HCJEos::LobbyHeartbeatSeconds) && Now >= NextLobbyUpdateTime)
 			{
+				// (Also when nothing changed for a while: the time in the attributes tells a joiner that this host is alive.)
 				PushLobbyAttributes();
 			}
 		}
@@ -572,7 +619,7 @@ void UHCJEOSSubsystem::UpdateHosting(bool bHosting, const FHCJLobbyInfo& Info)
 
 void UHCJEOSSubsystem::CreateLobby()
 {
-	const FTCHARToUTF8 Bucket(HCJEos::LobbyBucket());
+	const FTCHARToUTF8 Bucket(*GetLobbyBucket());
 	EOS_Lobby_CreateLobbyOptions Options = {};
 	Options.ApiVersion = EOS_LOBBY_CREATELOBBY_API_LATEST;
 	Options.LocalUserId = Impl->LocalUser;
@@ -627,6 +674,8 @@ void UHCJEOSSubsystem::PushLobbyAttributes()
 		return;
 	}
 
+	WantedInfo.UpdatedUnix = NowUnix();
+	LastLobbyPushTime = FPlatformTime::Seconds();
 	const FHCJLobbyInfo Sent = WantedInfo;
 	for (const FHCJLobbyAttribute& Attribute : Sent.ToAttributes())
 	{
@@ -713,6 +762,14 @@ void UHCJEOSSubsystem::DestroyLobby()
 
 void UHCJEOSSubsystem::RefreshLobbies()
 {
+	if (Impl == nullptr && State == EHCJEosState::Ready)
+	{
+		// -HCJEosDemo: the made-up rows are the result.
+		SearchError.Reset();
+		++SearchSerial;
+		UE_LOG(LogHCJ, Log, TEXT("EOS demo: lobby search: %d listed (made-up rows)"), Lobbies.Num());
+		return;
+	}
 	if (Impl == nullptr || State != EHCJEosState::Ready || bSearching)
 	{
 		return;
@@ -726,11 +783,13 @@ void UHCJEOSSubsystem::RefreshLobbies()
 	if (Result != EOS_EResult::EOS_Success || Search == nullptr)
 	{
 		LobbyStatus = FString::Printf(TEXT("Search failed (%s)"), *ResultText(Result));
+		SearchError = LobbyStatus;
+		++SearchSerial;
 		Touch();
 		return;
 	}
 
-	const FTCHARToUTF8 Bucket(HCJEos::LobbyBucket());
+	const FTCHARToUTF8 Bucket(*GetLobbyBucket());
 	EOS_Lobby_AttributeData Parameter = {};
 	Parameter.ApiVersion = EOS_LOBBY_ATTRIBUTEDATA_API_LATEST;
 	Parameter.Key = EOS_LOBBY_SEARCH_BUCKET_ID;
@@ -745,6 +804,8 @@ void UHCJEOSSubsystem::RefreshLobbies()
 	{
 		EOS_LobbySearch_Release(Search);
 		LobbyStatus = FString::Printf(TEXT("Search failed (%s)"), *ResultText(Result));
+		SearchError = LobbyStatus;
+		++SearchSerial;
 		Touch();
 		return;
 	}
@@ -760,7 +821,10 @@ void UHCJEOSSubsystem::RefreshLobbies()
 		{
 			bSearching = false;
 			Lobbies.Reset();
+			HiddenLobbies.Reset();
+			SearchError.Reset();
 			int32 NumSkipped = 0;
+			int32 NumHidden = 0;
 			if (Info.ResultCode == EOS_EResult::EOS_Success)
 			{
 				EOS_LobbySearch_GetSearchResultCountOptions CountOptions = {};
@@ -829,25 +893,32 @@ void UHCJEOSSubsystem::RefreshLobbies()
 					EOS_LobbyDetails_Release(Details);
 				}
 
-				const FString Version = GetBuildVersion();
-				Lobbies.StableSort([&Version](const FHCJLobbyInfo& A, const FHCJLobbyInfo& B)
-				{
-					const bool bA = A.Version == Version;
-					const bool bB = B.Version == Version;
-					return bA != bB ? bA : A.Players > B.Players;
-				});
-				LobbyStatus = Lobbies.Num() == 0 ? FString(TEXT("No games found. Host one with PLAY and it will show up here for others."))
+				// Only what this build can join is listed: no other versions, no full or stale games; the best first.
+				NumHidden = HCJEos::FilterJoinableLobbies(Lobbies, GetBuildVersion(), GetLocalAddresses(), NowUnix(), &HiddenLobbies);
+				LobbyStatus = Lobbies.Num() == 0 ? FString(TEXT("No games found. Host one with PLAY or QUICK PLAY and it will show up here for others."))
 					: FString::Printf(TEXT("%d game%s found"), Lobbies.Num(), Lobbies.Num() == 1 ? TEXT("") : TEXT("s"));
+				if (NumHidden > 0)
+				{
+					LobbyStatus += FString::Printf(TEXT("   (%d not shown: %s)"), NumHidden, *HiddenLobbies);
+				}
 			}
 			else if (Info.ResultCode == EOS_EResult::EOS_NotFound)
 			{
-				LobbyStatus = TEXT("No games found. Host one with PLAY and it will show up here for others.");
+				LobbyStatus = TEXT("No games found. Host one with PLAY or QUICK PLAY and it will show up here for others.");
 			}
 			else
 			{
 				LobbyStatus = FString::Printf(TEXT("Search failed (%s)"), *ResultText(Info.ResultCode));
+				SearchError = LobbyStatus;
 			}
-			UE_LOG(LogHCJ, Log, TEXT("EOS: lobby search: %s, %d listed, %d skipped"), *ResultText(Info.ResultCode), Lobbies.Num(), NumSkipped);
+			UE_LOG(LogHCJ, Log, TEXT("EOS: lobby search: %s, %d listed, %d skipped, %d not joinable%s%s"), *ResultText(Info.ResultCode), Lobbies.Num(), NumSkipped, NumHidden,
+				NumHidden > 0 ? TEXT(": ") : TEXT(""), *HiddenLobbies);
+			for (const FHCJLobbyInfo& Listed : Lobbies)
+			{
+				UE_LOG(LogHCJ, Log, TEXT("EOS: lobby listed: '%s' %d/%d players, %d bots, %s, seed %d, port %d, version %s"), *Listed.HostName, Listed.Players, Listed.MaxPlayers,
+					Listed.Bots, *Listed.DescribeMap(), Listed.Seed, Listed.Port, *Listed.Version);
+			}
+			++SearchSerial;
 			EOS_LobbySearch_Release(Search);
 			Touch();
 		}), &THCJEosCall<EOS_LobbySearch_FindCallbackInfo>::Thunk);
@@ -905,6 +976,13 @@ void UHCJEOSSubsystem::IngestPending()
 	const FHCJStatDelta Delta = StatTracker.Take();
 	if (Delta.IsEmpty())
 	{
+		return;
+	}
+	if (bNoStats)
+	{
+		UE_LOG(LogHCJ, Log, TEXT("EOS: stats not sent (-HCJNoStats): kills +%d, deaths +%d, wins +%d, turrets +%d, matches +%d"),
+			Delta.Kills, Delta.Deaths, Delta.Wins, Delta.Turrets, Delta.Matches);
+		StatsStatus = TEXT("Stats not sent (switched off for this run)");
 		return;
 	}
 

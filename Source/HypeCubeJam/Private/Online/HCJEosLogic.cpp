@@ -12,6 +12,7 @@ namespace
 	const TCHAR* KeyDim = TEXT("HCJDIM");
 	const TCHAR* KeySeed = TEXT("HCJSEED");
 	const TCHAR* KeyVersion = TEXT("HCJVER");
+	const TCHAR* KeyTime = TEXT("HCJTIME");
 	/** Stands for "no value": the service does not take empty strings. */
 	const TCHAR* NoValue = TEXT("-");
 
@@ -157,6 +158,7 @@ TArray<FHCJLobbyAttribute> FHCJLobbyInfo::ToAttributes() const
 	Result.Add(FHCJLobbyAttribute::MakeInt(KeyDim, Dimension));
 	Result.Add(FHCJLobbyAttribute::MakeInt(KeySeed, Seed));
 	Result.Add(FHCJLobbyAttribute::MakeString(KeyVersion, Version.IsEmpty() ? FString(NoValue) : Version));
+	Result.Add(FHCJLobbyAttribute::MakeInt(KeyTime, UpdatedUnix));
 	return Result;
 }
 
@@ -179,6 +181,11 @@ bool FHCJLobbyInfo::FromAttributes(const TArray<FHCJLobbyAttribute>& Attributes,
 		return false;
 	}
 	Info.Seed = Seed;
+	// (Optional: a build before the attribute existed does not say when it wrote its lobby.)
+	if (const FHCJLobbyAttribute* Time = FindAttribute(Attributes, KeyTime); Time != nullptr && Time->bIsInt && Time->IntValue > 0)
+	{
+		Info.UpdatedUnix = Time->IntValue;
+	}
 	Lan.ParseIntoArray(Info.LanAddresses, TEXT(","), true);
 	// Whatever a stranger put into the attributes: only clean values get near a travel URL or the screen.
 	Info.Sanitize();
@@ -200,6 +207,212 @@ bool FHCJLobbyInfo::AdvertisesSameAs(const FHCJLobbyInfo& Other) const
 FString FHCJLobbyInfo::DescribeMap() const
 {
 	return FString::Printf(TEXT("%dD - %d sectors"), Dimension, 1 << Dimension);
+}
+
+EHCJLobbyFit HCJEos::ClassifyLobby(const FHCJLobbyInfo& Lobby, const FString& LocalVersion, const TArray<FString>& LocalAddresses, int64 NowUnix)
+{
+	if (Lobby.Version != LocalVersion)
+	{
+		return EHCJLobbyFit::OtherVersion;
+	}
+	if (Lobby.UpdatedUnix > 0 && NowUnix - Lobby.UpdatedUnix > LobbyStaleSeconds)
+	{
+		return EHCJLobbyFit::Stale;
+	}
+	if (Lobby.Players >= Lobby.MaxPlayers)
+	{
+		return EHCJLobbyFit::Full;
+	}
+	if (PickJoinAddress(Lobby, LocalAddresses).IsEmpty())
+	{
+		return EHCJLobbyFit::NoAddress;
+	}
+	return EHCJLobbyFit::Joinable;
+}
+
+const TCHAR* HCJEos::DescribeLobbyFit(EHCJLobbyFit Fit)
+{
+	switch (Fit)
+	{
+	case EHCJLobbyFit::Joinable: return TEXT("joinable");
+	case EHCJLobbyFit::OtherVersion: return TEXT("other version");
+	case EHCJLobbyFit::Full: return TEXT("full");
+	case EHCJLobbyFit::Stale: return TEXT("stale");
+	default: return TEXT("no address");
+	}
+}
+
+int32 HCJEos::FilterJoinableLobbies(TArray<FHCJLobbyInfo>& Lobbies, const FString& LocalVersion, const TArray<FString>& LocalAddresses, int64 NowUnix, FString* OutWhy)
+{
+	int32 Removed[5] = {};
+	int32 NumRemoved = 0;
+	for (int32 Index = Lobbies.Num() - 1; Index >= 0; --Index)
+	{
+		const EHCJLobbyFit Fit = ClassifyLobby(Lobbies[Index], LocalVersion, LocalAddresses, NowUnix);
+		if (Fit != EHCJLobbyFit::Joinable)
+		{
+			++Removed[static_cast<int32>(Fit)];
+			++NumRemoved;
+			Lobbies.RemoveAt(Index);
+		}
+	}
+	Lobbies.StableSort([](const FHCJLobbyInfo& A, const FHCJLobbyInfo& B)
+	{
+		return A.Players != B.Players ? A.Players > B.Players : (A.MaxPlayers - A.Players) > (B.MaxPlayers - B.Players);
+	});
+	if (OutWhy != nullptr)
+	{
+		OutWhy->Reset();
+		for (int32 Fit = 1; Fit < UE_ARRAY_COUNT(Removed); ++Fit)
+		{
+			if (Removed[Fit] > 0)
+			{
+				*OutWhy += FString::Printf(TEXT("%s%d %s"), OutWhy->IsEmpty() ? TEXT("") : TEXT(", "), Removed[Fit], DescribeLobbyFit(static_cast<EHCJLobbyFit>(Fit)));
+			}
+		}
+	}
+	return NumRemoved;
+}
+
+void FHCJQuickPlay::Enter(EHCJQuickPlayPhase NewPhase)
+{
+	Phase = NewPhase;
+	PhaseSeconds = 0.0;
+}
+
+void FHCJQuickPlay::Start(double Now)
+{
+	Enter(EHCJQuickPlayPhase::SigningIn);
+	LastStepTime = Now;
+	Status = TEXT("Signing in to Epic Online Services...");
+	JoinAddress.Reset();
+	JoinHost.Reset();
+	Candidates.Reset();
+	NextCandidate = 0;
+	NumAttempts = 0;
+	bCancelRequested = false;
+	bLocalOnly = false;
+}
+
+bool FHCJQuickPlay::Cancel()
+{
+	const bool bWasJoining = Phase == EHCJQuickPlayPhase::Joining;
+	Phase = EHCJQuickPlayPhase::Idle;
+	Status.Reset();
+	Candidates.Reset();
+	bCancelRequested = false;
+	return bWasJoining;
+}
+
+void FHCJQuickPlay::NotifyJoined()
+{
+	Phase = EHCJQuickPlayPhase::Idle;
+	Status = FString::Printf(TEXT("Joined %s"), *JoinHost);
+	Candidates.Reset();
+	bCancelRequested = false;
+}
+
+void FHCJQuickPlay::Announce(const FString& Text, bool bLocal, double Now)
+{
+	Enter(EHCJQuickPlayPhase::Announcing);
+	Status = Text;
+	bLocalOnly = bLocal;
+}
+
+bool FHCJQuickPlay::BeginNextJoin(const TArray<FString>& LocalAddresses, double Now, const FString& Prefix)
+{
+	while (NumAttempts < MaxJoinAttempts && Candidates.IsValidIndex(NextCandidate))
+	{
+		const FHCJLobbyInfo& Lobby = Candidates[NextCandidate++];
+		const FString Address = HCJEos::PickJoinAddress(Lobby, LocalAddresses);
+		if (Address.IsEmpty())
+		{
+			continue;
+		}
+		++NumAttempts;
+		JoinAddress = Address;
+		JoinHost = Lobby.HostName;
+		Enter(EHCJQuickPlayPhase::Joining);
+		Status = FString::Printf(TEXT("%sJoining %s (%d/%d players)..."), *Prefix, *Lobby.HostName, Lobby.Players, Lobby.MaxPlayers);
+		return true;
+	}
+	return false;
+}
+
+EHCJQuickPlayAction FHCJQuickPlay::Step(const FHCJQuickPlayInput& Input)
+{
+	// The time of a phase is the sum of its steps, a long frame counting as a short one (see MaxStepSeconds).
+	PhaseSeconds += FMath::Clamp(Input.Now - LastStepTime, 0.0, MaxStepSeconds);
+	LastStepTime = Input.Now;
+
+	switch (Phase)
+	{
+	case EHCJQuickPlayPhase::SigningIn:
+		if (Input.State == EHCJEosState::Ready)
+		{
+			Enter(EHCJQuickPlayPhase::Searching);
+			Status = TEXT("Searching for open matches...");
+			return EHCJQuickPlayAction::Search;
+		}
+		if (HCJEos::IsUnavailable(Input.State) || PhaseSeconds > SignInTimeout)
+		{
+			// Not there (not configured, switched off, no network): the game is the same without it.
+			FString Why = Input.State == EHCJEosState::Connecting ? FString(TEXT("no answer from Epic Online Services")) : HCJEos::DescribeState(Input.State, Input.StateDetail);
+			Why.RemoveFromStart(TEXT("Online services unavailable: "));
+			Announce(FString::Printf(TEXT("Online services unavailable (%s) - starting a local match against bots"), *Why), /*bLocal*/ true, Input.Now);
+		}
+		return EHCJQuickPlayAction::None;
+
+	case EHCJQuickPlayPhase::Searching:
+		if (Input.bSearchDone)
+		{
+			if (!Input.SearchError.IsEmpty())
+			{
+				Announce(FString::Printf(TEXT("%s - hosting a match instead"), *Input.SearchError), false, Input.Now);
+				return EHCJQuickPlayAction::None;
+			}
+			Candidates = Input.Lobbies;
+			NextCandidate = 0;
+			if (BeginNextJoin(Input.LocalAddresses, Input.Now, FString()))
+			{
+				return EHCJQuickPlayAction::Join;
+			}
+			Announce(TEXT("No open match found - hosting one"), false, Input.Now);
+		}
+		else if (PhaseSeconds > SearchTimeout)
+		{
+			Announce(TEXT("The search for matches got no answer - hosting one"), false, Input.Now);
+		}
+		return EHCJQuickPlayAction::None;
+
+	case EHCJQuickPlayPhase::Joining:
+	{
+		const bool bTimedOut = PhaseSeconds > JoinTimeout;
+		if (Input.bJoinFailed || bTimedOut)
+		{
+			bCancelRequested = bTimedOut;
+			const FString Failed = FString::Printf(TEXT("Could not join %s - "), *JoinHost);
+			if (BeginNextJoin(Input.LocalAddresses, Input.Now, Failed))
+			{
+				return EHCJQuickPlayAction::Join;
+			}
+			Announce(Failed + TEXT("hosting a match instead"), false, Input.Now);
+		}
+		return EHCJQuickPlayAction::None;
+	}
+
+	case EHCJQuickPlayPhase::Announcing:
+		if (PhaseSeconds >= AnnounceSeconds)
+		{
+			Phase = EHCJQuickPlayPhase::Idle;
+			Candidates.Reset();
+			return EHCJQuickPlayAction::Host;
+		}
+		return EHCJQuickPlayAction::None;
+
+	default:
+		return EHCJQuickPlayAction::None;
+	}
 }
 
 bool HCJEos::IsIPv4(const FString& Address)

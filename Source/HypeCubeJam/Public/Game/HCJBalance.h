@@ -39,10 +39,58 @@ struct HYPECUBEJAM_API FHCJBotSkill
 	float CloakChance = 0.1f;
 	float TractorChance = 0.08f;
 	float BreakFreeChance = 0.7f;
+	/**
+	 * Tactics, 0..1: how often a bot makes the clever choice where there is one (rolled per occasion) - the target by
+	 * threat and weakness instead of the nearest, breaking off behind a rock when its shields are gone, turning on a
+	 * ship that shoots it in the back, the tractor beam before a torpedo, flying its ship type's own way, shooting a
+	 * small rock out of the line of fire, keeping out of a station's reach.
+	 */
+	float Tactics = 0.6f;
+	/** Chance per decision (a few times a second) to put a torpedo through a facing of the target that is DOWN (the phasers opened it). */
+	float ComboChance = 0.3f;
 
 	/** The row for Difficulty (0 easy, 1 normal, 2 hard; clamped). */
 	static FHCJBotSkill Get(int32 Difficulty);
 };
+
+/** Things bots do on purpose; counted per match (AHCJGameMode::NotifyBotTactic, the "Tactics" status line and the playthrough tests). */
+enum class EHCJBotTactic : uint8
+{
+	/** Broke off a fight: shields gone or hull low (for a repair pad, a rock, or just away). */
+	Retreat,
+	/** Came back to the fight after breaking off. */
+	Reengage,
+	/** Got a rock between itself and its attacker while breaking off. */
+	Cover,
+	/** Fired a torpedo at a facing of the target that was down. */
+	ComboTorpedo,
+	/** Held the target with the tractor beam and fired a torpedo at it. */
+	TractorTorpedo,
+	/** Turned on a ship that was shooting it from the side or from behind. */
+	ThreatTurn,
+	/** Shot at a small rock that blocked its line of fire. */
+	RockShot,
+	/** Took another target than the one most bots were already on. */
+	SpreadTarget,
+	/** Went to warp to reach a fight far away. */
+	WarpChase,
+	/** Steered out of the reach of a station's turrets. */
+	StationSteer,
+	/** A light ship started a fast, close pass around a heavier one. */
+	ClosePass,
+	/** Dropped its cloak behind a target. */
+	Ambush,
+
+	Count
+};
+
+namespace HCJBalance
+{
+	/** Name of a tactic for log lines ("retreats"). */
+	HYPECUBEJAM_API const TCHAR* GetTacticName(EHCJBotTactic Tactic);
+	/** Key of a tactic for the structured "Playthrough:" lines ("bot_retreats"). */
+	HYPECUBEJAM_API const TCHAR* GetTacticKey(EHCJBotTactic Tactic);
+}
 
 /** What a possible spawn point looks like to the rules; filled by the game mode from the world. */
 struct FHCJSpawnCandidate

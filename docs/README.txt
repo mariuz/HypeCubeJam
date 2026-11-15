@@ -2,17 +2,24 @@ HypeCubeJam - multiplayer space shooter on a randomly connected hypercube of sec
 
 Start:  HypeCubeJam.exe            plays a 10 s intro (any key, mouse button or gamepad button skips it;
                                     -HCJNoIntro starts without it), then opens the title menu.
+                                    QUICK PLAY (first button) puts you into a match with people: it looks
+                                    for an open match on Epic Online Services and joins the fullest one;
+                                    when there is none (or the join fails) it hosts one for you, with bots
+                                    filling in, and the next player's QUICK PLAY finds it. The screen says
+                                    what it is doing; Esc cancels. Without the online service it starts a
+                                    local match against bots.
                                     PLAY hosts a match with bots (one click).
                                     HANGAR: choose your ship - type, hull and paint (see "Ship types").
                                     The menu also has: number of bots, hypercube size (3D-5D), bot difficulty,
                                     seed, pilot name, JOIN by address, CONTROLS (all keys), SETTINGS (mouse
                                     sensitivity, volumes, hints, camera shake, enemy highlight, cinematic look,
                                     music), QUIT.
-                                    Enter = PLAY.
+                                    Enter = PLAY.   HypeCubeJam.exe -HCJQuickPlay  starts with QUICK PLAY.
 Join:   type the host's address in the menu and press JOIN,
         or start with the address:  HypeCubeJam.exe <ip>       e.g. HypeCubeJam.exe 127.0.0.1
 Find games:  FIND GAMES in the menu lists the matches other players host (through Epic Online Services) with a
-        JOIN button. A match you host with PLAY is listed for the others automatically. Games are joined by
+        JOIN button - only matches you can join (same version, a free slot). A match you host with PLAY or
+        QUICK PLAY is listed for the others automatically. Games are joined by
         network address: on one network that just works; over the internet the host must forward UDP port 7777
         and start with   HypeCubeJam.exe -HCJPublicAddress=<its public address>
 Leaderboards:  LEADERBOARDS in the menu shows the top pilots by kills and by wins and your own row. Your kills,

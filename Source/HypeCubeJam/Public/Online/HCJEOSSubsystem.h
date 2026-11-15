@@ -84,7 +84,22 @@ public:
 	/** Starts a search for HypeCubeJam lobbies (no-op while one runs or when not ready). */
 	void RefreshLobbies();
 	bool IsSearchingLobbies() const { return bSearching; }
+	/** The games of the last search this build can join, best first (other versions, full and stale ones are left out: GetHiddenLobbies says how many). */
 	const TArray<FHCJLobbyInfo>& GetLobbies() const { return Lobbies; }
+	/** "2 other version, 1 full" for the lobbies of the last search that are not listed; empty when all are. */
+	const FString& GetHiddenLobbies() const { return HiddenLobbies; }
+	/** Goes up when a search is complete, whatever its result (Quick Play waits for the search it started). */
+	int32 GetSearchSerial() const { return SearchSerial; }
+	/** Why the last search failed; empty when it worked. */
+	const FString& GetSearchError() const { return SearchError; }
+
+	// ---- quick play ----
+
+	/** The Quick Play of this process (lives across the world change of a join; driven by the local player controller). */
+	FHCJQuickPlay& GetQuickPlay() { return QuickPlay; }
+	const FHCJQuickPlay& GetQuickPlay() const { return QuickPlay; }
+	/** The detail of the state as GetStatusLine shows it. */
+	const FString& GetStateDetail() const { return StateDetail; }
 	/** "3 games found", "No games found", the error of the last search, or empty before the first one. */
 	const FString& GetLobbyStatus() const { return LobbyStatus; }
 	/** IPv4 addresses of this machine's adapters (for FHCJLobbyInfo::LanAddresses and HCJEos::PickJoinAddress). */
@@ -156,6 +171,15 @@ private:
 	bool bSearching = false;
 	TArray<FHCJLobbyInfo> Lobbies;
 	FString LobbyStatus;
+	FString HiddenLobbies;
+	FString SearchError;
+	int32 SearchSerial = 0;
+	/** When the lobby attributes were last written (the heartbeat of HCJEos::LobbyHeartbeatSeconds). */
+	double LastLobbyPushTime = 0.0;
+	/** -HCJNoStats: nothing is sent to the stats of the service (test runs). */
+	bool bNoStats = false;
+
+	FHCJQuickPlay QuickPlay;
 
 	FHCJStatTracker StatTracker;
 	FString StatsStatus;

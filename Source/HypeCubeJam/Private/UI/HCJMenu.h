@@ -23,6 +23,8 @@ enum class EHCJMenuPage : uint8
 	Lobbies,
 	/** LEADERBOARDS: top kills and wins of Epic Online Services, with the local player's row. */
 	Leaderboards,
+	/** QUICK PLAY is at work: one live status line ("Searching for open matches...") and a cancel button. */
+	QuickPlay,
 	/** HANGAR: ship type, hull and paint, with the stats of the type; the hull turns in the world next to the page. */
 	Hangar
 };
@@ -56,6 +58,7 @@ private:
 	TSharedRef<SWidget> BuildSettings();
 	TSharedRef<SWidget> BuildPause();
 	TSharedRef<SWidget> BuildConnecting();
+	TSharedRef<SWidget> BuildQuickPlay();
 	TSharedRef<SWidget> BuildControls();
 	TSharedRef<SWidget> BuildLobbies();
 	TSharedRef<SWidget> BuildLeaderboards();

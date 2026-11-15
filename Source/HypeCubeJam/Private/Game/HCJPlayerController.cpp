@@ -420,6 +420,14 @@ void AHCJPlayerController::PlayerTick(float DeltaTime)
 		}
 		UpdateMenuCamera();
 	}
+	// -HCJQuickPlay: what the QUICK PLAY button does, once, as soon as the title menu is up.
+	static bool bQuickPlayFromCommandLine = FParse::Param(FCommandLine::Get(), TEXT("HCJQuickPlay"));
+	if (bQuickPlayFromCommandLine && bInStartMenu && MenuWidget.IsValid() && MenuWidget->GetPage() == EHCJMenuPage::Main)
+	{
+		bQuickPlayFromCommandLine = false;
+		UE_LOG(LogHCJ, Log, TEXT("Quick play: started by -HCJQuickPlay"));
+		MenuQuickPlay();
+	}
 	if (MenuWidget.IsValid() && MenuWidget->GetPage() == EHCJMenuPage::Connecting && HCJMenuFlow::TakeFailure())
 	{
 		// The join did not work out and this world is still the one running.
@@ -427,6 +435,29 @@ void AHCJPlayerController::PlayerTick(float DeltaTime)
 	}
 
 	UpdateOnline(DeltaTime);
+	UpdateQuickPlay();
+
+	// A client says every ten seconds what it sees of the match, in the form the playthrough tests read
+	// (docs/tools/playthrough.py compares it with the host's lines).
+	PlaythroughLogTimer -= DeltaTime;
+	// (!HasAuthority: a controller of this process on somebody's server. The net mode alone will not do - a world that
+	// is still the local one reports NM_Client while a connection to a host is pending.)
+	if (PlaythroughLogTimer <= 0.0f && !HasAuthority() && GetNetMode() == NM_Client)
+	{
+		PlaythroughLogTimer = 10.0f;
+		const AHCJUniverse* Universe = AHCJUniverse::Get(this);
+		const AHCJPlayerState* Me = GetPlayerState<AHCJPlayerState>();
+		const AHCJGameState* GameState = GetWorld()->GetGameState<AHCJGameState>();
+		if (Universe != nullptr && Universe->IsBuilt() && Me != nullptr && GameState != nullptr)
+		{
+			FString Name = Me->GetPlayerName();
+			Name.ReplaceInline(TEXT(" "), TEXT("_"));
+			UE_LOG(LogHCJ, Log, TEXT("Playthrough: event=client t=%.0f name=%s match=%d seed=%d layout=%08X kills=%d deaths=%d corrections=%d destroyed_count=%d destroyed_checksum=%08X rocks_alive=%d ship=%d sector=%d"),
+				GetWorld()->GetTimeSeconds(), Name.IsEmpty() ? TEXT("-") : *Name, GameState->GetMatchConfig().MatchNumber, GameState->GetMatchConfig().Seed, Universe->GetLayoutChecksum(),
+				Me->GetKills(), Me->GetDeaths(), UHCJShipMovementComponent::GetNumClientCorrections(), Universe->GetNumDestroyedAsteroids(), Universe->GetDestroyedChecksum(),
+				Universe->GetNumLiveAsteroids(), GetShip() != nullptr ? 1 : 0, Me->GetCurrentSector());
+		}
+	}
 
 #if !UE_BUILD_SHIPPING
 	// Development ("HCJMenuCmd fly 1|2"): the own ship flies straight ahead at cruise or under boost, for pictures of its engine.
@@ -671,6 +702,139 @@ void AHCJPlayerController::MenuPlay()
 	GameMode->StartMatchFromMenu(this, Settings.BotCount, Settings.Dimension, Settings.Seed, Settings.BotDifficulty);
 }
 
+void AHCJPlayerController::MenuQuickPlay()
+{
+	UHCJEOSSubsystem* Online = UHCJEOSSubsystem::Get(this);
+	if (Online == nullptr)
+	{
+		// No game instance subsystem at all (cannot happen in a game): the plain match.
+		MenuPlay();
+		return;
+	}
+	UHCJUserSettings::Get().Save();
+	HCJMenuFlow::TakeFailure();
+	QuickPlaySearchSerial = -1;
+	QuickPlayLoggedStatus.Reset();
+	Online->GetQuickPlay().Start(FPlatformTime::Seconds());
+	UE_LOG(LogHCJ, Log, TEXT("Quick play: started (%s)"), *Online->GetStatusLine());
+	OpenMenu(EHCJMenuPage::QuickPlay);
+}
+
+void AHCJPlayerController::MenuCancelQuickPlay()
+{
+	if (UHCJEOSSubsystem* Online = UHCJEOSSubsystem::Get(this))
+	{
+		if (Online->GetQuickPlay().Cancel())
+		{
+			ConsoleCommand(TEXT("cancel"));
+		}
+		UE_LOG(LogHCJ, Log, TEXT("Quick play: cancelled"));
+	}
+	HCJMenuFlow::TakeFailure();
+	HCJMenuFlow::TakeNotice();
+	if (MenuWidget.IsValid())
+	{
+		MenuWidget->SetPage(bInStartMenu ? EHCJMenuPage::Main : EHCJMenuPage::Pause);
+	}
+}
+
+void AHCJPlayerController::UpdateQuickPlay()
+{
+	UHCJEOSSubsystem* Online = UHCJEOSSubsystem::Get(this);
+	UWorld* World = GetWorld();
+	if (Online == nullptr || World == nullptr || !Online->GetQuickPlay().IsActive())
+	{
+		return;
+	}
+	FHCJQuickPlay& QuickPlay = Online->GetQuickPlay();
+	if (!HasAuthority() && World->GetNetMode() == NM_Client)
+	{
+		// This controller exists on somebody's server: the join worked. (Not the net mode alone: the local world
+		// reports NM_Client while the connection is still pending, and a join that then fails must still fall back.)
+		UE_LOG(LogHCJ, Log, TEXT("Quick play: joined the match of '%s' at %s"), *QuickPlay.GetJoinHost(), *QuickPlay.GetJoinAddress());
+		QuickPlay.NotifyJoined();
+		return;
+	}
+	if (!bInStartMenu)
+	{
+		// The player is in a match of its own already (PLAY was used meanwhile): nothing to find any more.
+		QuickPlay.Cancel();
+		return;
+	}
+	if (MenuWidget.IsValid() && MenuWidget->GetPage() != EHCJMenuPage::QuickPlay)
+	{
+		// (A failed join can end in a new world, whose controller opens the title page.)
+		MenuWidget->SetPage(EHCJMenuPage::QuickPlay);
+	}
+
+	FHCJQuickPlayInput Input;
+	Input.Now = FPlatformTime::Seconds();
+	Input.State = Online->GetState();
+	Input.StateDetail = Online->GetStateDetail();
+	Input.LocalAddresses = UHCJEOSSubsystem::GetLocalAddresses();
+	if (QuickPlay.GetPhase() == EHCJQuickPlayPhase::Searching)
+	{
+		if (QuickPlaySearchSerial < 0)
+		{
+			// The search could not be started in the frame Quick Play asked for it (another one was running).
+			QuickPlaySearchSerial = Online->GetSearchSerial();
+			Online->RefreshLobbies();
+		}
+		else if (Online->GetSearchSerial() != QuickPlaySearchSerial && !Online->IsSearchingLobbies())
+		{
+			Input.bSearchDone = true;
+			Input.SearchError = Online->GetSearchError();
+			Input.Lobbies = Online->GetLobbies();
+		}
+	}
+	if (QuickPlay.GetPhase() == EHCJQuickPlayPhase::Joining)
+	{
+		Input.bJoinFailed = HCJMenuFlow::TakeFailure();
+		if (Input.bJoinFailed)
+		{
+			HCJMenuFlow::TakeNotice();
+		}
+	}
+
+	const EHCJQuickPlayAction Action = QuickPlay.Step(Input);
+	if (QuickPlay.TakeCancelRequest())
+	{
+		UE_LOG(LogHCJ, Log, TEXT("Quick play: no connection in time, giving that host up"));
+		ConsoleCommand(TEXT("cancel"));
+	}
+	if (QuickPlay.GetStatus() != QuickPlayLoggedStatus && !QuickPlay.GetStatus().IsEmpty())
+	{
+		QuickPlayLoggedStatus = QuickPlay.GetStatus();
+		UE_LOG(LogHCJ, Log, TEXT("Quick play: %s"), *QuickPlayLoggedStatus);
+	}
+	switch (Action)
+	{
+	case EHCJQuickPlayAction::Search:
+		QuickPlaySearchSerial = Online->IsSearchingLobbies() ? -1 : Online->GetSearchSerial();
+		Online->RefreshLobbies();
+		break;
+	case EHCJQuickPlayAction::Join:
+	{
+		FString URL = QuickPlay.GetJoinAddress();
+		const FString Name = SanitizeName(UHCJUserSettings::Get().PlayerName);
+		if (!Name.IsEmpty())
+		{
+			URL += TEXT("?Name=") + Name;
+		}
+		UE_LOG(LogHCJ, Log, TEXT("Quick play: connecting to %s (the match of '%s')"), *QuickPlay.GetJoinAddress(), *QuickPlay.GetJoinHost());
+		HCJMenuFlow::TakeFailure();
+		ClientTravel(URL, TRAVEL_Absolute);
+		break;
+	}
+	case EHCJQuickPlayAction::Host:
+		UE_LOG(LogHCJ, Log, TEXT("Quick play: hosting a match (%s)"), QuickPlay.IsLocalOnly() ? TEXT("local, against bots: no online service") : TEXT("advertised through Epic Online Services"));
+		MenuPlay();
+		break;
+	default:
+		break;
+	}
+}
+
 void AHCJPlayerController::MenuApplyShip()
 {
 	UHCJUserSettings& Settings = UHCJUserSettings::Get();
@@ -818,6 +982,14 @@ void AHCJPlayerController::MenuJoinLobby(int32 Index)
 	}
 	const FHCJLobbyInfo& Lobby = Online->GetLobbies()[Index];
 	const FString Address = HCJEos::PickJoinAddress(Lobby, UHCJEOSSubsystem::GetLocalAddresses());
+	if (Lobby.Players >= Lobby.MaxPlayers)
+	{
+		if (MenuWidget.IsValid())
+		{
+			MenuWidget->SetPage(EHCJMenuPage::Lobbies, TEXT("That game is full"));
+		}
+		return;
+	}
 	if (Address.IsEmpty() || Lobby.Version != UHCJEOSSubsystem::GetBuildVersion())
 	{
 		if (MenuWidget.IsValid())
@@ -1091,6 +1263,8 @@ void AHCJPlayerController::HCJMenuCmd(const FString& Action, const FString& Argu
 		}
 	}
 	else if (Action == TEXT("joinlobby")) { MenuJoinLobby(FCString::Atoi(*Argument)); }
+	else if (Action == TEXT("quickplay")) { MenuQuickPlay(); }
+	else if (Action == TEXT("cancelquickplay")) { MenuCancelQuickPlay(); }
 	else if (Action == TEXT("endmatch"))
 	{
 		if (AHCJGameMode* GameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>())

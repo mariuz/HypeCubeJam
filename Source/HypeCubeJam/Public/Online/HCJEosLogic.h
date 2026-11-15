@@ -96,6 +96,12 @@ struct HYPECUBEJAM_API FHCJLobbyInfo
 	/** Network version of the build; a joiner with another one is not let in by the engine. */
 	FString Version;
 
+	/**
+	 * When the host last wrote the attributes, seconds since 1970 UTC (the host writes them again every
+	 * HCJEos::LobbyHeartbeatSeconds while nothing changes); 0 = not said (a build before this attribute).
+	 */
+	int64 UpdatedUnix = 0;
+
 	/** Filled in from a search result only. */
 	FString LobbyId;
 	FString OwnerId;
@@ -135,6 +141,146 @@ namespace HCJEos
 	 */
 	HYPECUBEJAM_API FString PickJoinAddress(const FHCJLobbyInfo& Lobby, const TArray<FString>& LocalAddresses);
 }
+
+/** Why a lobby of the search is or is not a game this build can join. */
+enum class EHCJLobbyFit : uint8
+{
+	Joinable,
+	/** Another network version: the engine would refuse the connection. */
+	OtherVersion,
+	/** No free slot. */
+	Full,
+	/** Its host has not written it for a long time (a host that crashed; the service drops such lobbies only after a while). */
+	Stale,
+	/** Nothing in it this machine could connect to. */
+	NoAddress
+};
+
+namespace HCJEos
+{
+	/** A host writes its lobby at least this often, and a lobby not written for LobbyStaleSeconds is not offered. */
+	inline constexpr int32 LobbyHeartbeatSeconds = 120;
+	inline constexpr int32 LobbyStaleSeconds = 600;
+
+	/** Whether this build can join Lobby now. NowUnix: seconds since 1970 UTC. */
+	HYPECUBEJAM_API EHCJLobbyFit ClassifyLobby(const FHCJLobbyInfo& Lobby, const FString& LocalVersion, const TArray<FString>& LocalAddresses, int64 NowUnix);
+	HYPECUBEJAM_API const TCHAR* DescribeLobbyFit(EHCJLobbyFit Fit);
+	/**
+	 * FIND GAMES and Quick Play: removes every lobby that is not joinable and sorts the rest best first - most
+	 * players, then most free slots (the ping to a host is not known: no connection exists before the join).
+	 * Returns how many were removed; OutWhy, when given, counts them by reason ("2 other version, 1 full").
+	 */
+	HYPECUBEJAM_API int32 FilterJoinableLobbies(TArray<FHCJLobbyInfo>& Lobbies, const FString& LocalVersion, const TArray<FString>& LocalAddresses, int64 NowUnix, FString* OutWhy = nullptr);
+}
+
+/** Where Quick Play is. */
+enum class EHCJQuickPlayPhase : uint8
+{
+	Idle,
+	/** Waiting for the sign-in to Epic Online Services. */
+	SigningIn,
+	/** A lobby search is running. */
+	Searching,
+	/** Connecting to the host of a lobby. */
+	Joining,
+	/** Showing what happens next ("No open match found - hosting one") for a moment before it happens. */
+	Announcing
+};
+
+/** What the caller of FHCJQuickPlay::Step has to do now. */
+enum class EHCJQuickPlayAction : uint8
+{
+	None,
+	/** Start a lobby search. */
+	Search,
+	/** Travel to GetJoinAddress(). */
+	Join,
+	/** Host a match (advertised as a lobby when the service is there), bots filling in. */
+	Host
+};
+
+/** What Quick Play sees in one step. */
+struct HYPECUBEJAM_API FHCJQuickPlayInput
+{
+	/** Monotonic seconds. */
+	double Now = 0.0;
+	EHCJEosState State = EHCJEosState::Disabled;
+	/** The reason of State as the menu shows it ("not configured (ClientSecret is empty ...)"); may be empty. */
+	FString StateDetail;
+	/** The search this Quick Play asked for is complete (successfully or not). */
+	bool bSearchDone = false;
+	/** ... and it failed, with this text. */
+	FString SearchError;
+	/** The joinable lobbies of that search, best first (HCJEos::FilterJoinableLobbies). */
+	TArray<FHCJLobbyInfo> Lobbies;
+	TArray<FString> LocalAddresses;
+	/** The join that is under way failed (network or travel failure). */
+	bool bJoinFailed = false;
+};
+
+/**
+ * QUICK PLAY: find an open match through the lobby search and join the best one; when there is none, or the join
+ * does not work, host one; without the online service, play against bots at once. A state machine without a world
+ * or an SDK (tested on its own): the local player controller feeds it every frame and does what it returns.
+ */
+class HYPECUBEJAM_API FHCJQuickPlay
+{
+public:
+	/** Starts (again). */
+	void Start(double Now);
+	/** Stops without doing anything further (the player pressed CANCEL). True when a join was under way (the caller cancels the connection). */
+	bool Cancel();
+	/** The connection to the host of the lobby stands: Quick Play is done. */
+	void NotifyJoined();
+	/** One step. */
+	EHCJQuickPlayAction Step(const FHCJQuickPlayInput& Input);
+
+	bool IsActive() const { return Phase != EHCJQuickPlayPhase::Idle; }
+	EHCJQuickPlayPhase GetPhase() const { return Phase; }
+	/** The line for the screen: "Searching for open matches...", "Joining Ada (3/16 players)...", ... */
+	const FString& GetStatus() const { return Status; }
+	/** "host:port" of the join that Step asked for, and whose match it is. */
+	const FString& GetJoinAddress() const { return JoinAddress; }
+	const FString& GetJoinHost() const { return JoinHost; }
+	/** True once after a join ran out of time: the caller cancels the pending connection. */
+	bool TakeCancelRequest() { const bool bResult = bCancelRequested; bCancelRequested = false; return bResult; }
+	/** True when the match that Step last asked to host is a local one because the online service is not there. */
+	bool IsLocalOnly() const { return bLocalOnly; }
+
+	/** Seconds: waiting for a sign-in that is under way, for the search, for a connection; how long an announcement stays; hosts tried before hosting. */
+	double SignInTimeout = 15.0;
+	double SearchTimeout = 10.0;
+	double JoinTimeout = 15.0;
+	double AnnounceSeconds = 2.0;
+	int32 MaxJoinAttempts = 2;
+	/**
+	 * The most one step may add to the time of a phase. A frame that takes many seconds (the first frames of a
+	 * process compile shaders; a second instance on one graphics card stalled 16 s) must not run a timeout out: the
+	 * answer that was waited for arrives with the very next frame.
+	 */
+	double MaxStepSeconds = 0.25;
+
+private:
+	void Announce(const FString& Text, bool bLocal, double Now);
+	/** The next lobby that was not tried yet becomes the join; false when there is none (or enough were tried). */
+	bool BeginNextJoin(const TArray<FString>& LocalAddresses, double Now, const FString& Prefix);
+
+	/** Starts a phase: its time runs from zero. */
+	void Enter(EHCJQuickPlayPhase NewPhase);
+
+	EHCJQuickPlayPhase Phase = EHCJQuickPlayPhase::Idle;
+	/** Seconds spent in the phase (sum of the steps, each at most MaxStepSeconds) and the time of the last step. */
+	double PhaseSeconds = 0.0;
+	double LastStepTime = 0.0;
+	FString Status;
+	FString JoinAddress;
+	FString JoinHost;
+	TArray<FHCJLobbyInfo> Candidates;
+	int32 NextCandidate = 0;
+	int32 NumAttempts = 0;
+	bool bCancelRequested = false;
+	bool bLocalOnly = false;
+};
 
 /** What a client adds to its own EOS stats (all of them are SUM stats). */
 struct HYPECUBEJAM_API FHCJStatDelta

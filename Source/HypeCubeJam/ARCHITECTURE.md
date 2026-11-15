@@ -207,6 +207,31 @@ Pillow -> `SourceAssets/Cinematic/*.png`) and `docs/tools/make_cinematic_materia
 - Brain: Wander -> Attack (nearest hostile in the same sector, lead aim, strafe, fire in cone with line of sight)
   -> Travel (BFS `NextHopDim` towards the nearest sector holding a human ship, else a random open portal).
   Asteroid avoidance by sphere sweeps against object type WorldStatic. The game mode respawns bots like players.
+- Tactics (devlog item 27; all in `AHCJBotController`, scaled by `FHCJBotSkill::Tactics` = 0.25 / 0.7 / 1 on easy /
+  normal / hard: the chance, rolled once per ship, that it is flown "smart", and again per occasion). What a bot did
+  is counted by `AHCJGameMode::NotifyBotTactic(EHCJBotTactic)` (the `Tactics t=` status line, the `bot_*` keys of the
+  `Playthrough:` lines):
+  - `PickTarget`: score of every hostile in sight (distance, hull lost, the facing it shows us weak or down, it is
+    the ship shooting at us - more when it has a weak side of ours -, its tail towards us, minus 2.5 for every other
+    bot already on it, a bonus for the current target). A bot that is not smart keeps the old rule (nearest).
+  - `ThinkDisengage` / `TickDisengage`: the facing towards the attacker is down, the hull below the retreat line of
+    the difficulty (+ 5 / 12 points for interceptor / scout) and there is a way out - a rock within 50 m to get
+    behind (`AHCJUniverse::FindCoverPoint`), the cloak, a repair / shield pad: away under boost for at most 7 s, fire
+    held, `TickShieldFacing` turns the best facing to the attacker; back when the shields are above 55 % and nobody
+    hit it for 2.5 s, or the attacker is gone. Without a way out it fights on. The old retreat (hull low, a repair
+    kit in the sector) is unchanged and counted as the same tactic.
+  - `ThinkTorpedo`: besides `HCJTorpedo::ShouldBotFire`, a torpedo at once through a facing that is DOWN
+    (`FHCJBotSkill::ComboChance` per decision); a smart bot holds the target with the tractor beam first when it is
+    in reach. `AHCJGameMode::NotifyTorpedoThroughOpenFacing` + the kill in the same instant = "open-facing torpedo kill".
+  - `FHCJBotStyle` (a table in the .cpp, one row per ship type, used by smart bots only; the ship type table of
+    `Ship/HCJShipTypes.h` is untouched): range kept, strafe share, readiness with torpedoes / tractor / cloak-to-flee,
+    extra retreat line, `bKnife` (boosted 1.8 s passes at 15 m, every 12-18 s, around a hull that turns slower: interceptor, fighter,
+    scout), `bAmbush` (scout under cloak flies to the tail of its target and drops the cloak at 26 m), `bVulture`
+    (scout: damaged targets first, no fair fight with a heavy hull).
+  - Surroundings: `ThinkRockShot` (a rock of at most 140 hit points within 45 m on the line to a hidden target is
+    shot with the phaser for up to 3.2 s), the station's reach (`StationDangerRadius`, applied in `SteerTowards`
+    unless the bot attacks the turrets), warp towards a hostile far away (`bChasing` / `bWarpChase`).
+  - `DescribeForLog`: the bot's state as key=value tokens, written by the game mode when its ship is stuck.
 
 ## Collision
 | Thing | Object type | Notes |
@@ -222,6 +247,27 @@ Pillow -> `SourceAssets/Cinematic/*.png`) and `docs/tools/make_cinematic_materia
 Playing (frag limit 25 or 600 s) -> Intermission 8 s (ships destroyed, scoreboard, winner) -> new seed, universe
 rebuilt on every machine, stats reset, everyone respawned after 1 s -> Playing.
 
+## Playthrough tests (devlog item 27)
+Three layers, all reading the same server-side facts:
+- **In the log** (`AHCJGameMode`, server): `Playthrough: event=<name> key=value ...` lines - `match_start` (seed,
+  layout checksum, difficulty, limits), `match_end` (winner, kills, reason), `board` (one per row of the end-of-match
+  board), `stats` (every counter of the running match: kills by weapon and ship type, jumps, pickups by item, turrets,
+  rocks and the destroyed-set checksum, systems, bot tactics, server frame times; every 15 s and at the end), `human`
+  (score line of every human), and warnings `stuck` (a bot's ship moved less than 2.5 m in 20 s; with
+  `AHCJBotController::DescribeForLog`), `out_of_bounds` (alive beyond the kill radius for 3 s), `nan`. Clients write
+  `event=client` every 10 s (layout, destroyed set, own score, movement corrections received).
+  `AHCJGameMode::UpdatePlaythroughWatch` runs once a second; `Tick` measures the server's frames.
+- **In the automation suite** (`Private/Tests/HCJPlaythroughTests.cpp`, `HypeCubeJam.Playthrough.*`): the engine's
+  `FTestWorldWrapper` with the game's URL options - a real game world, game mode, universe and bot controllers, ticked
+  by hand at 1/30 s (three minutes of match in about 20 s), asserted on through
+  `AHCJGameMode::GetPlaythroughSnapshot`. No network, no local player. The online subsystem is off whenever
+  `GIsAutomationTesting` is set.
+- **As processes** (`docs/tools/playthrough.py`): starts headless matches (editor binary `-game -nullrhi`, or the
+  packaged build), waits for them to quit by themselves (`-HCJQuitAfter`), parses the lines above and prints a
+  pass / fail table; exit code 1 on a failure. Scenarios: a match to the kill limit and the next one, each
+  difficulty, a crowded four-sector universe (turrets, rocks), host + client + late joiner with a leave and rejoin,
+  the autopilot player through hangar and a whole match, and the sum over all matches (every weapon, turrets, rocks).
+
 ## Tests (group A, `Private/Tests/`, `EditorContext | ProductFilter`, names `HypeCubeJam.*`)
 Graph connectivity for dims 2..6 over many seeds; edge symmetry; determinism of graph and layout; BFS tables
 consistent; every open edge has a portal at both ends and they mirror; asteroid/portal/spawn clearances; golden
@@ -231,7 +277,9 @@ stock and reload, damage against a facing up / down, arming and blast falloff, h
 facing and the bots' rule, HUD rules incl. markers clear of panels); phasers (`HypeCubeJam.Phaser.*`: bank, falloff / beam byte / aim
 assist / design targets, weapon slots); asteroids (`HypeCubeJam.Asteroids.*`: split determinism and pieces inside the rock, replication
 round trip in any order); effects (`HypeCubeJam.Effects.*`: shockwave falloff, debris caps); music (`HypeCubeJam.Audio.MusicTracks`); online logic (config validation and the unavailable states, lobby attribute packing / parsing, join
-address, stat tracker, leaderboard page); ship systems (`HypeCubeJam.Systems.*`: warp state machine, warp and boost followed
+address, stat tracker, leaderboard page, `HypeCubeJam.Online.LobbyFilter`: which lobbies are offered and in which order,
+`HypeCubeJam.Online.QuickPlay`: every path of the quick-play state machine); playthroughs (`HypeCubeJam.Playthrough.*`: a match to the frag
+limit and the next one on a new layout; three minutes of an open match - see "Playthrough tests"); ship systems (`HypeCubeJam.Systems.*`: warp state machine, warp and boost followed
 by the server, tractor pull, cloak device) and ship types (`HypeCubeJam.ShipTypes.*`: table, server validation); the intro (`HypeCubeJam.UI.IntroFlow`: every way it ends, title and fade
 timing; `HypeCubeJam.UI.IntroCommandLine`: which command lines play it); decorative rocks (`HypeCubeJam.World.SectorDecor`: determinism, keep-outs, belt beyond the kill radius, layout untouched); rock variant and visual transform envelope; ship hull/skin selection; sector sky; black hole placement
 (determinism, clearances, share of sectors) and gravity curve (direction, monotonic, clamp, tuning).
@@ -481,5 +529,14 @@ D -> C `AHCJPlayerState::GetCurrentSector`.
   a second: what a listen host advertises, nothing while in the title menu), `EndPlay` (flush stats, stop
   advertising), `MenuJoinLobby`; `SHCJMenu` (pages `Lobbies` and `Leaderboards`, rebuilt when
   `GetRevision` changes); `AHCJHUD::DrawIntermission` (one status line).
+- Quick Play: `FHCJQuickPlay` (in `HCJEosLogic.h`: phases SigningIn -> Searching -> Joining -> Announcing, pure,
+  tested) lives in the subsystem so that it survives the world change of a join. `AHCJPlayerController::MenuQuickPlay`
+  starts it, `UpdateQuickPlay` (every frame of the local controller) feeds it the state of the service, the result of
+  the search it asked for (`GetSearchSerial`) and whether the join failed (`HCJMenuFlow::TakeFailure`), and does what
+  it returns: `RefreshLobbies`, `ClientTravel` to the address, or `MenuPlay`. A controller that finds itself on a
+  client while Quick Play is active reports the join as done. Menu page `EHCJMenuPage::QuickPlay` shows the live status.
+- Lobby hygiene: `HCJEos::ClassifyLobby` / `FilterJoinableLobbies` (version, free slot, address, age of the `HCJTIME`
+  attribute) decide what `GetLobbies` returns - for FIND GAMES and Quick Play alike; the host rewrites its attributes
+  every `HCJEos::LobbyHeartbeatSeconds`.
 - Nothing of it is replicated and no gameplay depends on it. The game connection of a joiner is the engine's IP
-  net driver to an address read from the lobby; EOS P2P is not used.
+  net driver to an address read from the lobby; EOS P2P is not used (devlog item 27 says what was looked at).

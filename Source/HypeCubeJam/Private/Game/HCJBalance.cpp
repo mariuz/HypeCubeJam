@@ -22,6 +22,8 @@ FHCJBotSkill FHCJBotSkill::Get(int32 Difficulty)
 		Skill.CloakChance = 0.03f;
 		Skill.TractorChance = 0.03f;
 		Skill.BreakFreeChance = 0.4f;
+		Skill.Tactics = 0.25f;
+		Skill.ComboChance = 0.08f;
 		break;
 	case 1:
 		Skill.AimErrorDeg = 3.5f;
@@ -39,6 +41,8 @@ FHCJBotSkill FHCJBotSkill::Get(int32 Difficulty)
 		Skill.CloakChance = 0.1f;
 		Skill.TractorChance = 0.1f;
 		Skill.BreakFreeChance = 0.8f;
+		Skill.Tactics = 0.7f;
+		Skill.ComboChance = 0.35f;
 		break;
 	default:
 		// Hard: what the bots were before difficulty levels, a little sharper.
@@ -57,9 +61,51 @@ FHCJBotSkill FHCJBotSkill::Get(int32 Difficulty)
 		Skill.CloakChance = 0.2f;
 		Skill.TractorChance = 0.2f;
 		Skill.BreakFreeChance = 1.0f;
+		Skill.Tactics = 1.0f;
+		Skill.ComboChance = 0.7f;
 		break;
 	}
 	return Skill;
+}
+
+const TCHAR* HCJBalance::GetTacticName(EHCJBotTactic Tactic)
+{
+	switch (Tactic)
+	{
+	case EHCJBotTactic::Retreat: return TEXT("retreats");
+	case EHCJBotTactic::Reengage: return TEXT("re-engaged");
+	case EHCJBotTactic::Cover: return TEXT("cover reached");
+	case EHCJBotTactic::ComboTorpedo: return TEXT("torpedoes at an open facing");
+	case EHCJBotTactic::TractorTorpedo: return TEXT("tractor then torpedo");
+	case EHCJBotTactic::ThreatTurn: return TEXT("turned on an attacker");
+	case EHCJBotTactic::RockShot: return TEXT("rocks shot out of the way");
+	case EHCJBotTactic::SpreadTarget: return TEXT("chose a less crowded target");
+	case EHCJBotTactic::WarpChase: return TEXT("warp chases");
+	case EHCJBotTactic::StationSteer: return TEXT("steered off stations");
+	case EHCJBotTactic::ClosePass: return TEXT("close passes");
+	case EHCJBotTactic::Ambush: return TEXT("ambushes");
+	default: return TEXT("?");
+	}
+}
+
+const TCHAR* HCJBalance::GetTacticKey(EHCJBotTactic Tactic)
+{
+	switch (Tactic)
+	{
+	case EHCJBotTactic::Retreat: return TEXT("bot_retreats");
+	case EHCJBotTactic::Reengage: return TEXT("bot_reengages");
+	case EHCJBotTactic::Cover: return TEXT("bot_cover");
+	case EHCJBotTactic::ComboTorpedo: return TEXT("bot_combo_torpedoes");
+	case EHCJBotTactic::TractorTorpedo: return TEXT("bot_tractor_torpedoes");
+	case EHCJBotTactic::ThreatTurn: return TEXT("bot_threat_turns");
+	case EHCJBotTactic::RockShot: return TEXT("bot_rock_shots");
+	case EHCJBotTactic::SpreadTarget: return TEXT("bot_spread_targets");
+	case EHCJBotTactic::WarpChase: return TEXT("bot_warp_chases");
+	case EHCJBotTactic::StationSteer: return TEXT("bot_station_steers");
+	case EHCJBotTactic::ClosePass: return TEXT("bot_close_passes");
+	case EHCJBotTactic::Ambush: return TEXT("bot_ambushes");
+	default: return TEXT("bot_unknown");
+	}
 }
 
 float HCJBalance::ScoreSpawn(const FHCJSpawnCandidate& Candidate)

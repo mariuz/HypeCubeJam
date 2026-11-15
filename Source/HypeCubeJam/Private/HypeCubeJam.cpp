@@ -6,6 +6,7 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Engine/NetDriver.h"
+#include "EngineUtils.h"
 #include "Game/HCJUiLogic.h"
 #include "Misc/CoreDelegates.h"
 #include "GameFramework/PlayerController.h"
@@ -35,6 +36,8 @@ namespace
 	 *                          bolts, muzzle flashes, trails and impacts are in the pictures.
 	 *   -HCJAutoTorpedo        with -HCJAutoFly: it also fires a photon torpedo whenever one is loaded.
  *   -HCJAutoWarp           with -HCJAutoFly: it also holds the warp key for six seconds of every twenty.
+	 *   -HCJAutoAim            with -HCJAutoFly: the nose follows the nearest other ship in sight (and locks it), so that
+	 *                          the autopilot scores - the playthrough tests want a client with kills and deaths.
 	 *   -HCJOrbit              the chase camera looks at the local ship from another side after every picture
 	 *                          (behind, right, front, left, ...), to check the facing of the ship mesh.
 	 *   -HCJCaptureCmd="..."   console command run once, together with the third picture (e.g. "ListTextures").
@@ -70,6 +73,7 @@ namespace
 		bool bAutoFly = false;
 		bool bAutoTorpedo = false;
 		bool bAutoWarp = false;
+		bool bAutoAim = false;
 		double AutoFlyTime = 0.0;
 		bool bOrbit = false;
 		bool bTour = false;
@@ -176,6 +180,28 @@ namespace
 						if (ToMiddle.SizeSquared() > FMath::Square(0.5 * HCJ::SectorFieldRadius))
 						{
 							Aim = FMath::RInterpTo(Aim, ToMiddle.Rotation(), DeltaSeconds, 2.0f);
+						}
+					}
+					if (bAutoAim)
+					{
+						// The nearest other ship this machine knows of, within 120 m and not behind a rock: nose on it.
+						AHCJShipCharacter* Nearest = nullptr;
+						double NearestDistSq = FMath::Square(12000.0);
+						for (TActorIterator<AHCJShipCharacter> It(Ship->GetWorld()); It; ++It)
+						{
+							AHCJShipCharacter* Other = *It;
+							const double DistSq = FVector::DistSquared(Other->GetActorLocation(), Ship->GetActorLocation());
+							if (Other != Ship && !Other->IsDead() && !Other->IsCloakHidden() && DistSq < NearestDistSq
+								&& !Ship->GetWorld()->LineTraceTestByObjectType(Ship->GetActorLocation(), Other->GetActorLocation(), FCollisionObjectQueryParams(ECC_WorldStatic)))
+							{
+								NearestDistSq = DistSq;
+								Nearest = Other;
+							}
+						}
+						if (Nearest != nullptr)
+						{
+							Aim = FMath::RInterpTo(Controller->GetControlRotation(), (Nearest->GetActorLocation() - Ship->GetActorLocation()).Rotation(), DeltaSeconds, 5.0f);
+							Ship->SetLockTarget(Nearest);
 						}
 					}
 					Controller->SetControlRotation(Aim);
@@ -313,6 +339,7 @@ public:
 			Capture->bAutoFly = FParse::Param(FCommandLine::Get(), TEXT("HCJAutoFly"));
 			Capture->bAutoTorpedo = FParse::Param(FCommandLine::Get(), TEXT("HCJAutoTorpedo"));
 			Capture->bAutoWarp = FParse::Param(FCommandLine::Get(), TEXT("HCJAutoWarp"));
+			Capture->bAutoAim = FParse::Param(FCommandLine::Get(), TEXT("HCJAutoAim"));
 			Capture->bOrbit = FParse::Param(FCommandLine::Get(), TEXT("HCJOrbit"));
 			Capture->bTour = FParse::Param(FCommandLine::Get(), TEXT("HCJTour"));
 			Capture->bSkyCam = FParse::Param(FCommandLine::Get(), TEXT("HCJSkyCam"));

@@ -44,6 +44,44 @@ namespace
 	/** Sideways share of the thrust while circling a target. */
 	constexpr float HCJBotStrafeStrength = 0.8f;
 
+	/**
+	 * How a bot that flies "smart" uses its ship type (multipliers on what the skill row says; the fighter is the row of ones).
+	 * The ship type table itself (Ship/HCJShipTypes.h) is untouched: this is behaviour, not numbers of the ship.
+	 */
+	struct FHCJBotStyle
+	{
+		/** Distance kept to the target, against PreferredRange. */
+		float Range;
+		/** Sideways share while circling. */
+		float Strafe;
+		/** Readiness with torpedoes, the tractor beam and - to get away - the cloak. */
+		float Torpedo;
+		float Tractor;
+		float Cloak;
+		/** Added to the hull fraction at which the bot breaks off. */
+		float RetreatAdd;
+		/** Makes boosted passes close around a hull that turns slower. */
+		bool bKnife;
+		/** Approaches under cloak and drops it behind the target. */
+		bool bAmbush;
+		/** Prefers damaged targets, avoids a heavy hull whose shield towards it is whole. */
+		bool bVulture;
+	};
+
+	const FHCJBotStyle& GetBotStyle(const AHCJShipCharacter& Ship, bool bSmart)
+	{
+		static const FHCJBotStyle Plain = { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, false, false, false };
+		static const FHCJBotStyle Styles[HCJShipTypes::NumTypes] = {
+			/* Interceptor: hit and run */ { 0.8f, 1.25f, 1.0f, 1.0f, 1.0f, 0.05f, true, false, false },
+			/* Fighter: the all-rounder (passes around the two heavy hulls) */ { 1.0f, 1.0f, 1.2f, 1.0f, 1.0f, 0.0f, true, false, false },
+			/* Gunship: torpedo boat, stands off */ { 1.3f, 0.7f, 2.0f, 1.0f, 0.5f, 0.0f, false, false, false },
+			/* Scout: cloak to get away, ambush, flee */ { 0.85f, 1.2f, 1.0f, 1.0f, 3.0f, 0.12f, true, true, true },
+			/* Cruiser: tractor and hold (the beam feeds on the phaser bank: not at every chance) */ { 0.95f, 0.6f, 1.6f, 1.8f, 0.5f, 0.0f, false, false, false },
+		};
+		const int32 Type = static_cast<int32>(Ship.GetShipType());
+		return (bSmart && !AHCJGameMode::IsClassicBots() && Type >= 0 && Type < HCJShipTypes::NumTypes) ? Styles[Type] : Plain;
+	}
+
 	FCollisionQueryParams MakeBotQueryParams(const AActor& IgnoredActor)
 	{
 		FCollisionQueryParams Params(SCENE_QUERY_STAT(HCJBotQuery), false, &IgnoredActor);
@@ -109,6 +147,25 @@ void AHCJBotController::OnPossess(APawn* InPawn)
 	bCaughtDecided = false;
 	BoostFreeUntilTime = 0.0f;
 	LostTargetFireUntil = 0.0f;
+	bSmart = false;
+	bSmartRolled = false;
+	DisengageUntilTime = 0.0f;
+	NextDisengageTime = Now + 3.0f;
+	bDisengageCover = false;
+	bCoverCounted = false;
+	bDisengageRolled = false;
+	DisengageThreat.Reset();
+	bWasRetreating = false;
+	RockShotKey = MAX_uint32;
+	RockShotUntil = 0.0f;
+	NextRockShotTime = 0.0f;
+	StationDangerRadius = 0.0f;
+	bStationHoldEdge = false;
+	bChasing = false;
+	bWarpChase = false;
+	NextWarpChaseTime = 0.0f;
+	ClosePassUntil = 0.0f;
+	NextClosePassTime = 0.0f;
 	NextStrafeFlipTime = Now + BotRandom.FRandRange(1.5f, 4.0f);
 	StateEnterTime = Now;
 	LastHostileSeenTime = Now;
@@ -194,18 +251,21 @@ void AHCJBotController::Tick(float DeltaTime)
 			Think(*Ship, *Universe);
 		}
 
-		switch (BotState)
+		if (!TickDisengage(*Ship, *Universe))
 		{
-		case EHCJBotState::Attack:
-			TickAttack(DeltaTime, *Ship, *Universe);
-			break;
-		case EHCJBotState::Travel:
-			TickTravel(DeltaTime, *Ship, *Universe);
-			break;
-		case EHCJBotState::Wander:
-		default:
-			TickWander(DeltaTime, *Ship, *Universe);
-			break;
+			switch (BotState)
+			{
+			case EHCJBotState::Attack:
+				TickAttack(DeltaTime, *Ship, *Universe);
+				break;
+			case EHCJBotState::Travel:
+				TickTravel(DeltaTime, *Ship, *Universe);
+				break;
+			case EHCJBotState::Wander:
+			default:
+				TickWander(DeltaTime, *Ship, *Universe);
+				break;
+			}
 		}
 
 		TickShieldFacing(*Ship);
@@ -293,17 +353,40 @@ void AHCJBotController::Think(AHCJShipCharacter& Ship, const AHCJUniverse& Unive
 	const int32 Sector = Ship.GetCurrentSector();
 	const FVector ShipLocation = Ship.GetActorLocation();
 
-	// Something useful on a pad nearby? In a fight only a short detour, otherwise worth a trip.
-	PickupGoal = FindUsefulPickup(Ship, Universe, BotState == EHCJBotState::Attack ? PickupDetourRange : PickupSeekRange);
-
 	if (const AHCJGameMode* GameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>())
 	{
 		Skill = FHCJBotSkill::Get(GameMode->GetBotDifficulty());
 	}
+	if (!bSmartRolled)
+	{
+		// Once per ship: whether this one is flown with the tactics of its difficulty or plainly.
+		bSmartRolled = true;
+		bSmart = !AHCJGameMode::IsClassicBots() && BotRandom.FRand() < Skill.Tactics;
+	}
+	const FHCJBotStyle& Style = GetBotStyle(Ship, bSmart);
+
+	// Something useful on a pad nearby? In a fight only a short detour, otherwise (and when breaking off) worth a trip.
+	PickupGoal = FindUsefulPickup(Ship, Universe, (BotState == EHCJBotState::Attack && !IsDisengaging()) ? PickupDetourRange : PickupSeekRange);
+
+	// The station of this sector, while it has guns and the bot is not after them: a place to keep out of.
+	StationDangerRadius = 0.0f;
+	if (bSmart && Universe.HasStation(Sector) && TurretGoal.Get() == nullptr)
+	{
+		for (const TWeakObjectPtr<AHCJTurret>& Entry : AHCJTurret::GetAll())
+		{
+			const AHCJTurret* Turret = Entry.Get();
+			if (Turret != nullptr && Turret->GetWorld() == GetWorld() && !Turret->IsTurretDestroyed() && Universe.GetSectorAtLocation(Turret->GetActorLocation()) == Sector)
+			{
+				StationDangerRadius = UHCJGameplaySettings::Get().TurretRange + HCJ::StationBodyRadius + 600.0f;
+				StationDangerLocation = Universe.GetStationLocation(Sector);
+				break;
+			}
+		}
+	}
 
 	// Low on hull: break off and make for a repair pad anywhere in the sector, when one holds a kit.
 	bRetreating = false;
-	if (const UHCJHealthComponent* Health = Ship.GetHealthComponent(); Health != nullptr && Health->GetHealthFraction() < Skill.RetreatHullFraction)
+	if (const UHCJHealthComponent* Health = Ship.GetHealthComponent(); Health != nullptr && Health->GetHealthFraction() < Skill.RetreatHullFraction + Style.RetreatAdd)
 	{
 		AHCJPickup* Repair = nullptr;
 		double BestDistSq = TNumericLimits<double>::Max();
@@ -328,7 +411,13 @@ void AHCJBotController::Think(AHCJShipCharacter& Ship, const AHCJUniverse& Unive
 			bRetreating = true;
 		}
 	}
+	if (bRetreating && !bWasRetreating)
+	{
+		NotifyTactic(EHCJBotTactic::Retreat);
+	}
+	bWasRetreating = bRetreating;
 
+	ThinkDisengage(Ship, Universe);
 	ThinkTorpedoEvasion(Ship);
 
 	switch (BotState)
@@ -353,28 +442,35 @@ void AHCJBotController::Think(AHCJShipCharacter& Ship, const AHCJUniverse& Unive
 			break;
 		}
 
-		// A hostile that is clearly closer (and visible) takes over.
-		if (AHCJShipCharacter* Nearest = FindNearestHostile(Ship, Universe, EngageRange))
+		// Another target takes over: one that is clearly closer or, for a bot that flies smart, the better choice
+		// (the ship that is shooting at it, a weaker one, one that fewer bots are on).
+		bool bSpread = false;
+		if (AHCJShipCharacter* Better = PickTarget(Ship, Universe, EngageRange, Target, bSpread); Better != nullptr && Better != Target)
 		{
-			if (Nearest != Target)
+			if (bSmart)
 			{
-				const float NearestDistance = FVector::Dist(ShipLocation, Nearest->GetActorLocation());
-				if (NearestDistance < TargetDistance * HCJBotRetargetRatio && HasLineOfSight(Ship, *Nearest))
+				if (Better == Ship.GetRecentAttackerShip(2.5f))
 				{
-					Target = Nearest;
-					TargetShip = Nearest;
-					TargetAcquiredTime = Now;
-					TargetDistance = NearestDistance;
-					LastTargetVisibleTime = Now;
+					NotifyTactic(EHCJBotTactic::ThreatTurn);
+				}
+				else if (bSpread)
+				{
+					NotifyTactic(EHCJBotTactic::SpreadTarget);
 				}
 			}
+			Target = Better;
+			TargetShip = Better;
+			TargetAcquiredTime = Now;
+			TargetDistance = FVector::Dist(ShipLocation, Better->GetActorLocation());
+			LastTargetVisibleTime = Now;
+			RockShotUntil = 0.0f;
 		}
 
 		if (HasLineOfSight(Ship, *Target))
 		{
 			LastTargetVisibleTime = Now;
 		}
-		else if (Now - LastTargetVisibleTime > LoseTargetSeconds)
+		else if (Now - LastTargetVisibleTime > LoseTargetSeconds + (Now < RockShotUntil ? 2.5f : 0.0f))
 		{
 			SetBotState(EHCJBotState::Wander);
 			break;
@@ -385,6 +481,7 @@ void AHCJBotController::Think(AHCJShipCharacter& Ship, const AHCJUniverse& Unive
 		AimErrorOffset = BotRandom.VRand() * (MaxOffset * BotRandom.FRand());
 
 		ThinkTorpedo(Ship, *Target, TargetDistance, LastTargetVisibleTime >= Now);
+		ThinkRockShot(Ship, Universe, *Target, TargetDistance);
 		break;
 	}
 
@@ -423,7 +520,18 @@ void AHCJBotController::Think(AHCJShipCharacter& Ship, const AHCJUniverse& Unive
 			LastHostileSeenTime = Now;
 			const FVector HostileLocation = Hostile->GetActorLocation();
 
-			if (FVector::DistSquared(ShipLocation, HostileLocation) <= FMath::Square(EngageRange) && HasLineOfSight(Ship, *Hostile))
+			bool bSpread = false;
+			if (AHCJShipCharacter* Choice = bSmart ? PickTarget(Ship, Universe, EngageRange, nullptr, bSpread) : nullptr)
+			{
+				if (bSpread)
+				{
+					NotifyTactic(EHCJBotTactic::SpreadTarget);
+				}
+				SetBotState(EHCJBotState::Attack);
+				TargetShip = Choice;
+				break;
+			}
+			if (!bSmart && FVector::DistSquared(ShipLocation, HostileLocation) <= FMath::Square(EngageRange) && HasLineOfSight(Ship, *Hostile))
 			{
 				SetBotState(EHCJBotState::Attack);
 				TargetShip = Hostile;
@@ -433,9 +541,11 @@ void AHCJBotController::Think(AHCJShipCharacter& Ship, const AHCJUniverse& Unive
 			// Out of range or behind a rock: close in on it instead of wandering at random.
 			WanderPoint = HostileLocation;
 			bHasWanderPoint = true;
+			bChasing = true;
 			WanderPointExpireTime = Now + HCJBotWanderPointLifetime;
 			break;
 		}
+		bChasing = false;
 
 		// Nobody to fight: now and then a bot in good shape picks on a station turret; a hurt one never does.
 		const UHCJHealthComponent* Health = Ship.GetHealthComponent();
@@ -567,6 +677,7 @@ void AHCJBotController::ThinkSystems(AHCJShipCharacter& Ship, const AHCJUniverse
 			{
 				WarpGoal = Portal;
 				bWarpFlee = false;
+				bWarpChase = false;
 				WarpUntilTime = Now + Warp.ChargeSeconds + Warp.MaxSeconds + 1.0f;
 				UE_LOG(LogHCJ, Verbose, TEXT("%s warps for the portal %.0f uu away"), *GetNameSafe(GetPawn()), Distance);
 			}
@@ -577,8 +688,29 @@ void AHCJBotController::ThinkSystems(AHCJShipCharacter& Ship, const AHCJUniverse
 		WarpRolledForDim = INDEX_NONE;
 	}
 
-	// ---- warp to get away when the hull is low: rolled once per retreat ----
-	const bool bHurt = Health->GetHealthFraction() < Skill.RetreatHullFraction;
+	const FHCJBotStyle& Style = GetBotStyle(Ship, bSmart);
+
+	// ---- warp to a fight far away: tried now and then while closing in on a hostile that is out of range ----
+	if (bSmart && BotState == EHCJBotState::Wander && bChasing && bHasWanderPoint && !IsDisengaging() && Now >= WarpUntilTime && bWarpReady && Now >= NextWarpChaseTime)
+	{
+		const float Distance = static_cast<float>(FVector::Dist(ShipLocation, WanderPoint));
+		if (Distance > 1.4f * MinWarpWay && GetAimErrorDegrees(Ship, WanderPoint) < 25.0f && IsWayClear(Ship, WanderPoint, Distance - 3500.0f))
+		{
+			NextWarpChaseTime = Now + 12.0f;
+			if (BotRandom.FRand() < Skill.WarpTravelChance)
+			{
+				WarpGoal = WanderPoint;
+				bWarpFlee = false;
+				bWarpChase = true;
+				WarpUntilTime = Now + Warp.ChargeSeconds + Warp.MaxSeconds + 1.0f;
+				NotifyTactic(EHCJBotTactic::WarpChase);
+				UE_LOG(LogHCJ, Verbose, TEXT("%s warps towards a fight %.0f uu away"), *GetNameSafe(GetPawn()), Distance);
+			}
+		}
+	}
+
+	// ---- warp to get away when the hull is low or the bot is breaking off: rolled once per retreat ----
+	const bool bHurt = Health->GetHealthFraction() < Skill.RetreatHullFraction || IsDisengaging();
 	if (!bHurt)
 	{
 		bWarpFleeRolled = false;
@@ -602,6 +734,7 @@ void AHCJBotController::ThinkSystems(AHCJShipCharacter& Ship, const AHCJUniverse
 			{
 				WarpGoal = Goal;
 				bWarpFlee = true;
+				bWarpChase = false;
 				WarpUntilTime = Now + Warp.ChargeSeconds + Warp.MaxSeconds * 0.6f;
 				UE_LOG(LogHCJ, Verbose, TEXT("%s flees by warp (hull %.0f %%)"), *GetNameSafe(GetPawn()), Health->GetHealthFraction() * 100.0f);
 			}
@@ -615,22 +748,25 @@ void AHCJBotController::ThinkSystems(AHCJShipCharacter& Ship, const AHCJUniverse
 	NextSystemsTime = Now + 1.0f;
 
 	// ---- cloak: for an approach from afar, or for a retreat ----
-	if (!Ship.IsCloaked() && !Ship.IsCloakLocked() && Ship.GetCloakEnergy() > 0.6f && Ship.GetWarpPhase() == EHCJWarpPhase::Idle && Now >= WarpUntilTime && BotRandom.FRand() < Skill.CloakChance)
+	if (!Ship.IsCloaked() && !Ship.IsCloakLocked() && Ship.GetCloakEnergy() > 0.6f && Ship.GetWarpPhase() == EHCJWarpPhase::Idle && Now >= WarpUntilTime)
 	{
 		const AHCJShipCharacter* Target = TargetShip.Get();
 		const bool bApproach = BotState == EHCJBotState::Attack && Target != nullptr && FVector::DistSquared(Target->GetActorLocation(), ShipLocation) > FMath::Square(7000.0);
 		const bool bClosingIn = BotState == EHCJBotState::Wander && bHasWanderPoint && FindNearestHostile(Ship, Universe, 30000.0f) != nullptr;
-		if (bApproach || bClosingIn || bRetreating)
+		const bool bAway = bRetreating || IsDisengaging();
+		// The cloak takes the shields down: for getting away (they are gone anyway) a type that lives by it uses it far
+		// more readily than for an approach, which arrives without shields.
+		if ((bApproach || bClosingIn || bAway) && BotRandom.FRand() < Skill.CloakChance * (bAway ? Style.Cloak : 1.0f))
 		{
 			Ship.SetFiring(false);
 			Ship.SetCloaking(true);
-			CloakUntilTime = Now + (bRetreating ? 8.0f : 12.0f);
-			UE_LOG(LogHCJ, Verbose, TEXT("%s cloaks (%s)"), *GetNameSafe(GetPawn()), bRetreating ? TEXT("retreat") : TEXT("approach"));
+			CloakUntilTime = Now + (bAway ? 8.0f : 12.0f);
+			UE_LOG(LogHCJ, Verbose, TEXT("%s cloaks (%s)"), *GetNameSafe(GetPawn()), bAway ? TEXT("retreat") : TEXT("approach"));
 		}
 	}
 
 	// ---- tractor beam: on a target in reach that runs or is nearly done ----
-	if (BotState == EHCJBotState::Attack && Now >= TractorUntilTime && !bRetreating && !Ship.IsCloaked() && Ship.GetPhaserCharge() > 0.5f && !Ship.IsPhaserLocked())
+	if (BotState == EHCJBotState::Attack && Now >= TractorUntilTime && !bRetreating && !IsDisengaging() && !Ship.IsCloaked() && Ship.GetPhaserCharge() > 0.5f && !Ship.IsPhaserLocked())
 	{
 		AHCJShipCharacter* Target = TargetShip.Get();
 		if (Target != nullptr && !Target->IsDead() && Target->GetTractorHolder() == nullptr && Now - LastTargetVisibleTime < 0.5f)
@@ -639,9 +775,11 @@ void AHCJBotController::ThinkSystems(AHCJShipCharacter& Ship, const AHCJUniverse
 			const float Distance = static_cast<float>(ToTarget.Size());
 			const float AwaySpeed = static_cast<float>(FVector::DotProduct(Target->GetVelocity(), ToTarget.GetSafeNormal()));
 			const UHCJHealthComponent* TargetHealth = Target->GetHealthComponent();
-			const bool bWorthIt = AwaySpeed > 1200.0f || (TargetHealth != nullptr && TargetHealth->GetHealthFraction() < 0.45f);
+			// (Also a fast ship close by: held, it flies at half speed and cannot circle a heavy hull any more.)
+			const bool bWorthIt = AwaySpeed > 1200.0f || (TargetHealth != nullptr && TargetHealth->GetHealthFraction() < 0.45f)
+				|| (bSmart && Distance < 2600.0f && Target->GetVelocity().SizeSquared() > FMath::Square(3000.0));
 			if (Distance < Ship.GetTypeDef().TractorRange * 0.9f && GetAimErrorDegrees(Ship, Target->GetActorLocation()) < 30.0f
-				&& BotRandom.FRand() < Skill.TractorChance * (bWorthIt ? 3.0f : 1.0f))
+				&& BotRandom.FRand() < Skill.TractorChance * Style.Tractor * (bWorthIt ? 3.0f : 1.0f))
 			{
 				Ship.SetLockTarget(Target);
 				TractorUntilTime = Now + 2.5f;
@@ -666,7 +804,7 @@ void AHCJBotController::TickSystems(AHCJShipCharacter& Ship)
 	{
 		const float Distance = static_cast<float>(FVector::Dist(ShipLocation, WarpGoal));
 		const EHCJWarpPhase Phase = Ship.GetWarpPhase();
-		const bool bStillWanted = bWarpFlee || BotState == EHCJBotState::Travel;
+		const bool bStillWanted = bWarpFlee || BotState == EHCJBotState::Travel || (bWarpChase && BotState == EHCJBotState::Wander);
 		if (!bStillWanted || Distance < 3200.0f || Phase == EHCJWarpPhase::Cooldown || Ship.GetTractorHolder() != nullptr)
 		{
 			WarpUntilTime = 0.0f;
@@ -683,16 +821,23 @@ void AHCJBotController::TickSystems(AHCJShipCharacter& Ship)
 	Ship.SetWarping(bWarpKey);
 
 	// Tractor beam key.
-	Ship.SetTractoring(Now < TractorUntilTime && BotState == EHCJBotState::Attack);
+	Ship.SetTractoring(Now < TractorUntilTime && BotState == EHCJBotState::Attack && !IsDisengaging());
 
-	// Cloak: no firing while it is up; it comes down in time for the fight, or when its time is over.
+	// Cloak: no firing while it is up; it comes down in time for the fight, or when its time is over. A scout that
+	// flies smart keeps it up until it is close behind its target.
 	if (Ship.IsCloaked())
 	{
 		const AHCJShipCharacter* Target = TargetShip.Get();
+		const bool bAmbush = GetBotStyle(Ship, bSmart).bAmbush;
 		const bool bClose = BotState == EHCJBotState::Attack && Target != nullptr
-			&& FVector::DistSquared(Target->GetActorLocation(), ShipLocation) < FMath::Square(static_cast<double>(PreferredRange) * 1.3);
-		if (Now >= CloakUntilTime || (bClose && !bRetreating) || Ship.IsCloakRevealed())
+			&& FVector::DistSquared(Target->GetActorLocation(), ShipLocation) < FMath::Square(bAmbush ? 2600.0 : static_cast<double>(PreferredRange) * 1.3);
+		const bool bAway = bRetreating || IsDisengaging();
+		if (Now >= CloakUntilTime || (bClose && !bAway) || Ship.IsCloakRevealed())
 		{
+			if (bAmbush && bClose && !bAway)
+			{
+				NotifyTactic(EHCJBotTactic::Ambush);
+			}
 			Ship.SetCloaking(false);
 		}
 		else
@@ -1025,8 +1170,11 @@ void AHCJBotController::TickAttack(float DeltaTime, AHCJShipCharacter& Ship, con
 	// Difficulty: nothing before the reaction delay is over, then bursts with pauses, from no farther than the level allows.
 	const bool bReacted = Now - TargetAcquiredTime >= Skill.ReactionDelay;
 	const bool bInBurst = Skill.BurstPause <= 0.0f || FMath::Fmod(Now + BurstPhase, Skill.BurstSeconds + Skill.BurstPause) < Skill.BurstSeconds;
+	const float FireRange = FMath::Min(EngageRange * Skill.EngageRangeFactor, Weapon.BotMaxRange);
+	// (SteerTowards: a bot that can hit its target from here does not follow it under the guns of a station.)
+	bStationHoldEdge = bTargetVisible && Distance <= FireRange;
 	bool bFire = bTargetVisible && bReacted && bInBurst && !bRetreating
-		&& Distance <= FMath::Min(EngageRange * Skill.EngageRangeFactor, Weapon.BotMaxRange) && GetAimErrorDegrees(Ship, AimPoint) <= FireConeDeg;
+		&& Distance <= FireRange && GetAimErrorDegrees(Ship, AimPoint) <= FireConeDeg;
 	if (bFire && Weapon.bBeam)
 	{
 		// The beam is where the nose points, at once: held only while the aim is on the target, and a better pilot keeps
@@ -1036,6 +1184,34 @@ void AHCJBotController::TickAttack(float DeltaTime, AHCJShipCharacter& Ship, con
 		bFire = GetAimErrorDegrees(Ship, AimPoint) <= Skill.PhaserConeDeg && (bFinishing || Ship.GetPhaserCharge() > Skill.PhaserReserve);
 	}
 	Ship.SetFiring(bFire);
+
+	// A small rock in the line of fire is being shot away: the nose and the beam go on it until it breaks or the target shows.
+	if (Now < RockShotUntil)
+	{
+		FVector RockLocation;
+		float RockRadius = 0.0f;
+		if (bTargetVisible || !Weapon.bBeam || !Universe.GetAsteroidSphere(RockShotKey, RockLocation, RockRadius))
+		{
+			RockShotUntil = 0.0f;
+		}
+		else
+		{
+			DesiredAimPoint = RockLocation;
+			const float RockDistance = static_cast<float>(FVector::Dist(ShipLocation, RockLocation));
+			Ship.SetFiring(GetAimErrorDegrees(Ship, RockLocation) <= FMath::Max(2.5f, FMath::RadiansToDegrees(FMath::Atan2(RockRadius * 0.6f, FMath::Max(RockDistance, 1.0f)))));
+		}
+	}
+
+	const FHCJBotStyle& Style = GetBotStyle(Ship, bSmart);
+
+	// A scout under cloak goes for the tail of its target (TickSystems drops the cloak there).
+	if (Style.bAmbush && Ship.IsCloaked() && !bRetreating)
+	{
+		const FVector Behind = TargetLocation - Target->GetActorForwardVector() * 2000.0;
+		Ship.SetBoosting(FVector::DistSquared(ShipLocation, Behind) > FMath::Square(3500.0));
+		SteerTowards(Ship, Universe, Behind, 1.0f, false);
+		return;
+	}
 
 	// Circle the target at PreferredRange.
 	if (Now >= NextStrafeFlipTime)
@@ -1052,13 +1228,26 @@ void AHCJBotController::TickAttack(float DeltaTime, AHCJShipCharacter& Ship, con
 	const FVector Up = FVector::CrossProduct(TargetDirection, Right);
 	// Slow vertical weave, out of phase between bots, so the orbit is not a flat circle.
 	const float Weave = FMath::Sin(Now * 0.7f + static_cast<float>(GetUniqueID() % 16));
-	const FVector Strafe = (Right * StrafeSign + Up * (0.5f * Weave)).GetSafeNormal() * (HCJBotStrafeStrength * Skill.StrafeStrength / 0.8f);
+	// A light, agile ship against a hull that turns slower: now and then a boosted pass close around it - the heavy
+	// ship cannot keep its nose (and its fore shield) on something that crosses it that fast.
+	const bool bOutTurns = Style.bKnife && Target->GetTypeDef().BotTurnScale < Ship.GetTypeDef().BotTurnScale - 0.05f;
+	if (bOutTurns && Now >= NextClosePassTime && Distance < 1.6f * PreferredRange && bTargetVisible && !bRetreating)
+	{
+		ClosePassUntil = Now + 1.8f;
+		NextClosePassTime = Now + BotRandom.FRandRange(12.0f, 18.0f);
+		NotifyTactic(EHCJBotTactic::ClosePass);
+	}
+	const bool bClosePass = bOutTurns && Now < ClosePassUntil;
 
-	const float WantedRange = FMath::Min(PreferredRange, 0.6f * Weapon.BotMaxRange);
+	const float StrafeStrength = bClosePass ? 1.0f : FMath::Min(HCJBotStrafeStrength * Skill.StrafeStrength / 0.8f * Style.Strafe, 1.0f);
+	const FVector Strafe = (Right * StrafeSign + Up * (0.5f * Weave)).GetSafeNormal() * StrafeStrength;
+
+	// (A ship that stands off may use more of its weapon's reach.)
+	const float WantedRange = bClosePass ? 1500.0f : FMath::Min(PreferredRange * Style.Range, (Style.Range > 1.0f ? 0.8f : 0.6f) * Weapon.BotMaxRange);
 	const float RangeError = Distance - WantedRange;
 	const float Radial = FMath::Clamp(RangeError / FMath::Max(WantedRange * 0.5f, 1.0f), -1.0f, 1.0f);
 
-	Ship.SetBoosting(Distance > BoostDistance);
+	Ship.SetBoosting(Distance > BoostDistance || bClosePass);
 
 	if (const AHCJPickup* Goal = PickupGoal.Get(); Goal != nullptr && Goal->IsActive())
 	{
@@ -1182,6 +1371,48 @@ void AHCJBotController::SteerTowards(AHCJShipCharacter& Ship, const AHCJUniverse
 		}
 
 		DesiredVelocity = SteerDirection * DesiredSpeed;
+	}
+
+	// Under the guns of a station (and not there to shoot at them): no further in, and out again - but never so that
+	// the bot is left standing at the edge (the playthrough watch found exactly that: ships waiting for 20 s in front
+	// of a portal, a pad or a wander point they were not allowed to reach):
+	//  - what the bot flies to lies under the guns itself (a portal, a pad, a ship it has to get at): it goes in;
+	//  - in a fight with a target it can already hit from where it is: it holds the edge;
+	//  - otherwise the way leads past the station: around it, along the edge.
+	if (StationDangerRadius > 0.0f && !bEvading)
+	{
+		const FVector FromStation = ShipLocation - StationDangerLocation;
+		const float StationDistance = static_cast<float>(FromStation.Size());
+		const bool bFighting = BotState == EHCJBotState::Attack && !IsDisengaging();
+		const bool bGoalInside = FVector::DistSquared(WorldTarget, StationDangerLocation) < FMath::Square(static_cast<double>(StationDangerRadius));
+		const bool bApply = bFighting ? bStationHoldEdge : !bGoalInside;
+		if (bApply && StationDistance < StationDangerRadius && StationDistance > 1.0f)
+		{
+			const FVector Outward = FromStation / StationDistance;
+			const double Inward = -FVector::DotProduct(DesiredVelocity, Outward);
+			if (Inward > 0.0)
+			{
+				FVector Along = DesiredVelocity + Outward * Inward;
+				if (!bFighting)
+				{
+					// The whole wanted speed along the edge; when the goal is straight behind the station, to one side of it.
+					const double Speed = DesiredVelocity.Size();
+					if (Along.SizeSquared() < FMath::Square(0.3 * Speed))
+					{
+						Along = FVector::CrossProduct(Outward, FMath::Abs(Outward.Z) < 0.9 ? FVector::UpVector : FVector::ForwardVector);
+					}
+					Along = Along.GetSafeNormal() * Speed;
+				}
+				DesiredVelocity = Along;
+			}
+			DesiredVelocity += Outward * (MaxSpeed * 0.5f * FMath::Clamp((StationDangerRadius - StationDistance) / 2000.0f, 0.0f, 1.0f));
+			if (const float Now = static_cast<float>(GetWorld()->GetTimeSeconds()); Now >= NextStationSteerCountTime)
+			{
+				// One count per visit, more or less.
+				NextStationSteerCountTime = Now + 8.0f;
+				NotifyTactic(EHCJBotTactic::StationSteer);
+			}
+		}
 	}
 
 	// Black hole: a hazard. Inside its influence radius the bot steers away, unless what it is flying to lies
@@ -1418,8 +1649,28 @@ void AHCJBotController::ThinkTorpedo(AHCJShipCharacter& Ship, AHCJShipCharacter&
 	// Never from so close that the blast or the arming distance spoils it.
 	const float MinRange = Gameplay.TorpedoArmingDistance + Gameplay.TorpedoBlastRadius + 400.0f;
 	const float MaxRange = FMath::Min(Torpedo.BotMaxRange, EngageRange * Skill.EngageRangeFactor);
-	if (HCJTorpedo::ShouldBotFire(Input, TorpedoSkill, MinRange, MaxRange))
+	const FHCJBotStyle& Style = GetBotStyle(Ship, bSmart);
+	bool bShoot = HCJTorpedo::ShouldBotFire(Input, TorpedoSkill, MinRange, MaxRange);
+	// The phasers have opened a facing: a torpedo through it, at once rather than by a small chance.
+	const bool bOpen = Input.FacingFraction <= 0.0f;
+	if (!bShoot && bOpen && Input.bReady && Input.bLockedAndAimed && TargetDistance >= MinRange && TargetDistance <= MaxRange && Input.HullFraction >= 0.15f
+		&& BotRandom.FRand() < Skill.ComboChance * Style.Torpedo)
 	{
+		bShoot = true;
+	}
+	if (bShoot)
+	{
+		if (bOpen)
+		{
+			NotifyTactic(EHCJBotTactic::ComboTorpedo);
+		}
+		// The tractor beam first, when the target is in its reach: a ship that is held cannot run from the torpedo.
+		if (bSmart && !AHCJGameMode::IsClassicBots() && Now >= TractorUntilTime && Target.GetTractorHolder() == nullptr && !Ship.IsCloaked() && Ship.GetPhaserCharge() > 0.3f
+			&& !Ship.IsPhaserLocked() && TargetDistance < Ship.GetTypeDef().TractorRange * 0.9f && BotRandom.FRand() < Skill.Tactics * FMath::Min(Style.Tractor, 1.5f) * 0.7f)
+		{
+			TractorUntilTime = Now + 2.5f;
+			NotifyTactic(EHCJBotTactic::TractorTorpedo);
+		}
 		LastTorpedoTime = Now;
 		UE_LOG(LogHCJ, Verbose, TEXT("%s fires a torpedo at %s from %.0f uu: facing shown %.0f %%, hull %.0f %%"), *GetNameSafe(GetPawn()), *Target.GetName(),
 			TargetDistance, Input.FacingFraction * 100.0f, Input.HullFraction * 100.0f);
@@ -1487,7 +1738,7 @@ void AHCJBotController::ThinkTorpedoEvasion(const AHCJShipCharacter& Ship)
 void AHCJBotController::TickShieldFacing(const AHCJShipCharacter& Ship)
 {
 	const UHCJHealthComponent* Health = Ship.GetHealthComponent();
-	if (!(bRetreating || BotState == EHCJBotState::Travel) || Ship.IsFiring() || Health == nullptr || Health->GetNumFacings() != HCJShield::NumFacings)
+	if (!(bRetreating || IsDisengaging() || BotState == EHCJBotState::Travel) || Ship.IsFiring() || Health == nullptr || Health->GetNumFacings() != HCJShield::NumFacings)
 	{
 		return;
 	}
@@ -1527,6 +1778,363 @@ void AHCJBotController::TickShieldFacing(const AHCJShipCharacter& Ship)
 	const double Yaw = ToThreat.Rotation().Yaw - HCJShield::FacingYawDegrees(Wanted);
 	DesiredAimPoint = Ship.GetActorLocation() + FRotator(0.0, Yaw, 0.0).Vector() * 10000.0;
 	bHasAimPoint = true;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Tactics
+// ---------------------------------------------------------------------------------------------------------------
+
+void AHCJBotController::NotifyTactic(EHCJBotTactic Tactic) const
+{
+	if (AHCJGameMode* GameMode = GetWorld() != nullptr ? GetWorld()->GetAuthGameMode<AHCJGameMode>() : nullptr)
+	{
+		GameMode->NotifyBotTactic(Tactic);
+	}
+	UE_LOG(LogHCJ, Verbose, TEXT("%s: tactic - %s"), *GetNameSafe(GetPawn()), HCJBalance::GetTacticName(Tactic));
+}
+
+FString AHCJBotController::DescribeForLog() const
+{
+	const AHCJShipCharacter* Ship = GetShip();
+	if (Ship == nullptr)
+	{
+		return TEXT("no_ship");
+	}
+	const AHCJShipCharacter* Target = TargetShip.Get();
+	const AHCJPickup* Pad = PickupGoal.Get();
+	// Inside rock? (A sphere of the ship's size at its place, against asteroids only.)
+	const bool bInRock = GetWorld()->OverlapAnyTestByObjectType(Ship->GetActorLocation(), FQuat::Identity, FCollisionObjectQueryParams(ECC_WorldStatic),
+		FCollisionShape::MakeSphere(HCJ::ShipCollisionRadius * Ship->GetTypeDef().Scale), MakeBotQueryParams(*Ship));
+	FString TargetName = Target != nullptr && Target->GetPlayerState() != nullptr ? Target->GetPlayerState()->GetPlayerName() : FString(TEXT("-"));
+	TargetName.ReplaceInline(TEXT(" "), TEXT("_"));
+	return FString::Printf(TEXT("type=%s smart=%d target=%s target_dist=%.0f retreating=%d disengaging=%d pad=%d turret_goal=%d wander_point=%d chasing=%d firing=%d boosting=%d warp=%d cloaked=%d tractor_target=%d held=%d in_rock=%d evading=%d portal_cooldown=%.1f travel_dim=%d"),
+		*FString(Ship->GetTypeDef().ShortName).ToLower(), bSmart ? 1 : 0, *TargetName, Target != nullptr ? FVector::Dist(Target->GetActorLocation(), Ship->GetActorLocation()) : -1.0,
+		bRetreating ? 1 : 0, IsDisengaging() ? 1 : 0, (Pad != nullptr && Pad->IsActive()) ? 1 : 0, TurretGoal.Get() != nullptr ? 1 : 0, bHasWanderPoint ? 1 : 0, bChasing ? 1 : 0,
+		Ship->IsFiring() ? 1 : 0, Ship->IsBoosting() ? 1 : 0, static_cast<int32>(Ship->GetWarpPhase()), Ship->IsCloaked() ? 1 : 0, Ship->GetTractorTarget() != nullptr ? 1 : 0,
+		Ship->GetTractorHolder() != nullptr ? 1 : 0, bInRock ? 1 : 0, GetWorld()->GetTimeSeconds() < EvadeUntilTime ? 1 : 0, Ship->GetPortalCooldownRemaining(), TravelDim);
+}
+
+bool AHCJBotController::IsDisengaging() const
+{
+	const UWorld* World = GetWorld();
+	return World != nullptr && World->GetTimeSeconds() < DisengageUntilTime;
+}
+
+AHCJShipCharacter* AHCJBotController::PickTarget(const AHCJShipCharacter& Ship, const AHCJUniverse& Universe, float MaxRange, AHCJShipCharacter* Current, bool& bOutSpread) const
+{
+	bOutSpread = false;
+	UWorld* World = GetWorld();
+	if (World == nullptr || !Universe.IsBuilt())
+	{
+		return Current;
+	}
+	const FVector ShipLocation = Ship.GetActorLocation();
+
+	if (!bSmart)
+	{
+		// The plain rule: the nearest visible hostile, and only when it is clearly nearer than the current target.
+		AHCJShipCharacter* Nearest = FindNearestHostile(Ship, Universe, MaxRange);
+		if (Nearest == nullptr || Nearest == Current || !HasLineOfSight(Ship, *Nearest))
+		{
+			return Current;
+		}
+		if (Current != nullptr && FVector::Dist(ShipLocation, Nearest->GetActorLocation()) >= FVector::Dist(ShipLocation, Current->GetActorLocation()) * HCJBotRetargetRatio)
+		{
+			return Current;
+		}
+		return Nearest;
+	}
+
+	const int32 Sector = Universe.GetSectorAtLocation(ShipLocation);
+	const UHCJHealthComponent* OwnHealth = Ship.GetHealthComponent();
+	const AHCJShipCharacter* Attacker = Ship.GetRecentAttackerShip(2.5f);
+	const FHCJBotStyle& Style = GetBotStyle(Ship, true);
+
+	// How many other bots are on each ship already.
+	TMap<const AHCJShipCharacter*, int32, TInlineSetAllocator<16>> Crowd;
+	for (TActorIterator<AHCJBotController> It(World); It; ++It)
+	{
+		const AHCJBotController* Other = *It;
+		if (Other != this && Other->BotState == EHCJBotState::Attack && Other->GetShip() != nullptr)
+		{
+			if (const AHCJShipCharacter* Theirs = Other->TargetShip.Get())
+			{
+				++Crowd.FindOrAdd(Theirs);
+			}
+		}
+	}
+
+	AHCJShipCharacter* Best = nullptr;
+	float BestScore = -1.0e9f;
+	const AHCJShipCharacter* Nearest = nullptr;
+	double NearestDistSq = TNumericLimits<double>::Max();
+	for (TActorIterator<AHCJShipCharacter> It(World); It; ++It)
+	{
+		AHCJShipCharacter* Other = *It;
+		if (Other == &Ship || !IsValid(Other) || Other->IsDead())
+		{
+			continue;
+		}
+		const FVector OtherLocation = Other->GetActorLocation();
+		const double DistSq = FVector::DistSquared(ShipLocation, OtherLocation);
+		if (DistSq > FMath::Square(static_cast<double>(MaxRange)) || Universe.GetSectorAtLocation(OtherLocation) != Sector
+			|| (Other->IsCloakHidden() && DistSq > FMath::Square(static_cast<double>(UHCJGameplaySettings::Get().CloakDetectRange))))
+		{
+			continue;
+		}
+		if (Other != Current && !HasLineOfSight(Ship, *Other))
+		{
+			continue;
+		}
+		const UHCJHealthComponent* Health = Other->GetHealthComponent();
+		if (Health == nullptr)
+		{
+			continue;
+		}
+		if (DistSq < NearestDistSq)
+		{
+			NearestDistSq = DistSq;
+			Nearest = Other;
+		}
+
+		const float Distance = static_cast<float>(FMath::Sqrt(DistSq));
+		const FVector ToUs = ShipLocation - OtherLocation;
+		// What its target panel would show: the hull, and the facing it turns towards us.
+		const float Shown = Health->GetNumFacings() == HCJShield::NumFacings
+			? Health->GetFacingFraction(static_cast<int32>(HCJShield::SelectFacing(Other->GetActorTransform().InverseTransformVectorNoScale(ToUs)))) : Health->GetShieldFraction();
+		const float HullGone = 1.0f - Health->GetHealthFraction();
+
+		float Score = -Distance / 1000.0f;
+		Score += (Style.bVulture ? 8.0f : 5.0f) * HullGone;
+		Score += Shown <= 0.0f ? 4.0f : Shown <= HCJShield::WeakFraction ? 2.0f : 0.0f;
+		if (Other == Attacker)
+		{
+			// Whoever is shooting at us, more so when it has found a side of our shield that is weak.
+			Score += 5.0f;
+			if (OwnHealth != nullptr && OwnHealth->GetNumFacings() == HCJShield::NumFacings)
+			{
+				const EHCJShieldFacing Side = HCJShield::SelectFacing(Ship.GetActorTransform().InverseTransformVectorNoScale(-ToUs));
+				if (Side != EHCJShieldFacing::Fore && OwnHealth->GetFacingFraction(static_cast<int32>(Side)) <= HCJShield::WeakFraction)
+				{
+					Score += 2.5f;
+				}
+			}
+		}
+		// Its tail is towards us: it is busy with somebody else.
+		if (FVector::DotProduct(Other->GetActorForwardVector(), ToUs.GetSafeNormal()) < -0.3)
+		{
+			Score += 1.5f;
+		}
+		if (const int32* Others = Crowd.Find(Other))
+		{
+			Score -= 2.5f * *Others;
+		}
+		if (Other->IsSpawnShielded())
+		{
+			Score -= 8.0f;
+		}
+		if (Style.bVulture && Other->GetTypeDef().MaxHull > Ship.GetTypeDef().MaxHull * 1.1f && Shown > 0.6f && HullGone < 0.3f)
+		{
+			// A light ship does not open a fair fight with a heavy one.
+			Score -= 3.0f;
+		}
+		if (Other == Current)
+		{
+			Score += 3.0f;
+		}
+		if (Score > BestScore)
+		{
+			BestScore = Score;
+			Best = Other;
+		}
+	}
+
+	if (Best != nullptr && Nearest != nullptr && Best != Nearest)
+	{
+		const int32* OnNearest = Crowd.Find(Nearest);
+		const int32* OnBest = Crowd.Find(Best);
+		bOutSpread = (OnNearest != nullptr ? *OnNearest : 0) > (OnBest != nullptr ? *OnBest : 0);
+	}
+	return Best != nullptr ? Best : Current;
+}
+
+void AHCJBotController::ThinkDisengage(AHCJShipCharacter& Ship, const AHCJUniverse& Universe)
+{
+	const float Now = GetWorld()->GetTimeSeconds();
+	const UHCJHealthComponent* Health = Ship.GetHealthComponent();
+	if (Health == nullptr || AHCJGameMode::IsClassicBots())
+	{
+		return;
+	}
+	const FVector ShipLocation = Ship.GetActorLocation();
+
+	if (IsDisengaging())
+	{
+		FVector Unused;
+		const bool bCalm = !Ship.GetRecentAttackerLocation(2.5f, Unused);
+		const AHCJShipCharacter* Threat = DisengageThreat.Get();
+		const bool bThreatGone = Threat == nullptr || Threat->IsDead() || Threat->GetCurrentSector() != Ship.GetCurrentSector();
+		if (bDisengageCover && !bCoverCounted && !bThreatGone && !HasLineOfSight(Ship, *Threat))
+		{
+			// A rock is between the two.
+			bCoverCounted = true;
+			NotifyTactic(EHCJBotTactic::Cover);
+		}
+		if (bRetreating || bThreatGone || (bCalm && Health->GetShieldFraction() > 0.55f))
+		{
+			// Back into it (a repair pad that has a kit again takes over as the plain retreat).
+			DisengageUntilTime = 0.0f;
+		}
+		if (!IsDisengaging())
+		{
+			NextDisengageTime = Now + 7.0f;
+			bDisengageRolled = false;
+			NotifyTactic(EHCJBotTactic::Reengage);
+		}
+		return;
+	}
+	if (DisengageUntilTime > 0.0f)
+	{
+		// Its time ran out between two Thinks.
+		DisengageUntilTime = 0.0f;
+		NextDisengageTime = Now + 7.0f;
+		bDisengageRolled = false;
+		NotifyTactic(EHCJBotTactic::Reengage);
+	}
+
+	AHCJShipCharacter* Attacker = Ship.GetRecentAttackerShip(2.0f);
+	if (Attacker == nullptr || bRetreating || Now < NextDisengageTime || Health->GetNumFacings() != HCJShield::NumFacings)
+	{
+		if (Attacker == nullptr)
+		{
+			bDisengageRolled = false;
+		}
+		return;
+	}
+
+	// The occasion: the facing the attacker is on is down, and the hull is low - for a hit-and-run ship, touched.
+	const FHCJBotStyle& Style = GetBotStyle(Ship, bSmart);
+	const FVector AttackerLocation = Attacker->GetActorLocation();
+	const EHCJShieldFacing Side = HCJShield::SelectFacing(Ship.GetActorTransform().InverseTransformVectorNoScale(AttackerLocation - ShipLocation));
+	const bool bOpen = Health->GetFacingFraction(static_cast<int32>(Side)) <= 0.0f;
+	const float Hull = Health->GetHealthFraction();
+	const bool bLow = Hull < Skill.RetreatHullFraction + Style.RetreatAdd;
+	if (!bOpen || !bLow)
+	{
+		bDisengageRolled = false;
+		return;
+	}
+	if (bDisengageRolled)
+	{
+		return;
+	}
+	bDisengageRolled = true;
+	if (BotRandom.FRand() >= Skill.Tactics)
+	{
+		return;
+	}
+
+	// Only with a way out - a rock to get behind, the cloak, or a pad that mends the ship: a ship that
+	// just turns its tail to a pursuer of the same speed stops shooting and dies all the same.
+	FVector CoverPoint = FVector::ZeroVector;
+	const bool bCover = bSmart && Universe.FindCoverPoint(ShipLocation, AttackerLocation, 5000.0f, 350.0f, 500.0f * Ship.GetTypeDef().Scale, CoverPoint);
+	const bool bCloakOut = !Ship.IsCloaked() && !Ship.IsCloakLocked() && Ship.GetCloakEnergy() > 0.5f && Ship.GetWarpPhase() == EHCJWarpPhase::Idle;
+	const AHCJPickup* Pad = PickupGoal.Get();
+	const bool bPadOut = Pad != nullptr && Pad->IsActive() && (Pad->GetItem() == EHCJPickupItem::Repair || Pad->GetItem() == EHCJPickupItem::ShieldCell);
+	// (Not the warp drive: a hit while it charges stops it, so under fire it is a hope, not a way out. ThinkSystems still tries it.)
+	if (!(bCover || bCloakOut || bPadOut))
+	{
+		return;
+	}
+
+	DisengageUntilTime = Now + 7.0f;
+	DisengageThreat = Attacker;
+	bCoverCounted = false;
+	bDisengageCover = bCover;
+	if (bCover)
+	{
+		DisengagePoint = CoverPoint;
+	}
+	else
+	{
+		// Straight away from the attacker, bent towards the middle of the sector.
+		const FVector Middle = Universe.GetSectorOrigin(Ship.GetCurrentSector());
+		const FVector Away = (ShipLocation - AttackerLocation).GetSafeNormal() + (Middle - ShipLocation).GetSafeNormal() * 0.6;
+		DisengagePoint = ShipLocation + Away.GetSafeNormal() * 7000.0;
+	}
+	if (bCloakOut && !bCover && !bPadOut && bSmart && BotRandom.FRand() < FMath::Min(Skill.CloakChance * Style.Cloak * 4.0f, 1.0f))
+	{
+		// Nothing to hide behind: out of sight at once (the shields on that side are gone anyway).
+		Ship.SetFiring(false);
+		Ship.SetCloaking(true);
+		CloakUntilTime = Now + 7.0f;
+	}
+	// (ThinkSystems may add the warp drive and the cloak: bWarpFleeRolled starts again for this retreat.)
+	bWarpFleeRolled = false;
+	NotifyTactic(EHCJBotTactic::Retreat);
+	UE_LOG(LogHCJ, Verbose, TEXT("%s breaks off from %s (hull %.0f %%, %s facing down): %s"), *GetNameSafe(GetPawn()), *Attacker->GetName(), Hull * 100.0f, HCJShield::FacingName(Side),
+		bDisengageCover ? TEXT("for a rock") : TEXT("away"));
+}
+
+bool AHCJBotController::TickDisengage(AHCJShipCharacter& Ship, const AHCJUniverse& Universe)
+{
+	if (!IsDisengaging())
+	{
+		return false;
+	}
+	Ship.SetFiring(false);
+	const FVector ShipLocation = Ship.GetActorLocation();
+	FVector Goal = DisengagePoint;
+	bool bArrive = bDisengageCover;
+	if (const AHCJPickup* Pad = PickupGoal.Get(); Pad != nullptr && Pad->IsActive() && (Pad->GetItem() == EHCJPickupItem::Repair || Pad->GetItem() == EHCJPickupItem::ShieldCell))
+	{
+		// Something that mends the ship is in reach: over it.
+		Goal = Pad->GetActorLocation();
+		bArrive = false;
+	}
+	const double DistSq = FVector::DistSquared(ShipLocation, Goal);
+	Ship.SetBoosting(DistSq > FMath::Square(1500.0));
+	SteerTowards(Ship, Universe, Goal, 1.0f, bArrive);
+	// The nose along the way out; TickShieldFacing turns the best facing to the attacker instead while one is weak.
+	const AHCJShipCharacter* Threat = DisengageThreat.Get();
+	DesiredAimPoint = (DistSq > FMath::Square(900.0) || Threat == nullptr) ? Goal : Threat->GetActorLocation();
+	bHasAimPoint = true;
+	return true;
+}
+
+void AHCJBotController::ThinkRockShot(AHCJShipCharacter& Ship, const AHCJUniverse& Universe, const AHCJShipCharacter& Target, float TargetDistance)
+{
+	const UWorld* World = GetWorld();
+	const float Now = World->GetTimeSeconds();
+	if (!bSmart || Now < NextRockShotTime || Now < RockShotUntil || LastTargetVisibleTime >= Now || bRetreating || IsDisengaging() || Ship.IsCloaked()
+		|| !Universe.GetAsteroidRules().bEnabled)
+	{
+		return;
+	}
+	NextRockShotTime = Now + 1.0f;
+	// Only the phaser breaks rock, and only a rock that costs little: small, near, and the target right behind it.
+	const FHCJWeaponDef& Weapon = Ship.GetFireWeaponDef();
+	if (!Weapon.bBeam || TargetDistance > Weapon.BotMaxRange || Ship.GetPhaserCharge() < 0.5f)
+	{
+		return;
+	}
+	FCollisionQueryParams Params = MakeBotQueryParams(Ship);
+	Params.AddIgnoredActor(&Target);
+	FHitResult Hit;
+	if (!World->LineTraceSingleByObjectType(Hit, Ship.GetActorLocation(), Target.GetActorLocation(), FCollisionObjectQueryParams(ECC_WorldStatic), Params))
+	{
+		return;
+	}
+	const uint32 Key = Universe.FindAsteroidKey(Hit.GetComponent(), Hit.Item);
+	const float Health = Key != MAX_uint32 ? Universe.GetAsteroidHealth(Key) : -1.0f;
+	if (Health <= 0.0f || Health > 140.0f || Hit.Distance > 4500.0f || BotRandom.FRand() >= Skill.Tactics)
+	{
+		return;
+	}
+	RockShotKey = Key;
+	RockShotUntil = Now + 3.2f;
+	NotifyTactic(EHCJBotTactic::RockShot);
+	UE_LOG(LogHCJ, Verbose, TEXT("%s shoots at a rock (%.0f hit points, %.0f uu away) that hides %s"), *GetNameSafe(GetPawn()), Health, Hit.Distance, *Target.GetName());
 }
 
 void AHCJBotController::TickAim(float DeltaTime, const AHCJShipCharacter& Ship)
