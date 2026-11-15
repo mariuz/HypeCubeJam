@@ -60,6 +60,10 @@ public:
 	UPROPERTY(Config)
 	bool bHints = true;
 
+	/** The ship computer speaks a few warnings (shield facing down, hull critical, torpedo, ...). Settings page. */
+	UPROPERTY(Config)
+	bool bComputerVoice = true;
+
 	/** The camera shakes with explosions nearby (the short jolt of a hit on the own hull stays). Settings page. */
 	UPROPERTY(Config)
 	bool bCameraShake = true;

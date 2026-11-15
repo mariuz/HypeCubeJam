@@ -63,6 +63,8 @@ public:
 	bool IsReady() const { return State == EHCJEosState::Ready; }
 	/** One line for the menu: the state, who is signed in, or why not. */
 	FString GetStatusLine() const;
+	/** The same for the title page: while a search of the last two minutes answered, how many matches are open instead. */
+	FString GetTitleStatusLine() const;
 	/** Changes whenever something the menu shows changed (state, lobby list, leaderboards). */
 	uint32 GetRevision() const { return Revision; }
 
@@ -93,6 +95,17 @@ public:
 	/** Why the last search failed; empty when it worked. */
 	const FString& GetSearchError() const { return SearchError; }
 
+	/**
+	 * The title page is on the screen (local controller, about once a second). While it is, the lobby search runs
+	 * every TitleSearchSeconds and GetTitleStatusLine says how many matches are open.
+	 */
+	void SetTitleMenuVisible(bool bVisible) { bTitleMenuVisible = bVisible; }
+	static constexpr double TitleSearchSeconds = 45.0;
+	/** Matches FIND GAMES would list now, from the last search (after the joinable filter); -1 = no search has answered, it failed, or its answer is old. */
+	int32 GetOpenMatches() const;
+	/** The players in those matches. */
+	int32 GetPilotsFlying() const { return PilotsFlying; }
+
 	// ---- quick play ----
 
 	/** The Quick Play of this process (lives across the world change of a join; driven by the local player controller). */
@@ -122,6 +135,19 @@ public:
 	FString GetStatsStatus() const { return StatsStatus; }
 	/** True between a successful Initialize and Deinitialize (callbacks arriving later are dropped). */
 	bool IsActive() const { return Impl != nullptr; }
+
+	/** Asks the service for the local player's lifetime stats (no-op while one runs or when not ready). */
+	void RefreshPilotRecord();
+	/** The lifetime numbers; bLoaded false until a query answered (and for good when the client may not read stats). */
+	const FHCJPilotRecord& GetPilotRecord() const { return PilotRecord; }
+	/** What this process has had accepted by the service since it started. */
+	const FHCJStatDelta& GetSessionTotals() const { return SessionTotals; }
+	/**
+	 * The record as the menus and the end-of-match board show it, without a heading: the five lifetime numbers, or,
+	 * when the service does not let the client read them, kills and wins from the local rows of the two leaderboards.
+	 * Empty when neither is known - then nothing is drawn.
+	 */
+	FString GetPilotRecordLine() const;
 
 	/** Queries both leaderboards again (no-op while loading or when not ready). */
 	void RefreshLeaderboards();
@@ -178,6 +204,29 @@ private:
 	double LastLobbyPushTime = 0.0;
 	/** -HCJNoStats: nothing is sent to the stats of the service (test runs). */
 	bool bNoStats = false;
+
+	bool bTitleMenuVisible = false;
+	/** When the last search was started / answered (FPlatformTime::Seconds). */
+	double LastSearchTime = -1000.0;
+	double LastSearchAnswerTime = -1000.0;
+	int32 OpenMatches = -1;
+	int32 PilotsFlying = 0;
+	/** The counter text that was logged last (one log line per change). */
+	FString LoggedMatchCount;
+	/** Takes the count of a finished search (Lobbies after the filter); bFailed: the search did not work. */
+	void CountOpenMatches(bool bFailed);
+
+	FHCJPilotRecord PilotRecord;
+	FHCJStatDelta SessionTotals;
+	bool bRecordLoading = false;
+	/** The service refused the stats query once: said in the log one time, not asked again in this run. */
+	bool bRecordRefused = false;
+	/** A record query is due as soon as the stat ingest (or the query) that is on its way has answered. */
+	bool bRecordWanted = false;
+	/** The search being started is the title page's timer, not somebody's request: logged only when its answer changed. */
+	bool bBackgroundSearch = false;
+	/** What the last logged search answered (result, counts, lobby ids with their player counts). */
+	FString LoggedSearch;
 
 	FHCJQuickPlay QuickPlay;
 

@@ -316,9 +316,9 @@ overcharge spread, replication round trip, facing to present, the hint); photon 
 stock and reload, damage against a facing up / down, arming and blast falloff, homing turn limit and lock, blast
 facing and the bots' rule, HUD rules incl. markers clear of panels); phasers (`HypeCubeJam.Phaser.*`: bank, falloff / beam byte / aim
 assist / design targets, weapon slots); asteroids (`HypeCubeJam.Asteroids.*`: split determinism and pieces inside the rock, replication
-round trip in any order); effects (`HypeCubeJam.Effects.*`: shockwave falloff, debris caps); music (`HypeCubeJam.Audio.MusicTracks`); online logic (config validation and the unavailable states, lobby attribute packing / parsing, join
+round trip in any order); effects (`HypeCubeJam.Effects.*`: shockwave falloff, debris caps); music (`HypeCubeJam.Audio.MusicTracks`); the computer voice (`HypeCubeJam.Audio.VoiceLimiter`: every rule of the limiter and two ten-minute worst cases; `HypeCubeJam.Audio.VoiceLinesConfig`: the twelve configured waves match the table); online logic (config validation and the unavailable states, lobby attribute packing / parsing, join
 address, stat tracker, leaderboard page, `HypeCubeJam.Online.LobbyFilter`: which lobbies are offered and in which order,
-`HypeCubeJam.Online.QuickPlay`: every path of the quick-play state machine); playthroughs (`HypeCubeJam.Playthrough.*`: a match to the frag
+`HypeCubeJam.Online.QuickPlay`: every path of the quick-play state machine, `HypeCubeJam.Online.LobbyRowExtras`: the four optional lobby attributes, a 0.18 lobby, a hostile pilot list, the counter text, `HypeCubeJam.Online.PilotRecord`: the record line and its leaderboard fallback); playthroughs (`HypeCubeJam.Playthrough.*`: a match to the frag
 limit and the next one on a new layout; three minutes of an open match - see "Playthrough tests"); ship systems (`HypeCubeJam.Systems.*`: warp state machine, warp and boost followed
 by the server, tractor pull, cloak device) and ship types (`HypeCubeJam.ShipTypes.*`: table, server validation); the intro (`HypeCubeJam.UI.IntroFlow`: every way it ends, title and fade
 timing; `HypeCubeJam.UI.IntroCommandLine`: which command lines play it); decorative rocks (`HypeCubeJam.World.SectorDecor`: determinism, keep-outs, belt beyond the kill radius, layout untouched); rock variant and visual transform envelope; ship hull/skin selection; sector sky; black hole placement
@@ -339,6 +339,7 @@ A = Hypercube + World (+ Tests), B = Ship, C = Game, D = AI. Each header `X.h` h
 | `Public/Ship/HCJWeapons.h` | B |
 | `Public/Game/HCJGameplaySettings.h` | C |
 | `Public/Audio/HCJAudioDirector.h` | C |
+| `Public/Audio/HCJVoiceLogic.h` | C |
 | `Public/World/HCJSpaceBackdrop.h` | A |
 | `Public/World/HCJSectorDecor.h` | A |
 | `Public/Assets/HCJAssetSettings.h` | shared |
@@ -602,6 +603,26 @@ D -> C `AHCJPlayerState::GetCurrentSector`.
   `UHCJAssetSettings` (`FHCJMusicTrack`: sound, gain, loop point, crossfade). Two voices per track; a track that fades
   out is paused. Falls back to the stems (`TickMusic`, set 1) when no track is configured.
 
+## Computer voice (local, cosmetic; devlog item 32)
+- `Audio/HCJVoiceLogic.h` (plain C++, tested): `EHCJVoiceLine` (twelve lines), `FHCJVoiceLimiter` - priority, cooldown
+  and group per line; spawn grace 2.5 s; one voice at a time (priority >= 90 may cut a lower line off); 5 s gap (1.5 s
+  before an urgent line); 3 lines a minute for lines that are not urgent, 5 for all. A refused request is dropped.
+- `UHCJAudioDirector::RequestVoice(Line)`: loads `UHCJAssetSettings::VoiceLines[Line - 1]`, asks the limiter (one per
+  process, file static, clocked by game time summed over worlds - like the hint director), plays on its own
+  `UAudioComponent` (not `PlaySound2D`: the interface concurrency group would steal it). Silent on a dedicated server,
+  without a live own ship (`VoiceShip`), during the intermission, with `bComputerVoice` off (`hcj.Audio.Voice`
+  overrides) or `VoiceVolume` 0. `TickVoice` fades the line being spoken out (once, `bVoiceFadingOut`) when the ship
+  dies, the intermission starts or the voice is switched off.
+- Edges, not states: `TickVoice` (before `TickLocalPlayerCues`, so that "Hull critical." holds the low-hull beep back
+  1.5 s) watches the local ship - facing collapse times, hull under `LowHealthFraction` (re-armed above half), inside
+  the no-escape radius of a black hole, `GetTractorHolder`, first ship of the run (asked once the voice is on), and
+  "Sector clear": armed by `NotifyKillEvent` for the own kill of a ship (not "a station turret") with the sector
+  of that moment; 1.5 s later it is said when the ship is still in that sector and it holds no other live ship
+  that is not cloak-hidden (the HUD's count) and no live `AHCJTurret`. The HUD asks for `TorpedoIncoming` (one per torpedo) and `EnemyBehind` (with its cue, after
+  `HCJUi::AimWarnDwellSeconds`), the controller for `MissileLock` (`ClientMissileWarning`). The HUD's two only run
+  where a HUD is drawn (not with `-nullrhi`).
+- Nothing replicated, no RPC. Same code on every platform (plain sound waves; no text-to-speech at run time).
+
 ## Online (Epic Online Services)
 - `Online/HCJEosLogic.h` (plain C++, tested): `FHCJEosConfig` (validation of `[HypeCubeJam.EOS]`), `EHCJEosState`
   and its menu text, `FHCJLobbyInfo` <-> lobby attributes (`ToAttributes` / `FromAttributes`, everything read
@@ -627,6 +648,29 @@ D -> C `AHCJPlayerState::GetCurrentSector`.
 - Lobby hygiene: `HCJEos::ClassifyLobby` / `FilterJoinableLobbies` (version, free slot, address, age of the `HCJTIME`
   attribute) decide what `GetLobbies` returns - for FIND GAMES and Quick Play alike; the host rewrites its attributes
   every `HCJEos::LobbyHeartbeatSeconds`.
+- Pilot record (devlog item 33): `UHCJEOSSubsystem::RefreshPilotRecord` (`EOS_Stats_QueryStats` for the local user:
+  at the first sign-in, when the Leaderboards page opens, `HCJMenuCmd refresh`) fills `FHCJPilotRecord`; an accepted
+  ingest is added to it (`SessionTotals` holds what this process had accepted). `GetPilotRecordLine` is what the
+  title page (a live `Text_Lambda`, collapsed while empty), the Leaderboards page and `AHCJHUD::DrawIntermission`
+  draw: the record, or - when the service refused the query (`bRecordRefused`, one log line, not asked again) -
+  `HCJEos::DescribeBoardRecord` from the local rows of the two boards, or nothing (also while not loaded and not
+  refused: asked again with the title page's search and after a sign-in). `EOS_InvalidAuth` is not a refusal. Query
+  and ingest never overlap in effect: a query waits for an ingest in flight (`bRecordWanted`), and an ingest that
+  starts or answers while a query runs makes that query's answer unused and asks again instead of adding its delta.
+- Open-matches counter: `AHCJPlayerController::UpdateOnline` tells the subsystem once a second whether the title
+  page is up (`SetTitleMenuVisible`); while it is, `Tick` starts `RefreshLobbies` every `TitleSearchSeconds` (45),
+  not while a search or Quick Play runs. `CountOpenMatches` takes `Lobbies.Num()` and the sum of their players
+  after `FilterJoinableLobbies`, so the count equals what FIND GAMES lists; `GetTitleStatusLine` (the title page only;
+  `GetStatusLine` stays the plain sign-in text for the other pages and the log) shows it through
+  `HCJEos::DescribeOpenMatches` while the answer is younger than three rounds. A search started by that timer
+  (`bBackgroundSearch`) logs its result only when it differs from the last logged one (`LoggedSearch`).
+- Richer rows: `FHCJLobbyInfo::Difficulty / FragLimit / EndsUnix / Pilots` <-> the optional attributes `HCJDIFF`,
+  `HCJFRAG`, `HCJEND`, `HCJPILOTS`. Like `HCJTIME` they are never required by `FromAttributes` (a wrong type or
+  value is "not said"), so lobbies of 0.18 hosts parse, and 0.18 clients look attributes up by name and never see
+  them. `HCJEos::JoinPilotNames` (host) and `SanitizePilots` (both sides) keep the list at 64 printable ASCII
+  characters; `AdvertisesSameAs` lets `EndsUnix` move by 5 s. `DescribeMapAndDifficulty` / `DescribeRules` are the texts.
+- Web: `HCJEOSSubsystemWeb.cpp` has the same members as stubs (`RefreshPilotRecord` does nothing, `GetOpenMatches`
+  is -1, `GetPilotRecordLine` is empty).
 - Nothing of it is replicated and no gameplay depends on it. The game connection of a joiner is the engine's IP
   net driver to an address read from the lobby; EOS P2P is not used (devlog item 27 says what was looked at).
 

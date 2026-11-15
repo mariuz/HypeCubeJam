@@ -1092,9 +1092,16 @@ void AHCJHUD::DrawIntermission(const AHCJGameState& GameState)
 	if (const UHCJEOSSubsystem* Online = UHCJEOSSubsystem::Get(this))
 	{
 		const FString Status = Online->IsReady() ? Online->GetStatsStatus() : FString();
+		float LineY = Canvas->ClipY * 0.93f;
 		if (!Status.IsEmpty())
 		{
-			DrawLabel(Status, FVector2D(CenterX, Canvas->ClipY * 0.93f), FLinearColor(0.55f, 0.65f, 0.75f, 1.0f), 1.0f, true);
+			LineY += DrawLabel(Status, FVector2D(CenterX, LineY), FLinearColor(0.55f, 0.65f, 0.75f, 1.0f), 1.0f, true) + 2.0f * UIScale;
+		}
+		// The pilot's lifetime record as the service holds it (nothing when it is not known).
+		const FString Record = Online->GetPilotRecordLine();
+		if (!Record.IsEmpty())
+		{
+			DrawLabel(FString::Printf(TEXT("Your record:  %s"), *Record), FVector2D(CenterX, LineY), FLinearColor(0.55f, 0.65f, 0.75f, 1.0f), 1.0f, true);
 		}
 	}
 }

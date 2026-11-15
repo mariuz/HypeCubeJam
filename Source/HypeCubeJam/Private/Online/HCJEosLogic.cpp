@@ -13,6 +13,11 @@ namespace
 	const TCHAR* KeySeed = TEXT("HCJSEED");
 	const TCHAR* KeyVersion = TEXT("HCJVER");
 	const TCHAR* KeyTime = TEXT("HCJTIME");
+	// Optional (0.19): a lobby without them parses, and a build that does not know them never looks for them.
+	const TCHAR* KeyDifficulty = TEXT("HCJDIFF");
+	const TCHAR* KeyFragLimit = TEXT("HCJFRAG");
+	const TCHAR* KeyEnds = TEXT("HCJEND");
+	const TCHAR* KeyPilots = TEXT("HCJPILOTS");
 	/** Stands for "no value": the service does not take empty strings. */
 	const TCHAR* NoValue = TEXT("-");
 
@@ -143,6 +148,61 @@ void FHCJLobbyInfo::Sanitize()
 	Bots = FMath::Clamp(Bots, 0, 64);
 	Dimension = FMath::Clamp(Dimension, 2, 6);
 	Version = Version.TrimStartAndEnd().Left(32);
+	Difficulty = FMath::Clamp(Difficulty, -1, 3);
+	FragLimit = FMath::Clamp(FragLimit, 0, 999);
+	EndsUnix = FMath::Max<int64>(EndsUnix, 0);
+	Pilots = HCJEos::SanitizePilots(Pilots);
+}
+
+FString HCJEos::SanitizePilots(const FString& Pilots)
+{
+	FString Result;
+	for (const TCHAR Char : Pilots.TrimStartAndEnd())
+	{
+		if (Char >= 32 && Char < 127 && Result.Len() < FHCJLobbyInfo::MaxPilotsChars)
+		{
+			Result.AppendChar(Char);
+		}
+	}
+	Result.TrimStartAndEndInline();
+	// ("-" stands for "nobody" on the wire.)
+	return Result == NoValue ? FString() : Result;
+}
+
+FString HCJEos::JoinPilotNames(const TArray<FString>& Names, int32 MaxChars)
+{
+	FString Result;
+	int32 NumListed = 0;
+	for (const FString& Raw : Names)
+	{
+		const FString Name = SanitizeDisplayName(Raw);
+		const int32 NumLeft = Names.Num() - NumListed - 1;
+		// Room is kept for ", +N" as long as names follow.
+		const int32 Reserve = NumLeft > 0 ? 5 : 0;
+		const int32 Needed = (Result.IsEmpty() ? 0 : 2) + Name.Len();
+		if (Result.Len() + Needed + Reserve > MaxChars)
+		{
+			break;
+		}
+		Result += (Result.IsEmpty() ? TEXT("") : TEXT(", ")) + Name;
+		++NumListed;
+	}
+	if (NumListed < Names.Num())
+	{
+		const FString More = FString::Printf(TEXT("+%d"), Names.Num() - NumListed);
+		Result += (Result.IsEmpty() ? TEXT("") : TEXT(", ")) + More;
+	}
+	return Result.Left(MaxChars);
+}
+
+FString HCJEos::DescribeOpenMatches(const FString& Name, int32 OpenMatches, int32 Pilots)
+{
+	if (OpenMatches <= 0)
+	{
+		return FString::Printf(TEXT("Online as %s  -  no open match right now: QUICK PLAY hosts one"), *Name);
+	}
+	return FString::Printf(TEXT("Online as %s  -  %d open match%s, %d pilot%s flying"), *Name, OpenMatches, OpenMatches == 1 ? TEXT("") : TEXT("es"),
+		Pilots, Pilots == 1 ? TEXT("") : TEXT("s"));
 }
 
 TArray<FHCJLobbyAttribute> FHCJLobbyInfo::ToAttributes() const
@@ -159,6 +219,13 @@ TArray<FHCJLobbyAttribute> FHCJLobbyInfo::ToAttributes() const
 	Result.Add(FHCJLobbyAttribute::MakeInt(KeySeed, Seed));
 	Result.Add(FHCJLobbyAttribute::MakeString(KeyVersion, Version.IsEmpty() ? FString(NoValue) : Version));
 	Result.Add(FHCJLobbyAttribute::MakeInt(KeyTime, UpdatedUnix));
+	if (Difficulty >= 0)
+	{
+		Result.Add(FHCJLobbyAttribute::MakeInt(KeyDifficulty, Difficulty));
+	}
+	Result.Add(FHCJLobbyAttribute::MakeInt(KeyFragLimit, FragLimit));
+	Result.Add(FHCJLobbyAttribute::MakeInt(KeyEnds, EndsUnix));
+	Result.Add(FHCJLobbyAttribute::MakeString(KeyPilots, Pilots.IsEmpty() ? FString(NoValue) : Pilots));
 	return Result;
 }
 
@@ -186,6 +253,14 @@ bool FHCJLobbyInfo::FromAttributes(const TArray<FHCJLobbyAttribute>& Attributes,
 	{
 		Info.UpdatedUnix = Time->IntValue;
 	}
+	// (Optional as well, and never a reason to refuse the lobby: a wrong type or an impossible value is "not said".)
+	ReadInt(Attributes, KeyDifficulty, 0, 3, Info.Difficulty);
+	ReadInt(Attributes, KeyFragLimit, 0, 999, Info.FragLimit);
+	if (const FHCJLobbyAttribute* Ends = FindAttribute(Attributes, KeyEnds); Ends != nullptr && Ends->bIsInt && Ends->IntValue > 0)
+	{
+		Info.EndsUnix = Ends->IntValue;
+	}
+	ReadString(Attributes, KeyPilots, Info.Pilots);
 	Lan.ParseIntoArray(Info.LanAddresses, TEXT(","), true);
 	// Whatever a stranger put into the attributes: only clean values get near a travel URL or the screen.
 	Info.Sanitize();
@@ -201,12 +276,77 @@ bool FHCJLobbyInfo::AdvertisesSameAs(const FHCJLobbyInfo& Other) const
 {
 	return HostName == Other.HostName && PublicAddress == Other.PublicAddress && LanAddresses == Other.LanAddresses
 		&& Port == Other.Port && Players == Other.Players && MaxPlayers == Other.MaxPlayers && Bots == Other.Bots
-		&& Dimension == Other.Dimension && Seed == Other.Seed && Version == Other.Version;
+		&& Dimension == Other.Dimension && Seed == Other.Seed && Version == Other.Version
+		&& Difficulty == Other.Difficulty && FragLimit == Other.FragLimit && Pilots == Other.Pilots
+		// (The end of the match is worked out from the time left once a second: a second or two of jitter is no news.)
+		&& (EndsUnix == 0) == (Other.EndsUnix == 0) && FMath::Abs(EndsUnix - Other.EndsUnix) <= 5;
 }
 
 FString FHCJLobbyInfo::DescribeMap() const
 {
 	return FString::Printf(TEXT("%dD - %d sectors"), Dimension, 1 << Dimension);
+}
+
+FString FHCJLobbyInfo::DescribeMapAndDifficulty() const
+{
+	// (The names of HCJBalance::GetDifficultyName; a test keeps the two in step.)
+	static const TCHAR* Names[] = { TEXT("Easy"), TEXT("Normal"), TEXT("Hard"), TEXT("Ace") };
+	return Difficulty >= 0 && Difficulty < static_cast<int32>(UE_ARRAY_COUNT(Names)) && Bots > 0 ? FString::Printf(TEXT("%s  -  %s"), *DescribeMap(), Names[Difficulty]) : DescribeMap();
+}
+
+FString FHCJLobbyInfo::DescribeRules(int64 NowUnix) const
+{
+	TArray<FString> Parts;
+	if (FragLimit > 0)
+	{
+		Parts.Add(FString::Printf(TEXT("first to %d"), FragLimit));
+	}
+	// (Two clocks: the host's and ours. Anything that is over already or longer than a day is not shown.)
+	const int64 Left = EndsUnix > 0 ? EndsUnix - NowUnix : 0;
+	if (Left > 0 && Left <= 24 * 3600)
+	{
+		Parts.Add(Left < 90 ? FString(TEXT("about a minute left")) : FString::Printf(TEXT("about %d min left"), static_cast<int32>((Left + 30) / 60)));
+	}
+	if (!Pilots.IsEmpty())
+	{
+		Parts.Add(FString::Printf(TEXT("with %s"), *Pilots));
+	}
+	return FString::Join(Parts, TEXT("  -  "));
+}
+
+void FHCJPilotRecord::Add(const FHCJStatDelta& Delta)
+{
+	Kills += Delta.Kills;
+	Deaths += Delta.Deaths;
+	Wins += Delta.Wins;
+	Turrets += Delta.Turrets;
+	Matches += Delta.Matches;
+}
+
+FString FHCJPilotRecord::Describe() const
+{
+	if (Kills == 0 && Deaths == 0 && Wins == 0 && Turrets == 0 && Matches == 0)
+	{
+		return TEXT("no matches flown yet");
+	}
+	const FString Ratio = Deaths > 0 ? FString::Printf(TEXT("%.1f"), static_cast<float>(Kills) / Deaths) : FString(TEXT("-"));
+	return FString::Printf(TEXT("%d kill%s  -  %d death%s  -  K/D %s  -  %d win%s in %d match%s  -  %d turret%s"),
+		Kills, Kills == 1 ? TEXT("") : TEXT("s"), Deaths, Deaths == 1 ? TEXT("") : TEXT("s"), *Ratio, Wins, Wins == 1 ? TEXT("") : TEXT("s"),
+		Matches, Matches == 1 ? TEXT("") : TEXT("es"), Turrets, Turrets == 1 ? TEXT("") : TEXT("s"));
+}
+
+FString HCJEos::DescribeBoardRecord(int32 Kills, int32 KillsRank, int32 Wins, int32 WinsRank)
+{
+	TArray<FString> Parts;
+	if (KillsRank > 0)
+	{
+		Parts.Add(FString::Printf(TEXT("%d kill%s (rank %d)"), Kills, Kills == 1 ? TEXT("") : TEXT("s"), KillsRank));
+	}
+	if (WinsRank > 0)
+	{
+		Parts.Add(FString::Printf(TEXT("%d win%s (rank %d)"), Wins, Wins == 1 ? TEXT("") : TEXT("s"), WinsRank));
+	}
+	return FString::Join(Parts, TEXT("  -  "));
 }
 
 EHCJLobbyFit HCJEos::ClassifyLobby(const FHCJLobbyInfo& Lobby, const FString& LocalVersion, const TArray<FString>& LocalAddresses, int64 NowUnix)

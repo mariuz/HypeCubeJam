@@ -102,11 +102,24 @@ struct HYPECUBEJAM_API FHCJLobbyInfo
 	 */
 	int64 UpdatedUnix = 0;
 
+	// ---- optional: what FIND GAMES shows beyond the columns. A lobby without them (a build before 0.19) still parses. ----
+
+	/** Bot difficulty of the match (HCJBalance: 0 Easy .. 3 Ace); -1 = not said. */
+	int32 Difficulty = -1;
+	/** Kills that win the match; 0 = no frag limit, or not said. */
+	int32 FragLimit = 0;
+	/** When the match runs out of time, seconds since 1970 UTC on the host's clock; 0 = no time limit, or not said. */
+	int64 EndsUnix = 0;
+	/** The other pilots in the match, "Ada, Linus" (whole names, at most MaxPilotsChars characters, "+2" for those that did not fit); empty = nobody else, or not said. */
+	FString Pilots;
+
 	/** Filled in from a search result only. */
 	FString LobbyId;
 	FString OwnerId;
 
 	static constexpr int32 MaxLanAddresses = 4;
+	/** No header of the SDK states a limit for a string value; the pilot list stays as short as a key may be. */
+	static constexpr int32 MaxPilotsChars = 64;
 
 	/** Clamps and trims everything into what ToAttributes may send. */
 	void Sanitize();
@@ -124,6 +137,13 @@ struct HYPECUBEJAM_API FHCJLobbyInfo
 
 	/** "4D - 16 sectors". */
 	FString DescribeMap() const;
+	/** "4D - 16 sectors  -  Hard" when the host says its bot difficulty and has bots, else DescribeMap(). */
+	FString DescribeMapAndDifficulty() const;
+	/**
+	 * The second line of a FIND GAMES row: "first to 25  -  about 7 min left  -  with Ada, Linus", each part only
+	 * when its attribute is there; empty when none is. NowUnix: seconds since 1970 UTC.
+	 */
+	FString DescribeRules(int64 NowUnix) const;
 };
 
 namespace HCJEos
@@ -140,6 +160,17 @@ namespace HCJEos
 	 *  4. the first LAN address (works only when it happens to be routable)
 	 */
 	HYPECUBEJAM_API FString PickJoinAddress(const FHCJLobbyInfo& Lobby, const TArray<FString>& LocalAddresses);
+
+	/** Whatever a stranger wrote as a pilot list: printable ASCII only, trimmed, at most FHCJLobbyInfo::MaxPilotsChars characters. */
+	HYPECUBEJAM_API FString SanitizePilots(const FString& Pilots);
+	/** "Ada, Linus, +2": as many whole names as fit into MaxChars, then how many did not. Empty for no names. */
+	HYPECUBEJAM_API FString JoinPilotNames(const TArray<FString>& Names, int32 MaxChars = FHCJLobbyInfo::MaxPilotsChars);
+	/**
+	 * The status line of the title menu once a lobby search has answered: "Online as Ada  -  2 open matches, 5 pilots
+	 * flying" or "Online as Ada  -  no open match right now: QUICK PLAY hosts one". OpenMatches is the number of
+	 * lobbies FIND GAMES would list (after FilterJoinableLobbies), Pilots the sum of their players.
+	 */
+	HYPECUBEJAM_API FString DescribeOpenMatches(const FString& Name, int32 OpenMatches, int32 Pilots);
 }
 
 /** Why a lobby of the search is or is not a game this build can join. */
@@ -294,6 +325,32 @@ struct HYPECUBEJAM_API FHCJStatDelta
 	bool IsEmpty() const { return Kills == 0 && Deaths == 0 && Wins == 0 && Turrets == 0 && Matches == 0; }
 	void Add(const FHCJStatDelta& Other);
 };
+
+/** The local player's lifetime numbers as the service holds them (the five SUM stats). */
+struct HYPECUBEJAM_API FHCJPilotRecord
+{
+	int32 Kills = 0;
+	int32 Deaths = 0;
+	int32 Wins = 0;
+	int32 Turrets = 0;
+	int32 Matches = 0;
+	/** A query has answered (also when the player has no stats yet: all zero). */
+	bool bLoaded = false;
+
+	/** What an accepted ingest added: shown at once, without a second request. */
+	void Add(const FHCJStatDelta& Delta);
+	/** "12 kills  -  7 deaths  -  K/D 1.7  -  3 wins in 5 matches  -  4 turrets"; "no matches flown yet" when all zero. */
+	FString Describe() const;
+};
+
+namespace HCJEos
+{
+	/**
+	 * The record when the service does not let the client read its stats: what the two leaderboards say about the
+	 * local player - "12 kills (rank 3)  -  2 wins (rank 5)". A rank of 0 = not on that board; empty when on neither.
+	 */
+	HYPECUBEJAM_API FString DescribeBoardRecord(int32 Kills, int32 KillsRank, int32 Wins, int32 WinsRank);
+}
 
 /** The local player's replicated score line as its own client sees it this frame. */
 struct HYPECUBEJAM_API FHCJStatSample

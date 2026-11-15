@@ -382,6 +382,8 @@ void AHCJPlayerController::UpdateOnline(float DeltaTime)
 	const FString SettingsName = SanitizeName(UHCJUserSettings::Get().PlayerName);
 	const FString PilotName = !SettingsName.IsEmpty() ? SettingsName : Me != nullptr ? Me->GetPlayerName() : FString();
 	Online->SetDisplayName(PilotName);
+	// While the title page is up the service is asked every 45 s how many matches are open (the page's status line).
+	Online->SetTitleMenuVisible(bInStartMenu && MenuWidget.IsValid() && MenuWidget->GetPage() == EHCJMenuPage::Main);
 
 	// A match is advertised by its listen host once it is past the title menu.
 	const AHCJGameMode* GameMode = World->GetAuthGameMode<AHCJGameMode>();
@@ -402,6 +404,22 @@ void AHCJPlayerController::UpdateOnline(float DeltaTime)
 		Info.Dimension = GameState->GetMatchConfig().Dimension;
 		Info.Seed = GameState->GetMatchConfig().Seed;
 		Info.Version = UHCJEOSSubsystem::GetBuildVersion();
+		// What FIND GAMES shows beyond the columns (optional attributes: a 0.18 build neither sends nor misses them).
+		Info.Difficulty = GameMode->GetBotDifficulty();
+		Info.FragLimit = GameState->GetFragLimit();
+		Info.EndsUnix = GameState->HasPhaseTimeLimit() && GameState->GetMatchPhase() != EHCJMatchPhase::Intermission
+			? FDateTime::UtcNow().ToUnixTimestamp() + FMath::RoundToInt(GameState->GetPhaseTimeRemaining()) : 0;
+		// (Not in its first seconds: until the name of a joiner's settings arrives the engine calls it by its machine name.)
+		TArray<FString> OtherPilots;
+		const float ServerNow = GameState->GetServerWorldTimeSeconds();
+		for (const APlayerState* Pilot : GameState->PlayerArray)
+		{
+			if (Pilot != nullptr && Pilot != Me && !Pilot->IsABot() && !Pilot->IsOnlyASpectator() && ServerNow - static_cast<float>(Pilot->GetStartTime()) >= 5.0f)
+			{
+				OtherPilots.Add(Pilot->GetPlayerName());
+			}
+		}
+		Info.Pilots = HCJEos::JoinPilotNames(OtherPilots);
 	}
 	Online->UpdateHosting(bHosting, Info);
 }
@@ -415,6 +433,7 @@ void AHCJPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		{
 			Online->FlushStats();
 			Online->UpdateHosting(false, FHCJLobbyInfo());
+			Online->SetTitleMenuVisible(false);
 		}
 	}
 	if (MenuWidget.IsValid() && GEngine != nullptr && GEngine->GameViewport != nullptr)
@@ -885,6 +904,10 @@ void AHCJPlayerController::ClientMissileWarning_Implementation()
 	{
 		const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
 		UHCJAssetSettings::PlaySound2D(this, Settings.LowHealthSounds, TEXT("missile warning"), Settings.UiCueVolume);
+		if (UHCJAudioDirector* Audio = UHCJAudioDirector::Get(this))
+		{
+			Audio->RequestVoice(EHCJVoiceLine::MissileLock);
+		}
 	}
 	LastMissileWarningTime = Now;
 }
@@ -1605,6 +1628,7 @@ void AHCJPlayerController::HCJMenuCmd(const FString& Action, const FString& Argu
 		{
 			Online->RefreshLobbies();
 			Online->RefreshLeaderboards();
+			Online->RefreshPilotRecord();
 		}
 	}
 	else if (Action == TEXT("joinlobby")) { MenuJoinLobby(FCString::Atoi(*Argument)); }

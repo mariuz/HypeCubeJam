@@ -127,7 +127,7 @@ Menu sizes follow the engine's DPI scaling of viewport widgets, HUD sizes `HCJUi
   CONTROLS, LEAVE TO MENU, QUIT GAME. The match is not paused (it is a network
   game). A client that leaves, loses the host or fails to connect ends up in the title menu with a line saying why.
   Every page has a line of key caps (Enter = the big button, Esc = back, F1 = controls); CONTROLS is a two-column
-  page of all keys and of what the HUD marks mean; SETTINGS also has "In-game hints On / Off".
+  page of all keys and of what the HUD marks mean; SETTINGS also has "In-game hints On / Off" and "Computer voice (spoken warnings) On / Off".
 - F1: the same controls page as an overlay in the match (and by itself for the first 8 s of the first ship when
   hints are off).
 - Hints (`UI/HCJHints.h`, `Private/UI/HCJHUDHints.cpp`; local, nothing replicated): one panel at the bottom centre,
@@ -343,7 +343,26 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
   way). The steps are `FHCJQuickPlay` in `Online/HCJEosLogic.h` (no SDK, no world; tested), kept by the subsystem so
   that they survive the world change of a join; `AHCJPlayerController::UpdateQuickPlay` feeds them every frame and
   logs each status line as `Quick play: ...`.
-- **FIND GAMES** (title menu): the list of advertised matches (host, players / maximum, bots, map), REFRESH, JOIN.
+- **Title menu, the two lines under FIND GAMES / LEADERBOARDS** (item 33). The first says who is signed in and,
+  once a search has answered, how many matches are open: "Online as Ada  -  2 open matches, 5 pilots flying" or
+  "... -  no open match right now: QUICK PLAY hosts one". While the title page is up the lobby search of FIND GAMES
+  runs every 45 s; the count is what FIND GAMES would list (after the filter below), the pilots are the players of
+  those matches. A failed search, or an answer older than 135 s, gives the plain "signed in" text; so does every
+  other page (the count is the title page's only), and a search of that timer is logged only when its answer
+  differs from the last one. The second line
+  is the pilot's lifetime record, "Your record:  12 kills  -  7 deaths  -  K/D 1.7  -  3 wins in 5 matches  -  4
+  turrets" (`EOS_Stats_QueryStats` for the local user at sign-in and when LEADERBOARDS opens; an accepted ingest is
+  added at once). The same line is a "YOUR RECORD" strip on the LEADERBOARDS page and a line on the end-of-match
+  board. Not known = not drawn (also while the query has not answered, or failed for a reason that passes: it is
+  asked again with the title page's next search and after the next sign-in). The query waits for a stat ingest that
+  is on its way, so that a match is never counted twice. If the client policy of the product refused the query
+  (`EOS_AccessDenied`, `EOS_MissingPermissions`), the log says so once (`EOS: pilot record not read (<result>): the
+  client policy ...`) and the line shows kills and wins from the local rows of the two leaderboards instead.
+- **FIND GAMES** (title menu): the list of advertised matches (host, players / maximum, bots, map and bot difficulty),
+  REFRESH, JOIN. Under the host's name, when the host says so: "first to 25  -  about 7 min left  -  with Ada, Linus"
+  (frag limit, time left, the other pilots). These come from four optional lobby attributes (`HCJDIFF`, `HCJFRAG`,
+  `HCJEND`, `HCJPILOTS` - whole names, at most 64 characters, "+3" for those that did not fit; a joiner's name is
+  listed 5 s after it joined). A 0.18 host does not send them and its row is as before; a 0.18 client ignores them.
   A listen host that is past the title menu (PLAY, `-AutoHost`, a `?listen` URL) creates one public EOS lobby in
   the bucket `HCJ_FFA`; its attributes carry the host name, the LAN addresses of the machine, an optional public
   address, the port, players, maximum, bots, hypercube dimension, seed and the network version of the build
@@ -798,6 +817,30 @@ named in the "audio" block of `[/Script/HypeCubeJam.HCJAssetSettings]` and falls
   with the tracks also a `Music` line (track, position, loops, switches, weights, gain) and one line per switch.
 - The mix has not been checked by ear.
 
+**Computer voice.** The ship computer speaks twelve short warnings to the local player: "All systems online." (once
+per run, on the first ship), "Fore / Aft / Port / Starboard shield down.", "Hull critical.", "Torpedo incoming.",
+"Missile locked on.", "Enemy behind." (the condition of the HUD's ENEMY BEHIND line, after its 0.3 s dwell), "Gravity
+well. Boost away.", "Tractor beam. Boost free." and "Sector clear." (the own kill of a ship left nobody the HUD
+counts and no live turret in the sector, and the player is still in it 1.5 s later). SETTINGS >
+"Computer voice (spoken warnings)" switches it off (`UHCJUserSettings::bComputerVoice`, on by default; console
+`hcj.Audio.Voice 0 / 1`); it follows the Interface volume, and `VoiceVolume` in the config sets its level on top.
+
+- The waves (`/Game/HCJ/Audio/Voice/VO_Computer_*`, 44.1 kHz mono, 1.0-2.2 s) were rendered with the **Flite speech
+  synthesiser (Carnegie Mellon University)**, voice cmu_us_rms, and processed (band-pass, a little ring modulation, a
+  chirp in front); `docs/tools/import_voice.py` imports them from `SourceAssets/Voice`. No text-to-speech runs in the
+  game, so the web build plays them like any other sound.
+- It must not nag (`FHCJVoiceLimiter`, `Public/Audio/HCJVoiceLogic.h`, tested): nothing in the first 2.5 s of a ship;
+  one line at a time (a line of priority 90 or more - torpedo, missile, gravity well, hull - may cut a lower one
+  off); 5 s of silence after a line (1.5 s before an urgent one); a cooldown per line (30 s; hull and enemy behind
+  60 s; sector clear 90 s; the four shield lines share one); a line that is not urgent is refused once 3 lines were
+  spoken in the last 60 s, every line once 5 were. A refused line is dropped, not queued - the beeps and HUD texts
+  that existed before still warn. Nothing is spoken on the title menu, after the own ship is destroyed or during the
+  intermission; a line that is being spoken when the ship dies, the match ends or the voice is switched off fades
+  out in 0.15 s (`Voice: the line being spoken is faded out (...)`).
+- Log: `Voice: VO_Computer_<line> (n spoken, m declined so far)` for a spoken line, `Voice: VO_Computer_<line>
+  declined, <reason> (...)` for a refused one.
+- Nobody has heard it: wording, level against the music and whether "Port shield down" is understood are unverified.
+
 ## Assets
 
 Third-party content (full list with authors and licences: `docs/ASSETS.md`):
@@ -809,6 +852,7 @@ Third-party content (full list with authors and licences: `docs/ASSETS.md`):
 | Space stations | **Space Station 4 by Gerardo Justel** (Fab, CC-BY) | `/Game/SpaceStation4`, imported from `SourceAssets/SpaceStation4` |
 | Intro video | **generated with Google Veo (Gemini)** | `Content/Movies/intro_veo.mp4` (loose file), from `SourceAssets/Veo` |
 | Music: three tracks | generated with Google Lyria (Gemini) | `/Game/Audio/Lyria`, imported from `SourceAssets/Lyria` |
+| Computer voice: twelve spoken warnings | **Voice: Flite speech synthesiser, Carnegie Mellon University** (rendered offline, BSD-style licence in `docs/NOTICES.txt`) | `/Game/HCJ/Audio/Voice`, imported from `SourceAssets/Voice` |
 | Sound effects and the alternative music stems (47 waves) | Lyra Starter Game (Epic Games, Fab) | `/Game/Audio` (copied from the launcher vault, original paths) |
 | Bolt mesh, glow material, engine and explosion sounds | Sci-Fi Modular Hover Vehicles (Fab) | `/Game/HoverVehicles` (pack copied unmodified) |
 | Muzzle flash, trails, impacts, explosion | Niagara Examples (Fab) | `/Game/NiagaraExamples` (pack copied unmodified) |
@@ -888,7 +932,7 @@ hardware.
 & "F:\EpicGames\UE_5.9\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "F:\work\HypeCubeJam\HypeCubeJam.uproject" -ExecCmds="Automation RunTests HypeCubeJam; Quit" -unattended -nullrhi -nosplash -log "-ini:EditorPerProjectUserSettings:[/Script/ModelContextProtocol.ModelContextProtocolSettings]:bAutoStartServer=False"
 ```
 
-73 automation tests (about a minute). Two of them are playthroughs (`HypeCubeJam.Playthrough.*`): a real game world
+77 automation tests (about a minute). Two of them are playthroughs (`HypeCubeJam.Playthrough.*`): a real game world
 with the game mode, the universe and bots, ticked by hand at 30 frames per game second - a match of six hard bots to
 a frag limit of 4 and the start of the next one on another layout, and three minutes of an open match of eight bots
 (kills, portal jumps, pickups, every ship type, nobody stuck or outside its sector). About 15 and 20 s of real time.

@@ -5,6 +5,7 @@
 #include "Engine/Canvas.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Audio/HCJAudioDirector.h"
 #include "Game/HCJGameState.h"
 #include "Game/HCJGameplaySettings.h"
 #include "Game/HCJPlayerController.h"
@@ -553,6 +554,10 @@ void AHCJHUD::DrawTargets(const AHCJShipCharacter& Ship)
 			// The warning tick, a fifth lower than the torpedo's and the missile's "break away": this one says "turn round".
 			UHCJAssetSettings::PlaySound2D(this, Settings.TorpedoWarningSounds.Num() > 0 ? Settings.TorpedoWarningSounds : Settings.LowHealthSounds, TEXT("enemy behind"), Settings.UiCueVolume,
 				EHCJSoundGroup::UI, HCJUi::AimWarnCuePitch);
+			if (UHCJAudioDirector* Audio = UHCJAudioDirector::Get(this))
+			{
+				Audio->RequestVoice(EHCJVoiceLine::EnemyBehind);
+			}
 			UE_LOG(LogHCJ, Log, TEXT("Threat warning: %s is behind the own ship with its nose on it, %d m out"), BehindState != nullptr ? *BehindState->GetPlayerName() : TEXT("?"), Metres);
 		}
 	}
@@ -606,6 +611,10 @@ void AHCJHUD::DrawTorpedoWarning(const AHCJShipCharacter& Ship)
 		WarnedTorpedo = Nearest;
 		const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
 		UHCJAssetSettings::PlaySound2D(this, Settings.TorpedoWarningSounds.Num() > 0 ? Settings.TorpedoWarningSounds : Settings.LowHealthSounds, TEXT("torpedo warning"), Settings.UiCueVolume);
+		if (UHCJAudioDirector* Audio = UHCJAudioDirector::Get(this))
+		{
+			Audio->RequestVoice(EHCJVoiceLine::TorpedoIncoming);
+		}
 		UE_LOG(LogHCJ, Log, TEXT("Torpedo warning: %s is homing on the own ship, %d m out"), *Nearest->GetName(), Metres);
 	}
 

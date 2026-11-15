@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Audio/HCJMusicLogic.h"
+#include "Audio/HCJVoiceLogic.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "HCJAudioDirector.generated.h"
 
@@ -26,6 +27,11 @@ class USoundClass;
  *  - Cues of the local player: hit confirm (NotifyHitConfirm, from AHCJPlayerController::ClientHitConfirm),
  *    damage taken and low hull (from the replicated health of the local ship), kill / death (NotifyKillEvent, from
  *    AHCJGameState::MulticastKillEvent), respawn, match start, match won / lost.
+ *  - The ship computer: twelve spoken warnings of the local player (UHCJAssetSettings::VoiceLines) on one voice of
+ *    its own. TickVoice asks for a line on the edge of a state (a shield facing went down, hull critical, gravity
+ *    well, tractor beam, sector emptied by the own kill, the first ship of the run); the HUD and the controller ask
+ *    for "torpedo incoming", "enemy behind" and "missile locked on" where their cues are. FHCJVoiceLimiter
+ *    (Audio/HCJVoiceLogic.h) decides whether a line is spoken; every answer is a LogHCJ "Voice:" line.
  *  - Black hole rumble: a looping sound whose volume follows the depth of the local view in a gravity well.
  *  - Every 15 s one LogHCJ "Audio" line: active sources of the audio device and sounds started per group.
  */
@@ -51,6 +57,8 @@ public:
 	void NotifyStreak(int32 Streak);
 	/** Something exciting happened to the local player: keeps the music intense for a while. */
 	void NotifyCombat() { CombatHeat = 1.0f; }
+	/** Asks the ship computer to say Line now. It may decline (FHCJVoiceLimiter); true when the line is spoken. Local and cosmetic. */
+	bool RequestVoice(EHCJVoiceLine Line);
 
 	/** Local world time of the last hit confirm (for the HUD hit marker); very negative when none. */
 	float GetLastHitConfirmTime() const { return LastHitConfirmTime; }
@@ -64,6 +72,7 @@ private:
 	void ApplyGroupVolumes();
 	void TickLocalPlayerCues(float Now, AHCJShipCharacter* LocalShip);
 	void TickMatchCues();
+	void TickVoice(float DeltaTime, AHCJShipCharacter* LocalShip);
 	void TickBlackHoleRumble(const FVector& ViewLocation);
 	void TickMusic(float Now, float DeltaTime, bool bIntermission, const AHCJShipCharacter* LocalShip, const FVector& ViewLocation);
 	void LogStatus(float Now);
@@ -106,7 +115,25 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAudioComponent> BlackHoleLoop;
 
+	/** The one voice of the ship computer (created on first use, reused for every line). */
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioComponent> VoiceComponent;
+
 	bool bClassesLoaded = false;
+
+	// ship computer: what the voice saw last frame (edges, not states, are spoken)
+	TWeakObjectPtr<AHCJShipCharacter> VoiceShip;
+	float VoiceShipTime = 0.0f;
+	float VoiceFacingCollapse[4] = {};
+	bool bVoiceHullArmed = true;
+	bool bVoiceInWell = false;
+	bool bVoiceHeld = false;
+	/** >= 0: at this time of the voice clock, look whether the local player's kill emptied the sector. */
+	float VoiceSectorCheckTime = -1.0f;
+	/** The sector the local ship was in at that kill: the line is about that sector only. */
+	int32 VoiceSectorCheckSector = -1;
+	/** The line being spoken was told to fade out (voice switched off, match over); cleared by the next line. */
+	bool bVoiceFadingOut = false;
 
 	// local player cues
 	TWeakObjectPtr<AHCJShipCharacter> LastShip;

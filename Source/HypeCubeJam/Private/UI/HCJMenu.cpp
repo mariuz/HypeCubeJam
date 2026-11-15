@@ -64,7 +64,7 @@ void SHCJMenu::SetPage(EHCJMenuPage NewPage, const FString& InNotice)
 	{
 		// Opening an online page asks for fresh data; the page is rebuilt when it arrives (Tick).
 		if (NewPage == EHCJMenuPage::Lobbies) { Online->RefreshLobbies(); }
-		if (NewPage == EHCJMenuPage::Leaderboards) { Online->RefreshLeaderboards(); }
+		if (NewPage == EHCJMenuPage::Leaderboards) { Online->RefreshLeaderboards(); Online->RefreshPilotRecord(); }
 	}
 	OnlineRevision = Online != nullptr ? Online->GetRevision() : 0;
 
@@ -499,7 +499,25 @@ TSharedRef<SWidget> SHCJMenu::BuildMain()
 		.Text_Lambda([WeakOwner]()
 		{
 			const UHCJEOSSubsystem* Online = UHCJEOSSubsystem::Get(WeakOwner.Get());
-			return FText::FromString(Online != nullptr ? Online->GetStatusLine() : FString(TEXT("Online services unavailable")));
+			return FText::FromString(Online != nullptr ? Online->GetTitleStatusLine() : FString(TEXT("Online services unavailable")));
+		})
+		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+		.ColorAndOpacity(FSlateColor(MenuDim))
+	];
+	Box->AddSlot().AutoHeight().HAlign(HAlign_Center)
+	[
+		// The pilot's lifetime record (live text as well); takes no room while it is not known.
+		SNew(STextBlock)
+		.Text_Lambda([WeakOwner]()
+		{
+			const UHCJEOSSubsystem* Online = UHCJEOSSubsystem::Get(WeakOwner.Get());
+			const FString Record = Online != nullptr ? Online->GetPilotRecordLine() : FString();
+			return FText::FromString(Record.IsEmpty() ? FString() : FString::Printf(TEXT("Your record:  %s"), *Record));
+		})
+		.Visibility_Lambda([WeakOwner]()
+		{
+			const UHCJEOSSubsystem* Online = UHCJEOSSubsystem::Get(WeakOwner.Get());
+			return Online != nullptr && !Online->GetPilotRecordLine().IsEmpty() ? EVisibility::HitTestInvisible : EVisibility::Collapsed;
 		})
 		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
 		.ColorAndOpacity(FSlateColor(MenuDim))
@@ -571,6 +589,11 @@ TSharedRef<SWidget> SHCJMenu::BuildSettings()
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
 		[
+			MakeStepper(TEXT("Computer voice (spoken warnings)"), []() { return FString(UHCJUserSettings::Get().bComputerVoice ? TEXT("On") : TEXT("Off")); },
+				[](int32 Step) { UHCJUserSettings& S = UHCJUserSettings::Get(); S.bComputerVoice = !S.bComputerVoice; })
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(Row)
+		[
 			MakeStepper(TEXT("Camera shake (explosions)"), []() { return FString(UHCJUserSettings::Get().bCameraShake ? TEXT("On") : TEXT("Off")); },
 				[](int32 Step) { UHCJUserSettings& S = UHCJUserSettings::Get(); S.bCameraShake = !S.bCameraShake; })
 		]
@@ -591,7 +614,7 @@ TSharedRef<SWidget> SHCJMenu::BuildSettings()
 		]
 		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 6.0f))
 		[
-			MakeLabel(TEXT("Saved for the next start. Volumes, hints, shake, highlight and music change at once."), 13.0f, MenuDim)
+			MakeLabel(TEXT("Saved for the next start. Volumes, hints, voice, shake, highlight and music change at once."), 13.0f, MenuDim)
 		]
 		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 2.0f))
 		[
@@ -600,6 +623,10 @@ TSharedRef<SWidget> SHCJMenu::BuildSettings()
 		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 2.0f))
 		[
 			MakeLabel(TEXT("Space Station 4 by Gerardo Justel (CC-BY). Intro video generated with Google Veo (Gemini)."), 12.0f, MenuDim)
+		]
+		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 2.0f))
+		[
+			MakeLabel(TEXT("Voice: Flite speech synthesiser, Carnegie Mellon University"), 12.0f, MenuDim)
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(FMargin(0.0f, 12.0f, 0.0f, 0.0f))
 		[
@@ -987,7 +1014,8 @@ TSharedRef<SWidget> SHCJMenu::BuildLobbies()
 
 	const float PlayersWidth = 110.0f;
 	const float BotsWidth = 70.0f;
-	const float MapWidth = 170.0f;
+	// (275: "4D - 16 sectors  -  Normal" at 16 pt needs about 250; at 230 the JOIN button cut it off.)
+	const float MapWidth = 275.0f;
 	const float JoinWidth = 120.0f;
 	const auto Cell = [this](const FString& Text, float Width, const FLinearColor& Color, float Size, bool bBold)
 	{
@@ -1023,6 +1051,7 @@ TSharedRef<SWidget> SHCJMenu::BuildLobbies()
 
 	TSharedRef<SScrollBox> List = SNew(SScrollBox);
 	const FString LocalVersion = UHCJEOSSubsystem::GetBuildVersion();
+	const int64 NowUnix = FDateTime::UtcNow().ToUnixTimestamp();
 	const TArray<FHCJLobbyInfo>& Lobbies = Online->GetLobbies();
 	for (int32 Index = 0; Index < Lobbies.Num(); ++Index)
 	{
@@ -1030,6 +1059,8 @@ TSharedRef<SWidget> SHCJMenu::BuildLobbies()
 		const bool bSameVersion = Lobby.Version == LocalVersion;
 		const bool bFull = Lobby.Players >= Lobby.MaxPlayers;
 		const FLinearColor Color = bSameVersion ? MenuText : MenuDim;
+		// Under the host's name, when the host says so (0.19 and later): frag limit, time left, who else is in.
+		const FString Rules = Lobby.DescribeRules(NowUnix);
 		TSharedRef<SWidget> Action = bSameVersion && !bFull
 			? MakeButton(TEXT("JOIN"), [WeakOwner, Index]() { if (AHCJPlayerController* C = WeakOwner.Get()) { C->MenuJoinLobby(Index); } }, false, 16.0f)
 			: MakeLabel(bFull ? TEXT("full") : TEXT("other version"), 13.0f, MenuDim);
@@ -1040,12 +1071,24 @@ TSharedRef<SWidget> SHCJMenu::BuildLobbies()
 			.BorderBackgroundColor(MenuRowFill)
 			.Padding(FMargin(8.0f, 4.0f))
 			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center) [ MakeLabel(Lobby.HostName, 16.0f, bSameVersion ? MenuAccent : MenuDim, true) ]
-				+ SHorizontalBox::Slot().AutoWidth() [ Cell(FString::Printf(TEXT("%d / %d"), Lobby.Players, Lobby.MaxPlayers), PlayersWidth, Color, 16.0f, false) ]
-				+ SHorizontalBox::Slot().AutoWidth() [ Cell(FString::FromInt(Lobby.Bots), BotsWidth, Color, 16.0f, false) ]
-				+ SHorizontalBox::Slot().AutoWidth() [ Cell(Lobby.DescribeMap(), MapWidth, Color, 16.0f, false) ]
-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center) [ SNew(SBox).WidthOverride(JoinWidth).MinDesiredHeight(34.0f).HAlign(bSameVersion && !bFull ? HAlign_Fill : HAlign_Center).VAlign(VAlign_Center) [ Action ] ]
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center) [ MakeLabel(Lobby.HostName, 16.0f, bSameVersion ? MenuAccent : MenuDim, true) ]
+					+ SHorizontalBox::Slot().AutoWidth() [ Cell(FString::Printf(TEXT("%d / %d"), Lobby.Players, Lobby.MaxPlayers), PlayersWidth, Color, 16.0f, false) ]
+					+ SHorizontalBox::Slot().AutoWidth() [ Cell(FString::FromInt(Lobby.Bots), BotsWidth, Color, 16.0f, false) ]
+					+ SHorizontalBox::Slot().AutoWidth() [ Cell(Lobby.DescribeMapAndDifficulty(), MapWidth, Color, 16.0f, false) ]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center) [ SNew(SBox).WidthOverride(JoinWidth).MinDesiredHeight(34.0f).HAlign(bSameVersion && !bFull ? HAlign_Fill : HAlign_Center).VAlign(VAlign_Center) [ Action ] ]
+				]
+				// (A line of its own across the row: a list of pilots is wider than the host column.)
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					SNew(SBox).Visibility(Rules.IsEmpty() ? EVisibility::Collapsed : EVisibility::HitTestInvisible)
+					[
+						MakeLabel(Rules, 12.0f, MenuDim)
+					]
+				]
 			]
 		];
 	}
@@ -1059,7 +1102,7 @@ TSharedRef<SWidget> SHCJMenu::BuildLobbies()
 
 	Box->AddSlot().AutoHeight()
 	[
-		SNew(SBox).MinDesiredWidth(720.0f).MinDesiredHeight(120.0f).MaxDesiredHeight(330.0f)
+		SNew(SBox).MinDesiredWidth(780.0f).MinDesiredHeight(120.0f).MaxDesiredHeight(330.0f)
 		[
 			List
 		]
@@ -1154,6 +1197,18 @@ TSharedRef<SWidget> SHCJMenu::BuildLeaderboards()
 	}
 
 	const bool bLoading = Online->GetLeaderboard(0).bLoading || Online->GetLeaderboard(1).bLoading;
+	// The local pilot's lifetime numbers above the boards (nothing while they are not known).
+	const FString Record = Online->GetPilotRecordLine();
+	TSharedRef<SWidget> RecordStrip = Record.IsEmpty() ? StaticCastSharedRef<SWidget>(SNew(SBox))
+		: StaticCastSharedRef<SWidget>(SNew(SBorder)
+			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+			.BorderBackgroundColor(MenuRowFill)
+			.Padding(FMargin(14.0f, 6.0f))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.0f, 0.0f, 14.0f, 0.0f)) [ MakeLabel(TEXT("YOUR RECORD"), 13.0f, MenuAccent, true) ]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center) [ MakeLabel(Record, 15.0f, MenuText) ]
+			]);
 	return SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 4.0f))
 		[
@@ -1162,6 +1217,10 @@ TSharedRef<SWidget> SHCJMenu::BuildLeaderboards()
 		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 14.0f))
 		[
 			MakeLabel(Online->GetStatusLine(), 14.0f, MenuDim)
+		]
+		+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 14.0f))
+		[
+			RecordStrip
 		]
 		+ SVerticalBox::Slot().AutoHeight()
 		[

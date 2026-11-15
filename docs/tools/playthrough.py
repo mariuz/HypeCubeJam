@@ -136,6 +136,7 @@ class Runner:
         self.args = args
         self.out = out_dir
         self.next_port = args.port
+        self.first_port = args.port
         self.lock = threading.Lock()
         self.packaged = args.binary == 'packaged'
         self.exe = os.path.join(ROOT, 'Packaged', 'Temp', 'Windows', 'HypeCubeJam.exe') if self.packaged \
@@ -144,8 +145,8 @@ class Runner:
     def port(self):
         with self.lock:
             self.next_port += 1
-            if self.next_port > 7850:
-                raise RuntimeError('out of ports (7790-7850)')
+            if self.next_port > self.first_port + 60:
+                raise RuntimeError('out of ports (%d-%d)' % (self.first_port, self.first_port + 60))
             return self.next_port
 
     def command(self, tag, url, seconds, extra, window=0):

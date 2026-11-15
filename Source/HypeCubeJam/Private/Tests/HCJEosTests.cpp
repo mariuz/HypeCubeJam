@@ -1,5 +1,7 @@
 #include "Tests/HCJTestHelpers.h"
 
+#include "Algo/AnyOf.h"
+#include "Game/HCJBalance.h"
 #include "Online/HCJEosLogic.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -78,6 +80,189 @@ bool FHCJEosConfigTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/** The richer FIND GAMES rows: four optional attributes that an old build neither sends nor needs, and what the row says. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHCJEosLobbyRowTest, "HypeCubeJam.Online.LobbyRowExtras", HCJEosTestFlags)
+
+bool FHCJEosLobbyRowTest::RunTest(const FString& Parameters)
+{
+	const int64 Now = 1800000000;
+	FHCJLobbyInfo Lobby = MakeLobby();
+	Lobby.Difficulty = 2;
+	Lobby.FragLimit = 25;
+	Lobby.EndsUnix = Now + 400;
+	Lobby.Pilots = TEXT("Hedy, Alan_T");
+	Lobby.Sanitize();
+	const TArray<FHCJLobbyAttribute> Attributes = Lobby.ToAttributes();
+	TestTrue(TEXT("still far below the service limit of 64 attributes"), Attributes.Num() <= 16);
+	for (const FHCJLobbyAttribute& Attribute : Attributes)
+	{
+		TestTrue(TEXT("keys are at most 64 characters"), Attribute.Key.Len() <= 64);
+		TestTrue(TEXT("string values are at most 64 characters"), Attribute.bIsInt || Attribute.StringValue.Len() <= 64);
+	}
+
+	FHCJLobbyInfo Back;
+	TestTrue(TEXT("round trip parses"), FHCJLobbyInfo::FromAttributes(Attributes, Back));
+	TestTrue(TEXT("round trip keeps every value"), Back.AdvertisesSameAs(Lobby));
+	TestEqual(TEXT("difficulty"), Back.Difficulty, 2);
+	TestEqual(TEXT("frag limit"), Back.FragLimit, 25);
+	TestEqual(TEXT("end of the match"), Back.EndsUnix, Now + 400);
+	TestEqual(TEXT("pilots"), Back.Pilots, FString(TEXT("Hedy, Alan_T")));
+	TestEqual(TEXT("map cell"), Back.DescribeMapAndDifficulty(), FString(TEXT("4D - 16 sectors  -  Hard")));
+	TestEqual(TEXT("second line"), Back.DescribeRules(Now), FString(TEXT("first to 25  -  about 7 min left  -  with Hedy, Alan_T")));
+	TestEqual(TEXT("a match that is over on our clock says no time"), Back.DescribeRules(Now + 500), FString(TEXT("first to 25  -  with Hedy, Alan_T")));
+	TestEqual(TEXT("the last minute"), Back.DescribeRules(Now + 350), FString(TEXT("first to 25  -  about a minute left  -  with Hedy, Alan_T")));
+	for (int32 Level = 0; Level < HCJBalance::NumBotDifficulties; ++Level)
+	{
+		FHCJLobbyInfo Named = Lobby;
+		Named.Difficulty = Level;
+		TestTrue(TEXT("the row uses the names of the balance table"), Named.DescribeMapAndDifficulty().EndsWith(HCJBalance::GetDifficultyName(Level)));
+	}
+	FHCJLobbyInfo NoBots = Lobby;
+	NoBots.Bots = 0;
+	TestEqual(TEXT("no bots, no difficulty"), NoBots.DescribeMapAndDifficulty(), NoBots.DescribeMap());
+
+	// What a 0.18 host advertises: none of the four. It parses, joins as before and the row says nothing extra.
+	TArray<FHCJLobbyAttribute> Old = Attributes;
+	Old.RemoveAll([](const FHCJLobbyAttribute& A) { return A.Key == TEXT("HCJDIFF") || A.Key == TEXT("HCJFRAG") || A.Key == TEXT("HCJEND") || A.Key == TEXT("HCJPILOTS"); });
+	TestEqual(TEXT("eleven attributes as in 0.18"), Old.Num(), 11);
+	TestTrue(TEXT("a 0.18 lobby parses"), FHCJLobbyInfo::FromAttributes(Old, Back));
+	TestEqual(TEXT("difficulty not said"), Back.Difficulty, -1);
+	TestTrue(TEXT("no second line"), Back.DescribeRules(Now).IsEmpty());
+	TestEqual(TEXT("plain map cell"), Back.DescribeMapAndDifficulty(), FString(TEXT("4D - 16 sectors")));
+	TestTrue(TEXT("as joinable as before"), HCJEos::ClassifyLobby(Back, Lobby.Version, { TEXT("192.168.1.77") }, Now) == EHCJLobbyFit::Joinable);
+
+	// A match without limits and without company writes "nothing" in a form the service takes.
+	FHCJLobbyInfo Plain = MakeLobby();
+	Plain.Sanitize();
+	for (const FHCJLobbyAttribute& Attribute : Plain.ToAttributes())
+	{
+		TestTrue(TEXT("no empty string values"), Attribute.bIsInt || !Attribute.StringValue.IsEmpty());
+	}
+	TestTrue(TEXT("plain lobby parses"), FHCJLobbyInfo::FromAttributes(Plain.ToAttributes(), Back));
+	TestTrue(TEXT("nobody else stays empty"), Back.Pilots.IsEmpty());
+	TestTrue(TEXT("nothing to say"), Back.DescribeRules(Now).IsEmpty());
+
+	// Wrong types and impossible values of the optional four are "not said", never a reason to drop the lobby.
+	TArray<FHCJLobbyAttribute> Wrong = Old;
+	Wrong.Add(FHCJLobbyAttribute::MakeInt(TEXT("HCJDIFF"), 9));
+	Wrong.Add(FHCJLobbyAttribute::MakeString(TEXT("HCJFRAG"), TEXT("25")));
+	Wrong.Add(FHCJLobbyAttribute::MakeInt(TEXT("HCJEND"), -5));
+	Wrong.Add(FHCJLobbyAttribute::MakeInt(TEXT("HCJPILOTS"), 3));
+	TestTrue(TEXT("a lobby with junk extras still parses"), FHCJLobbyInfo::FromAttributes(Wrong, Back));
+	TestEqual(TEXT("junk difficulty is not said"), Back.Difficulty, -1);
+	TestEqual(TEXT("junk frag limit is not said"), Back.FragLimit, 0);
+	TestEqual(TEXT("junk end is not said"), Back.EndsUnix, static_cast<int64>(0));
+	TestTrue(TEXT("junk pilots are not said"), Back.Pilots.IsEmpty());
+
+	// A hostile pilot list: 400 characters with markup, a URL option and control characters.
+	FString Hostile = TEXT("<b>?listen\t\n");
+	while (Hostile.Len() < 400)
+	{
+		Hostile += TEXT("x?Name=y /Game/Evil ");
+	}
+	Hostile.AppendChar(static_cast<TCHAR>(0x263A));
+	TArray<FHCJLobbyAttribute> WithHostile = Old;
+	WithHostile.Add(FHCJLobbyAttribute::MakeString(TEXT("HCJPILOTS"), Hostile));
+	TestTrue(TEXT("a lobby with a hostile pilot list still parses"), FHCJLobbyInfo::FromAttributes(WithHostile, Back));
+	TestTrue(TEXT("the list is cut to 64 characters"), Back.Pilots.Len() <= FHCJLobbyInfo::MaxPilotsChars);
+	for (const TCHAR Char : Back.Pilots)
+	{
+		TestTrue(TEXT("only printable ASCII is left"), Char >= 32 && Char < 127);
+	}
+	// (It is only ever drawn as plain text; it must not get near the join address.)
+	TestEqual(TEXT("the join address does not see it"), HCJEos::PickJoinAddress(Back, { TEXT("192.168.1.77") }), FString(TEXT("192.168.1.20:7777")));
+
+	// The host's side: whole names, then how many did not fit.
+	TestTrue(TEXT("no names, nothing"), HCJEos::JoinPilotNames({}).IsEmpty());
+	TestEqual(TEXT("two names"), HCJEos::JoinPilotNames({ TEXT("Ada"), TEXT("Linus") }), FString(TEXT("Ada, Linus")));
+	TArray<FString> Many;
+	for (int32 Index = 0; Index < 15; ++Index)
+	{
+		Many.Add(FString::Printf(TEXT("Pilot_Number_%02d"), Index));
+	}
+	const FString Joined = HCJEos::JoinPilotNames(Many);
+	TestTrue(TEXT("fifteen long names fit into 64 characters"), Joined.Len() <= 64);
+	TestEqual(TEXT("three whole names and the rest as a number"), Joined, FString(TEXT("Pilot_Number_00, Pilot_Number_01, Pilot_Number_02, +12")));
+	TestTrue(TEXT("one name of 32 characters fits"), HCJEos::JoinPilotNames({ FString::ChrN(32, TEXT('w')) }).Len() == 32);
+	TestTrue(TEXT("never longer than asked"), HCJEos::JoinPilotNames({ FString::ChrN(32, TEXT('w')), FString::ChrN(32, TEXT('v')), TEXT("z") }).Len() <= 64);
+
+	// The end of the match moves by a second or two between two looks: no reason to write the lobby again.
+	FHCJLobbyInfo Later = Lobby;
+	Later.EndsUnix += 3;
+	TestTrue(TEXT("3 s of jitter is the same advertisement"), Later.AdvertisesSameAs(Lobby));
+	Later.EndsUnix += 30;
+	TestFalse(TEXT("half a minute is not"), Later.AdvertisesSameAs(Lobby));
+	Later = Lobby;
+	Later.EndsUnix = 0;
+	TestFalse(TEXT("a time limit that went away is news"), Later.AdvertisesSameAs(Lobby));
+	Later = Lobby;
+	Later.Pilots = TEXT("Hedy");
+	TestFalse(TEXT("a pilot who left is news"), Later.AdvertisesSameAs(Lobby));
+
+	// The counter of the title menu.
+	TestEqual(TEXT("two matches"), HCJEos::DescribeOpenMatches(TEXT("Ada"), 2, 5), FString(TEXT("Online as Ada  -  2 open matches, 5 pilots flying")));
+	TestEqual(TEXT("one match, one pilot"), HCJEos::DescribeOpenMatches(TEXT("Ada"), 1, 1), FString(TEXT("Online as Ada  -  1 open match, 1 pilot flying")));
+	TestEqual(TEXT("none"), HCJEos::DescribeOpenMatches(TEXT("Ada"), 0, 0), FString(TEXT("Online as Ada  -  no open match right now: QUICK PLAY hosts one")));
+	// ... counts what FIND GAMES lists: other versions, full and stale lobbies are not "open".
+	TArray<FHCJLobbyInfo> Found;
+	Found.Add(Lobby);
+	Found.Add(Lobby);
+	Found.Last().Version = TEXT("00000000");
+	Found.Add(Lobby);
+	Found.Last().Players = Found.Last().MaxPlayers;
+	Found.Add(Lobby);
+	Found.Last().UpdatedUnix = Now - 2 * HCJEos::LobbyStaleSeconds;
+	Found[0].UpdatedUnix = Now;
+	HCJEos::FilterJoinableLobbies(Found, Lobby.Version, { TEXT("192.168.1.77") }, Now);
+	TestEqual(TEXT("one of four lobbies is an open match"), Found.Num(), 1);
+	return true;
+}
+
+/** The pilot record: the five lifetime numbers as a line, growing with what was sent, and the fallback from the boards. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHCJEosPilotRecordTest, "HypeCubeJam.Online.PilotRecord", HCJEosTestFlags)
+
+bool FHCJEosPilotRecordTest::RunTest(const FString& Parameters)
+{
+	FHCJPilotRecord Record;
+	TestFalse(TEXT("not loaded at first"), Record.bLoaded);
+	TestEqual(TEXT("nothing flown"), Record.Describe(), FString(TEXT("no matches flown yet")));
+
+	Record.Kills = 12;
+	Record.Deaths = 7;
+	Record.Wins = 3;
+	Record.Turrets = 4;
+	Record.Matches = 5;
+	TestEqual(TEXT("the line"), Record.Describe(), FString(TEXT("12 kills  -  7 deaths  -  K/D 1.7  -  3 wins in 5 matches  -  4 turrets")));
+
+	FHCJPilotRecord One;
+	One.Kills = 1;
+	One.Wins = 1;
+	One.Matches = 1;
+	One.Turrets = 1;
+	TestEqual(TEXT("singular forms, no deaths"), One.Describe(), FString(TEXT("1 kill  -  0 deaths  -  K/D -  -  1 win in 1 match  -  1 turret")));
+
+	FHCJPilotRecord OnlyDeaths;
+	OnlyDeaths.Deaths = 5;
+	TestEqual(TEXT("deaths alone are a record"), OnlyDeaths.Describe(), FString(TEXT("0 kills  -  5 deaths  -  K/D 0.0  -  0 wins in 0 matches  -  0 turrets")));
+
+	// An accepted ingest is added without asking the service again.
+	FHCJStatDelta Delta;
+	Delta.Kills = 8;
+	Delta.Deaths = 3;
+	Delta.Wins = 1;
+	Delta.Turrets = 2;
+	Delta.Matches = 1;
+	Record.Add(Delta);
+	TestEqual(TEXT("after a match"), Record.Describe(), FString(TEXT("20 kills  -  10 deaths  -  K/D 2.0  -  4 wins in 6 matches  -  6 turrets")));
+
+	// The service refuses the stats query: what the two leaderboards say about the local player.
+	TestEqual(TEXT("both boards"), HCJEos::DescribeBoardRecord(12, 3, 2, 5), FString(TEXT("12 kills (rank 3)  -  2 wins (rank 5)")));
+	TestEqual(TEXT("kills only"), HCJEos::DescribeBoardRecord(1, 1, 0, 0), FString(TEXT("1 kill (rank 1)")));
+	TestEqual(TEXT("wins only"), HCJEos::DescribeBoardRecord(0, 0, 1, 2), FString(TEXT("1 win (rank 2)")));
+	TestTrue(TEXT("on neither board: nothing is drawn"), HCJEos::DescribeBoardRecord(0, 0, 0, 0).IsEmpty());
+	return true;
+}
+
 /** A lobby survives packing into attributes and back; broken, foreign or hostile attribute sets are refused or cleaned. */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHCJEosLobbyAttributesTest, "HypeCubeJam.Online.LobbyAttributes", HCJEosTestFlags)
 
@@ -116,14 +301,17 @@ bool FHCJEosLobbyAttributesTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("empty public address stays empty"), Back.PublicAddress.IsEmpty());
 	TestEqual(TEXT("both LAN addresses"), Back.LanAddresses.Num(), 2);
 
-	// Every attribute is required - but the time of the last write, which builds before it existed do not send.
+	// Every attribute is required - but the time of the last write and the four of the richer rows, which builds
+	// before they existed do not send.
+	const TCHAR* OptionalKeys[] = { TEXT("HCJTIME"), TEXT("HCJDIFF"), TEXT("HCJFRAG"), TEXT("HCJEND"), TEXT("HCJPILOTS") };
 	for (int32 Index = 0; Index < Attributes.Num(); ++Index)
 	{
 		TArray<FHCJLobbyAttribute> Missing = Attributes;
 		Missing.RemoveAt(Index);
-		if (Attributes[Index].Key == TEXT("HCJTIME"))
+		const bool bOptional = Algo::AnyOf(OptionalKeys, [&](const TCHAR* Key) { return Attributes[Index].Key == Key; });
+		if (bOptional)
 		{
-			TestTrue(TEXT("accepted without HCJTIME"), FHCJLobbyInfo::FromAttributes(Missing, Back));
+			TestTrue(*FString::Printf(TEXT("accepted without %s"), *Attributes[Index].Key), FHCJLobbyInfo::FromAttributes(Missing, Back));
 			continue;
 		}
 		TestFalse(*FString::Printf(TEXT("refused without %s"), *Attributes[Index].Key), FHCJLobbyInfo::FromAttributes(Missing, Back));

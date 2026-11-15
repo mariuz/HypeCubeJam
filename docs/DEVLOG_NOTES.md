@@ -2305,8 +2305,330 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
       - Every picture taken costs a frame of 0.1 to 0.6 s in the capture runs (the "worst frame" of the `Capture`
         lines); frame times of the packaged build without pictures were not measured in this session.
 
+## 15 Nov 2026 (seventeenth session) - computer voice
+32. "Computer voice hints": the ship computer speaks twelve short warnings to the local player. Prepared outside the
+    project by two earlier agents (lines rendered, limiter and its test drafted and reviewed, hook points named); this
+    session put it into the tree, built, and ran it. No replicated property, no RPC, no lobby key changed
+    (`ProjectVersion` stays 0.2.0): a build with the voice joins a 0.18.0 host and the other way round.
+    - **Lines** (`EHCJVoiceLine`, priority / cooldown): "All systems online." (20, once per run), "Fore / Aft / Port /
+      Starboard shield down." (70, 30 s shared by the four), "Hull critical." (90, 60 s), "Torpedo incoming." (100,
+      30 s), "Missile locked on." (95, 30 s), "Enemy behind." (60, 60 s), "Gravity well. Boost away." (92, 30 s),
+      "Tractor beam. Boost free." (80, 30 s), "Sector clear." (30, 90 s).
+    - **Voice**: Flite (Carnegie Mellon University), voice cmu_us_rms, rendered offline with the library that ships
+      with the engine's TextToSpeech plugin and processed by a script (band-pass, comb, ring modulation, chirp). The
+      Windows voice (Zira) was rendered too and is not shipped: no licence term for its output was found; Flite's
+      BSD-style licence is on disk and its text is now in `docs/NOTICES.txt`. Twelve WAVs (44.1 kHz, 16-bit, mono,
+      1.04-2.16 s) in `SourceAssets/Voice`, imported by `docs/tools/import_voice.py` to
+      `/Game/HCJ/Audio/Voice/VO_Computer_*` on the interface sound class (first run: 12 imported, 0 failed, 0 errors,
+      0 warnings). Credit "Voice: Flite speech synthesiser, Carnegie Mellon University" on the SETTINGS page, in
+      `README.txt`, `NOTICES.txt`, `ASSETS.md` and the project README.
+    - **Not nagging** (`FHCJVoiceLimiter`, `Public/Audio/HCJVoiceLogic.h`, plain C++): nothing in the first 2.5 s of
+      a ship; one line at a time, a line of priority 90 or more may cut a lower one off; 5 s of silence after a line
+      (1.5 s before an urgent one); the cooldowns above; a line that is not urgent is refused once 3 lines started in
+      the last 60 s, every line once 5 did. A refused request is dropped, never queued. One limiter per process (file
+      static in `HCJAudioDirector.cpp`, like the hint director), clocked by game time.
+    - **Wiring**: `UHCJAudioDirector::RequestVoice` (own `UAudioComponent`, not the shared interface one-shots, whose
+      concurrency group would steal it) and `TickVoice`, called before `TickLocalPlayerCues` so that "Hull critical."
+      holds the low-hull beep back 1.5 s. `TickVoice` speaks edges of the local ship's state: a facing's collapse time
+      moved, hull under the low-hull mark (armed again above half), inside the no-escape radius of a black hole,
+      held by a tractor beam, 1.5 s after the own kill nobody else in the sector, the first ship of the run. Three
+      requests sit next to existing cues: the HUD's torpedo warning (one per torpedo), the HUD's ENEMY BEHIND cue
+      (item 31's condition: the nose on the own ship for 0.3 s, at most every 4 s), the controller's missile warning.
+      Silent on the title menu (no ship), after the own ship is destroyed (a line being spoken fades out in 0.15 s),
+      during the intermission, on a dedicated server.
+    - **Settings**: SETTINGS > "Computer voice (spoken warnings)" On / Off (`UHCJUserSettings::bComputerVoice`, on by
+      default, saved like the other rows); `hcj.Audio.Voice 0 / 1` overrides it; `VoiceVolume=1.0` and twelve
+      `+VoiceLines=` in `DefaultGame.ini`. The voice follows the Interface volume.
+    - **Deviations from the brief**: (1) a refused request is logged too - `Voice: VO_Computer_X declined, <reason>
+      (n spoken, m declined so far)` - for which the limiter remembers why it said no (`EHCJVoiceRefusal`); nothing
+      is logged while the voice is switched off. (2) A second test, `HypeCubeJam.Audio.VoiceLinesConfig`: the twelve
+      configured paths are the table's names in its order, under `/Game/HCJ/Audio/Voice`, and load as waves of 0.8 to
+      2.5 s. (3) `docs/tools/voice_stats.py` (counts from logs). (4) `lines.json` was copied from `prep\voice\`, not
+      from `final_flite\` (it is not in that folder). Limiter rules, table, hook points and file places as in the
+      brief.
+    - **Web (Wasm)**: nothing is compiled out and nothing is platform-specific - the lines are ordinary sound waves
+      under `/Game/HCJ` (always cooked), played by the audio mixer like the music and the cues; no text-to-speech
+      runs in the game. Checked by compiling: the game target `HypeCubeJam Wasm Shipping`
+      (`Build.bat`, Emscripten from `F:\work\tools\emsdk`) compiled the changed files and linked
+      `Binaries\Wasm\HypeCubeJam-Wasm-Shipping.js` / `.wasm` - "Result: Succeeded", exit code 0. It was not cooked,
+      packaged or run in a browser in this session.
+    - **Verification.** `HypeCubeJamEditor` (Win64 Development) built, 0 errors, 0 warnings. **75 of 75** automation
+      tests, exit code 0 (73 + `HypeCubeJam.Audio.VoiceLimiter` + `HypeCubeJam.Audio.VoiceLinesConfig`). Playthrough
+      suite, editor binary, headless: **8 of 8**, 519 s, exit code 0 (`Saved\Playthrough\20261115_173339`):
+
+      | scenario | result | checks | what it saw |
+      |---|---|---|---|
+      | `match_cycle` | pass | 21 | match 1 won with 5 kills after 75 s; layouts 7C0CB60C -> 5671F10D |
+      | `difficulty_easy` | pass | 30 | 60 kills, 46 portal / 2 wormhole jumps, 58 pickups |
+      | `difficulty_normal` | pass | 30 | 73 kills, 58 / 12 jumps, 60 pickups |
+      | `difficulty_hard` | pass | 31 | 64 kills, 73 / 13 jumps, 73 pickups |
+      | `small_universe` | pass | 14 | 91 kills on four sectors; 67 turret shots, 1 turret destroyed, 1 rock |
+      | `net_host_client_late` | pass | 49 | client 1 kill / 4 deaths, 14.4 corrections per 100 s; late joiner 0 / 2, 0.9; 5 rocks destroyed |
+      | `autopilot_hangar_match` | pass | 17 | cruiser chosen, PLAY, three matches; the player 4 kills / 1 death |
+      | `all_matches_together` | pass | 20 | kills: phaser 137, torpedo 78, missiles 56, pulse 46, scatter 39, blaster 35, rail 33 |
+
+      (14.4 corrections per 100 s on the client is above item 31's 5.6; the scenario's limit was met. Not looked
+      into: the voice adds no movement code and nothing to the network.)
+    - **Measured in a match** (`docs/tools/voice_stats.py`). Editor binary, rendered in a 1280x720 window (the HUD's
+      two requests need a HUD), listen host, the aiming autopilot against seven bots on Easy with the fairness rules,
+      seed 99, no limits, 320 s, `-HCJNoEOS -HCJNoStats`, port 7910, 92-98 fps (`Saved\Voice\easy_rendered_1.log`):
+      **17 lines spoken in 317 s = 3.2 a minute, at most 5 inside any 60 s; 30 requests declined** (cooldown 15, "3
+      lines in the last minute" 7, another line being spoken 7, silence after a line 1). Spoken: missile lock 5,
+      torpedo 3, fore shield 2, hull critical 2, tractor beam 2, starboard shield 1, sector clear 1, welcome 1; one of
+      the torpedo lines cut "Missile locked on." off. Declined most: fore shield 10, missile lock 10. The pilot had
+      6 kills and 5 deaths. 0 error lines.
+      - The same autopilot headless in the suite (`autopilot.log`, no HUD, so no torpedo / enemy-behind requests):
+        9 spoken in 226 s = 2.4 a minute, at most 4 in 60 s, 14 declined. The network client of the suite: 8 spoken
+        in 195 s, 17 declined - the voice runs on a client as on a host.
+      - "Enemy behind." was asked for twice in the Easy match and declined both times (a line was being spoken; 3
+        in the last minute): the aiming autopilot turns towards whoever attacks it. A scripted run (`peace`, `scene
+        5,dark`, `enemybehind 2500`, 45 s, port 7911): `Voice: VO_Computer_EnemyBehind (2 spoken ...)` in the same
+        frame as the `Threat warning:` line, then seven requests 4 s apart, each `declined, cooldown of the line`.
+      - "Gravity well. Boost away.": `-HCJHoleTest=0.3` (port 7912): spoken 0.5 s after the ship was put 1800 uu
+        from the hole, just before it crossed the horizon.
+      - Never spoken in any run: "Aft shield down." and "Port shield down." (both were requested and declined on
+        the network client). They go through the same code as the fore and starboard lines.
+    - Weak, or not done.
+      - **Nobody has heard the voice**: whether the words are understood ("Port shield down" was the weak one in the
+        speech-recogniser check of the preparation), the level against music and effects (`VoiceVolume`), whether
+        the chirp in front is pleasant, whether the line that is cut off sounds wrong - all unknown. That a wave
+        reached the audio device is not in the log either: the log says the limiter said yes and `Play` was called.
+      - The SETTINGS row and the credit line were not looked at in a picture and the row was not clicked; switching
+        the voice off was run only in the unit test (`bEnabled` false), not through the menu or the console variable.
+      - 3.2 lines a minute is the aiming autopilot on Easy; a person who is hit from all sides, or Normal / Hard,
+        was not measured. The cap of 5 in 60 s holds by the unit test (two ten-minute worst cases).
+      - An urgent line can be refused by the 1.5 s of silence after any line: in one run "Torpedo incoming." was
+        declined 1.7 s after "Fore shield down." had started. The torpedo's beep and HUD line still came.
+      - "Enemy behind." shares item 31's weakness: it also fires for a bot that aims at somebody else on the same line.
+      - Not packaged in this session (Windows or web); the voice in a browser was not run.
+
+## 15 Nov 2026 (eighteenth session) - Epic Online Services extras that need no portal work
+33. "Brief B" of the preparation (`result_2.md`): three additions to the online part that use what the Developer
+    Portal already has. Nothing replicated, no RPC, no change to the eleven lobby attributes of 0.18
+    (`ProjectVersion` stays 0.2.0, network version FFB5210D as before).
+    - **Pilot record.** `UHCJEOSSubsystem::RefreshPilotRecord`: `EOS_Stats_QueryStats` for the local user's five SUM
+      stats, at the first sign-in, when LEADERBOARDS opens and on its REFRESH. Shown as "Your record:  3 kills  -  57
+      deaths  -  K/D 0.1  -  1 win in 6 matches  -  0 turrets" in three places: a second live line under the status
+      line of the title menu, a "YOUR RECORD" strip above the two boards, a line under the stats line of the
+      end-of-match board. An accepted ingest is added at once. Not known = nothing drawn.
+      - **Was the query permitted? Yes.** Live service, this PC, `-HCJEosBucket=HCJ_TEST_1 -HCJNoStats`, every one of
+        the seven processes of the new build that signed in, verbatim: `EOS: pilot record: 3 kills  -  57 deaths  -  K/D 0.1
+        -  1 win in 6 matches  -  0 turrets  (EOS_Success, 4 of 5 stats held by the service: kills 3, deaths 57, wins
+        1, turrets 0, matches 6)`. So the client policy allows a player to read its own stats, and `HCJ_KILLS`,
+        `HCJ_DEATHS`, `HCJ_WINS`, `HCJ_MATCHES` exist under those names. `HCJ_TURRETS` came back "not found": this user
+        never destroyed a turret in a reporting run, so that name is still unproven. The numbers agree with the
+        boards (3 kills, 1 win on both).
+      - The run without `-HCJNoStats` that the brief allowed was not needed and not made: the switch stops the
+        ingest only, the query runs with it. Nothing was written to the live stats in this session (every process
+        logged `EOS: stats not sent (-HCJNoStats): ...`; no `sending stats` line in any log).
+      - If the policy refuses (`EOS_AccessDenied`, `EOS_MissingPermissions`, `EOS_InvalidAuth`): one line, `EOS: pilot
+        record not read (<result>): the client policy of this product does not allow reading stats; the menus show
+        kills and wins from the leaderboards instead, and the query is not tried again in this run`, and the three
+        places show "12 kills (rank 3)  -  2 wins (rank 5)" from the local rows of the two boards
+        (`HCJEos::DescribeBoardRecord`), or nothing when the player is on neither. Any other failure keeps what was
+        shown and is asked again at the next occasion. **This path never ran** (the query was permitted); its text
+        is unit-tested, the branch is not.
+    - **Open-matches counter.** While the title page is up the search of FIND GAMES runs every 45 s
+      (`SetTitleMenuVisible` from the controller once a second; not while a search or Quick Play runs). The status
+      line becomes "Online as User  -  1 open match, 2 pilots flying" or "... -  no open match right now: QUICK PLAY
+      hosts one". Deviation taken from the review: counted after `FilterJoinableLobbies`, so the number is what FIND
+      GAMES lists. A failed search or an answer older than 135 s gives the old "signed in" text.
+    - **Richer FIND GAMES rows.** Four optional lobby attributes: `HCJDIFF` (0-3, sent when the host knows it),
+      `HCJFRAG`, `HCJEND` (unix seconds of the end of the match on the host's clock, 0 = no limit or intermission),
+      `HCJPILOTS` (the other humans; whole names, at most 64 printable ASCII characters, "+N" for those that did not
+      fit, "-" for nobody). The MAP cell reads "4D - 16 sectors  -  Hard" (only with bots), and a dim line under the
+      row "first to 25  -  about 9 min left  -  with User-2". `FromAttributes` never requires them and treats a wrong
+      type or value as "not said". 15 attributes now (limit 64).
+      - Problem: the first layout put that line into the host column; "with User-2" ran into the PLAYERS column.
+        It is a line of its own across the row now (picture 172 is the second build).
+      - Problem: for its first two seconds a joiner is called by its machine name (the engine's default until the
+        name of its settings arrives), and the host advertised that for one update (`... with DESKTOP-...`, then
+        `with User-2`). A pilot is listed 5 s after it joined now; the second run shows `2/16 players` first and
+        `with User-2` 4 s later.
+    - **Old builds.** Run against the 0.18.0 package of item 31 (`Packaged\Temp\Windows`, Development, same switches):
+      (1) new host, old client with `-HCJQuickPlay`: `lobby search: EOS_Success, 1 listed`, `lobby listed: 'User' 1/16
+      players, 5 bots, 4D - 16 sectors, seed 1234, port 7931, version FFB5210D`, `Welcomed by server`, `Quick play:
+      joined the match of 'User' at 127.0.0.1:7931`; the host: `2/16 players ... with User-2`. (2) old host, new
+      client: `lobby listed: 'User' 1/16 players, 2 bots, 4D - 16 sectors, seed 5, port 7932, version FFB5210D,
+      rules: not said`, `open matches: ... 1 open match, 1 pilot flying`, joined, 46 s until the host quit.
+    - **Live test, one PC** (editor binary with `-game`; host and joiner `-nullrhi`, the browsing instance in a
+      1280x720 window with the capture switch; all `-HCJEosBucket=HCJ_TEST_1 -HCJNoStats`; ports 7911-7934; both
+      instances with EOS are the same product user; logs in `Saved\BriefB`):
+      - Host (`?FragLimit=25?TimeLimit=600?Bots=6?Difficulty=2`): `EOS: lobby advertised: 'User' 1/16 players, 5 bots,
+        4D - 16 sectors  -  Hard, port 7911, 3 LAN address(es), public address not set, rules: first to 25  -  about
+        10 min left`. No `lobby attribute ... refused`, `lobby update failed` or `Search failed` line in any of the
+        eleven logs of these runs: the service takes the four attributes.
+      - Browser on the title page, 6 s after its start: `lobby search: EOS_Success, 1 listed`, `open matches: Online
+        as User  -  1 open match, 2 pilots flying` (a second instance had joined the host by address); 75 s later,
+        after that one had left, `1 open match, 1 pilot flying`; the host quit at 16:17:51 UTC and the browser's next
+        search, 45 s after its last, logged `0 listed` and `no open match right now: QUICK PLAY hosts one`. Searches
+        on the title page were 45 s apart (16:16:17, 16:17:03, 16:17:48, 16:18:36, 16:19:21).
+      - End of a match (`HCJMenuCmd endmatch`, rendered host): the board shows "Stats not sent (switched off for this
+        run)" and under it the record line.
+    - Pictures (editor binary, 1280x720, capture switch, live service, test bucket):
+      `Media/171_title_menu_open_matches_and_pilot_record.png`, `172_find_games_richer_row.png`,
+      `173_leaderboards_your_record.png`, `174_title_menu_no_open_match.png`,
+      `175_end_of_match_board_your_record.png`. 171, 173 and 174 are from the first build of the session (the two
+      fixes above touch neither page).
+    - `-HCJEosDemo` rows carry the new fields (the first row is a 0.18 host without them) and a made-up record.
+    - **Web**: `HCJEOSSubsystemWeb.cpp` got the stubs (`RefreshPilotRecord`, `CountOpenMatches` empty,
+      `GetOpenMatches` -1, `GetPilotRecordLine` empty). The Wasm target was NOT built in this session.
+    - **Verification.** `HypeCubeJamEditor` (Win64 Development) built, 0 errors, 0 compiler warnings. **77 of 77**
+      automation tests, exit code 0 (75 + `HypeCubeJam.Online.LobbyRowExtras` - round trip of the four, each one
+      missing, a 0.18 lobby, junk types, a hostile 400-character `HCJPILOTS`, the pilot list of fifteen names, the
+      5 s tolerance, the counter texts and that only joinable lobbies count - and `HypeCubeJam.Online.PilotRecord`).
+      Playthrough suite, editor binary, headless, default ports 7791 upwards:
+      **8 of 8**, 516 s, exit code 0 (`Saved\Playthrough\20261115_182902`, the final build):
+
+      | scenario | result | checks | what it saw |
+      |---|---|---|---|
+      | `match_cycle` | pass | 21 | match 1 won with 5 kills after 71 s; layouts 7C0CB60C -> 5671F10D |
+      | `difficulty_easy` | pass | 29 | 59 kills, 53 portal / 7 wormhole jumps, 59 pickups |
+      | `difficulty_normal` | pass | 30 | 75 kills, 57 / 11 jumps, 71 pickups |
+      | `difficulty_hard` | pass | 31 | 63 kills, 68 / 11 jumps, 60 pickups |
+      | `small_universe` | pass | 14 | 88 kills on four sectors; 83 turret shots, 0 turrets destroyed, 2 rocks |
+      | `net_host_client_late` | pass | 49 | client 2 kills / 2 deaths, 11.1 corrections per 100 s; late joiner 2 / 4, 8.2; 5 rocks destroyed |
+      | `autopilot_hangar_match` | pass | 17 | cruiser, PLAY, three matches; the player 4 kills / 3 deaths |
+      | `all_matches_together` | pass | 20 | kills: phaser 146, torpedo 77, missiles 52, scatter 48, blaster 43, pulse 35, rail 32 |
+
+      (The suite runs with `-HCJNoEOS`: it says that nothing else broke, not that the online part works.)
+      The client secret is in none of the logs of this session (string compare in a script, value not printed).
+    - Weak, or not done.
+      - Not packaged (as told); the Wasm target not built; nothing was clicked - pages were opened with `HCJMenuCmd`.
+      - Two different EOS users were not tested (one PC = one product user): "pilots flying" and "with ..." were
+        seen with a second local instance only.
+      - The "policy refuses" fallback never ran. `HCJ_TURRETS` was not read back (no value on the service).
+      - The record grows by an accepted ingest only by code and by its unit test: no stats were sent, so the line
+        was never seen to change.
+      - "about N min left" compares the host's clock with the viewer's; a host whose clock is minutes off shows a
+        wrong time (anything over or beyond a day is not shown). The row text is as old as the page (REFRESH).
+      - The counter line on the LEADERBOARDS page repeats the title page's last count (up to 135 s old).
+      - A title page left open asks the service every 45 s for as long as it is up.
+
+## 15 Nov 2026 (nineteenth session) - review of the voice and the online extras, fixes, packaged
+34. Items 32 and 33 were read by three reviewers (voice, online, regression): no blocker, no major, eleven minor
+    findings (two of them twice). This session judged each against the code, fixed all of them, found one more in a
+    picture, built, tested and packaged. No replicated property, no RPC, no lobby key changed (`ProjectVersion` stays
+    0.2.0, network version FFB5210D): the build joins 0.18.0 hosts and the other way round as in item 33.
+    - **Findings and what was done** (all real by reading; none was reproduced before its fix).
+      - *"Sector clear." after shooting a turret, or with turrets still firing* (minor): the check is armed only by
+        the kill of a ship (the victim "a station turret" is skipped), and a live `AHCJTurret` in the sector counts
+        as company.
+      - *"Sector clear." withheld by a cloaked ship* (minor: the voice gave the cloaker away): a cloak-hidden ship
+        does not count, as in the HUD's "enemies in sector".
+      - *"Sector clear." about a sector the fight was not in* (minor): the sector of the own ship at the kill is
+        remembered; the line is said only when the ship is still in it 1.5 s later.
+      - *A line being spoken finished after the voice was switched off, or over the end-of-match board* (minor):
+        `TickVoice` fades it out in 0.15 s, once, with a log line `Voice: the line being spoken is faded out (the
+        voice was switched off | the match is over)`.
+      - *"Missile locked on." over the death camera* (minor): `RequestVoice` refuses without a live own ship.
+      - *"All systems online." lost for the run when its request was refused by the switch or the intermission*
+        (minor): it is asked once the voice is on and a match runs.
+      - *Pilot record counted a match twice, or stepped back, when a stats query and an ingest overlapped* (minor):
+        a query waits for an ingest in flight; an ingest that starts or answers while a query runs makes that
+        answer unused and asks again instead of adding its numbers.
+      - *`EOS_InvalidAuth` treated as "the client policy forbids reading stats" for the rest of the run* (minor):
+        only `EOS_AccessDenied` and `EOS_MissingPermissions` are refusals; anything else is asked again with the
+        title page's next search and after the next sign-in.
+      - *The open-matches text on every page and in the Quick Play log line* (minor): `GetTitleStatusLine` is the
+        title page's; `GetStatusLine` is the plain sign-in text again (picture 184: the LEADERBOARDS header).
+      - *The 45 s search of the title page logged every time* (minor): a search started by that timer logs its
+        result only when it differs from the last logged one (result, counts, lobby ids and their players).
+      - *The record line fell back to the leaderboard rows whenever the query had not answered* (minor, reported
+        twice): only after a refusal; otherwise nothing is drawn until the query answers.
+      - Found in a picture of the packaged build (not by a reviewer): the MAP cell of FIND GAMES cut "Normal" off
+        behind the JOIN button ("4D - 16 sectors  -  Norma"). The column is 275 wide instead of 230 (picture 183).
+      - `HCJEosLogic.cpp`: the signed / unsigned comparison a reviewer named for the Wasm compiler has a cast.
+      - `docs/tools/playthrough.py`: the port limit was the fixed number 7850, so `--port` above 7790 ran out of
+        ports; it is the first port + 60 now.
+    - **Verification.** `HypeCubeJamEditor` (Win64 Development) built, 0 errors, 0 warnings. **77 of 77** automation
+      tests, exit code 0, twice (the second time on the final sources).
+      - Playthrough suite, editor binary, headless, `--port 7910`: first run **6 of 8**, exit code 1 - the two
+        failures verbatim: `net_host_client_late     FAIL        1       0  the scenario raised RuntimeError: out of
+        ports (7790-7850)` and the same line for `autopilot_hangar_match` (the runner's fixed port limit, see
+        above; neither scenario started a process). After the fix of the runner the two alone: **2 of 2**, 273 s,
+        exit code 0 (`Saved\Playthrough\20261115_185130` and `..._185940`). These ran before the MAP column was
+        widened (one constant of the menu); the editor suite was not run again after it.
+
+        | scenario | result | checks | what it saw |
+        |---|---|---|---|
+        | `match_cycle` | pass | 21 | match 1 won with 5 kills after 32 s; layouts 7C0CB60C -> 5671F10D |
+        | `difficulty_easy` | pass | 29 | 50 kills, 46 portal / 12 wormhole jumps, 56 pickups |
+        | `difficulty_normal` | pass | 31 | 74 kills, 50 / 8 jumps, 61 pickups |
+        | `difficulty_hard` | pass | 30 | 58 kills, 62 / 17 jumps, 66 pickups |
+        | `small_universe` | pass | 14 | 88 kills on four sectors; 190 turret shots, 2 turrets destroyed, 1 rock |
+        | `net_host_client_late` (second run) | pass | 49 | client 1 kill / 3 deaths, 5.0 corrections per 100 s; late joiner 2 / 0, 0.9; 5 rocks destroyed |
+        | `autopilot_hangar_match` (second run) | pass | 17 | cruiser, PLAY, three matches; the player 5 kills / 2 deaths |
+        | `all_matches_together` | pass | 20 | kills: phaser 113, torpedo 59, rail 40, pulse 37, blaster 34, missiles 23, scatter 14 (six scenarios) |
+
+      - The same suite on the final packaged build (`--binary packaged --port 7920`, headless, after the zip was
+        made): **8 of 8**, 492 s, exit code 0 (`Saved\Playthrough\20261115_192932`) - 49 / 54 / 72 kills on easy /
+        normal / hard, 92 on four sectors, client 0 kills / 3 deaths with 15.6 corrections per 100 s and late joiner
+        2 / 3 with 9.1 in the network scenario (the Wasm link ran beside it), the autopilot player 3 kills / 2
+        deaths over three matches; layouts 3976D716 -> C9934379, the packaged build's as in item 31. The voice in
+        those logs: host 11 spoken / 32 declined, client 8 / 28, late joiner 3 / 14, autopilot 7 / 27.
+      - **Wasm**: the game target `HypeCubeJam Wasm Shipping` (`Build.bat`, Emscripten from `F:\work\tools\emsdk`)
+        compiled the sources of items 32 to 34 and linked: "Result: Succeeded", exit code 0, one linker warning
+        (`-pthread + ALLOW_MEMORY_GROWTH may run non-wasm code slowly`, as before). This rewrote
+        `Binaries\Wasm\HypeCubeJam-Wasm-Shipping.*`. Not cooked, not packaged, not run in a browser; `PackagedWeb`
+        untouched.
+    - **Packaged** (the command of the README, twice - the second after the MAP column; 2 min 58 s and 1 min 30 s):
+      1095 packages in the cook (1066 cooked, 29 skipped for the platform; 1083 in item 31 - the twelve voice waves
+      are new: all twelve `/game/hcj/audio/voice/vo_computer_*` are in the cook's `ReferencedSet.txt`), 0 errors, 0
+      warnings. `docs\tools\make_zip.ps1`: `Packaged\mariuz_HypeCubeJam.zip` 585.2 MB (613,600,520 bytes), 884.2 MB
+      unpacked, 48 files; `python -I` / `zipfile.testzip()`: nothing wrong, 48 entries, forward slashes, no `.pdb`.
+    - **The packaged build run** from a copy extracted to `F:\work\HCJ_final_19` (not in the project), 1280x720,
+      `-HCJNoIntro`, ports 7911 to 7916 and 7985 / 7986.
+      - Easy match (`-HCJNoEOS -HCJNoStats`, title menu, SETTINGS, PLAY by `HCJMenuCmd`, the aiming autopilot, 215
+        s; the first of the two packages, whose voice code is the final one): `Fair: event=rules ... level=easy`;
+        **10 lines spoken and 14 declined in 198 s = 3.0 a minute, at most 5 in any 60 s** (`voice_stats.py`).
+        Spoken: welcome, enemy behind, fore shield 2, torpedo, missile lock, sector clear, gravity well, hull
+        critical, tractor beam. Declined: cooldown of the line 8, silence after a line 4, "3 lines in the last
+        minute" 2. A spoken line is only logged when its wave loaded, so the twelve waves load from the pak. 48 to
+        61 fps averages over 4 s with a picture in each and "video memory 275 to 371 MB over budget" in most
+        intervals (item 31: 64 to 88 fps; other programs were open on this PC). One error line (the known
+        CelestialVault message).
+      - Voice switched off while a line is spoken (final package, `hcj.Audio.Voice 0` by a capture command 0.6 s
+        after `Voice: VO_Computer_Welcome`): `Voice: the line being spoken is faded out (the voice was switched
+        off)` once, no `Voice:` line until `hcj.Audio.Voice 1` 4.5 s later, lines again after it.
+      - Menu pictures with `-HCJEosDemo` (made-up rows, `EOS: -HCJEosDemo: ... no service contacted`).
+      - Live service, test bucket (`-HCJEosBucket=HCJ_TEST_1 -HCJNoStats`, four rendered runs of the title page, three with a
+        second headless instance hosting, and one headless pair): every process signed in and logged `EOS: pilot record: 3 kills  -  57
+        deaths  -  K/D 0.1  -  1 win in 6 matches  -  0 turrets  (EOS_Success, 4 of 5 stats ...)`; `open matches:
+        ... no open match right now: QUICK PLAY hosts one`, then `1 open match, 1 pilot flying` 45 s after the
+        search before it, `1 open match, 2 pilots flying` after the join; `Quick play: started (Online: signed in
+        to Epic Online Services as User)` (the plain text again). `stats not sent (-HCJNoStats)` in every one; the
+        lobbies of the test bucket were removed at exit. The client secret is in none of the logs (count of the
+        key name per log: 0).
+      - **Somebody was using this PC during these runs**: the game window takes the keyboard and the mouse when
+        it opens. In all four rendered live runs a match was started that no command asked for (QUICK PLAY five
+        times in three runs, PLAY once in the run whose window was asked to open off the screen - the Enter key), in
+        one FIND GAMES was opened, and a picture 36 s into one run shows the HANGAR page with a button under the mouse. `MenuQuickPlay`
+        has three callers (the button, `HCJMenuCmd quickplay`, `-HCJQuickPlay`), none of them a timer. So no run
+        sat on the title page long enough for two equal searches in a row: **that a repeated search of the timer
+        is not logged was not seen in a run.**
+    - Pictures (**packaged build**, 1280x720, the capture switch; 176-180 not used):
+      `Media/181_packaged_settings_computer_voice_row.png` (the row, the credit line),
+      `182_packaged_title_menu_open_matches_and_record_demo_rows.png`, `183_packaged_find_games_rows_demo_rows.png`
+      (difficulty in the MAP cell, the line under the row; a 0.18 host's row below it),
+      `184_packaged_leaderboards_demo_rows.png` (plain sign-in header, YOUR RECORD strip). 182 to 184 are made-up
+      rows; the title page with the live counter was not caught in a picture.
+    - Weak, or not done.
+      - **Nobody has heard the voice.** Nothing about wording, level, the chirp, a cut-off or a faded line is known
+        by ear; the log says the limiter said yes and `Play` was called.
+      - Run after their fix: the voice-off fade only. By reading only: the fade at the intermission, the refusal
+        without a live ship, the three changes of "Sector clear." (it was spoken once in the Easy match; no turret,
+        cloak or portal case was staged), the query / ingest order (no stats were sent), `EOS_InvalidAuth`, the
+        record line while the query has not answered, the quiet timer search.
+      - The SETTINGS row was seen, not clicked; the title page's live counter and the LEADERBOARDS page with the
+        live record were not looked at in a picture of this build (171-175 are item 33's editor pictures).
+      - Two different EOS users, the refused-query fallback and `HCJ_TURRETS` are as open as in item 33.
+      - The web build was compiled and linked only. The published web build is still 0.18.0 without the voice.
+      - The frame rate of the packaged match was a quarter below item 31's on a PC that was in use; not measured
+        again on a quiet machine.
+
 ## Measurements
-- Automation tests: 9 at the start, 73 now (item 31: 73 of 73 on the final sources), all passing (added: the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
+- Automation tests: 9 at the start, 77 now (items 33 and 34: 77 of 77), all passing (added: the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station
   placement, lead aim).
 - Frame rate (editor binary, -game, 8 s averages): 101-128 fps with basic shapes (`-HCJNoAssets`), 98-129 fps
@@ -2317,6 +2639,19 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
   also with basic shapes only.
 
 ## Not done / open
+- Item 34 (review fixes for the voice and the online extras, packaged as `Packaged\mariuz_HypeCubeJam.zip`): of the
+  twelve fixes one was seen working in a run (the voice fades when it is switched off); the others were checked by
+  reading, the unit tests and the suites. Nobody has heard the voice. The web build compiles and links with all of
+  it and was not cooked or run; the published web build is 0.18.0.
+- Item 33 (pilot record, open-matches counter, richer FIND GAMES rows) ran against the live service in a test
+  bucket with two instances of one EOS user, pages opened by console command. Packaged and compiled for Wasm in
+  item 34. No second user, the "stats query refused" fallback never taken, the record never seen to grow (no stats were sent).
+- Item 32 (computer voice) was judged from logs and tests. Nobody has heard a single line: wording, level, the
+  chirp, the cut-off of an interrupted line are unverified by ear.
+  - Packaged in item 34 (lines spoken from the pak, picture 181 of the SETTINGS row, the console switch used in a
+    run); not run in a browser (the Wasm game target compiles and links with it). The row was not clicked.
+  - "Aft shield down." and "Port shield down." were never spoken in a run (requested and declined); lines a minute
+    were measured with one autopilot match on Easy (3.2) and two headless ones (2.4, 2.5).
 - Item 30 (the hypercube map, the explosion of a ship) was judged from still pictures (the explosion in slow motion),
   frame-time measurements with the editor binary and the test runs. Nobody has played with either.
   - Packaged in item 31 (the three new materials cook; the explosion and the map were looked at in pictures of the

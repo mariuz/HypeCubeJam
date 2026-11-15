@@ -1400,6 +1400,17 @@ public:
 	float UiCueVolume = 0.8f;
 
 	/**
+	 * The ship computer's lines, in the order of EHCJVoiceLine without None (Audio/HCJVoiceLogic.h). Waves on the
+	 * interface sound class (docs/tools/import_voice.py), spoken by UHCJAudioDirector::RequestVoice on a voice of its own.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Audio")
+	TArray<FSoftObjectPath> VoiceLines;
+
+	/** Volume of the voice on top of the interface volume; 0 switches it off. */
+	UPROPERTY(Config, EditAnywhere, Category = "Audio", meta = (ClampMin = "0.0", ClampMax = "2.0"))
+	float VoiceVolume = 1.0f;
+
+	/**
 	 * Music, set 0 (the default; UHCJUserSettings::MusicSet): three full-length tracks generated with Google Lyria -
 	 * the title menu, a match while calm, a match while the local ship fights - cross-faded by UHCJAudioDirector
 	 * (Audio/HCJMusicLogic.h). A track that is empty or does not load is skipped; with none of them the stems play.

@@ -230,6 +230,68 @@ FString UHCJEOSSubsystem::GetStatusLine() const
 	return HCJEos::DescribeState(State, StateDetail);
 }
 
+FString UHCJEOSSubsystem::GetTitleStatusLine() const
+{
+	// (The count of the last search while it is fresh - the title page asks every 45 s -, else the plain text.)
+	// Only the title page shows it: on any other page, or once the player hosts, the count would be about a moment
+	// that has passed. (Finishing review.)
+	const int32 NumOpen = GetOpenMatches();
+	return State == EHCJEosState::Ready && NumOpen >= 0 ? HCJEos::DescribeOpenMatches(SignedInName, NumOpen, PilotsFlying) : GetStatusLine();
+}
+
+int32 UHCJEOSSubsystem::GetOpenMatches() const
+{
+	// An answer older than three rounds of the title page's search says nothing about now (the page was not up).
+	const bool bFresh = Impl == nullptr || FPlatformTime::Seconds() - LastSearchAnswerTime < 3.0 * TitleSearchSeconds;
+	return State == EHCJEosState::Ready && bFresh ? OpenMatches : -1;
+}
+
+void UHCJEOSSubsystem::CountOpenMatches(bool bFailed)
+{
+	LastSearchAnswerTime = FPlatformTime::Seconds();
+	OpenMatches = bFailed ? -1 : Lobbies.Num();
+	PilotsFlying = 0;
+	for (const FHCJLobbyInfo& Lobby : Lobbies)
+	{
+		PilotsFlying += Lobby.Players;
+	}
+	const FString Text = bFailed ? FString(TEXT("not known (the search failed)")) : HCJEos::DescribeOpenMatches(SignedInName, OpenMatches, PilotsFlying);
+	if (Text != LoggedMatchCount)
+	{
+		LoggedMatchCount = Text;
+		UE_LOG(LogHCJ, Log, TEXT("EOS: open matches: %s"), *Text);
+	}
+}
+
+FString UHCJEOSSubsystem::GetPilotRecordLine() const
+{
+	if (State != EHCJEosState::Ready)
+	{
+		return FString();
+	}
+	if (PilotRecord.bLoaded)
+	{
+		return PilotRecord.Describe();
+	}
+	// Not answered yet, or a failure that will be asked again: nothing, rather than a line that changes its form.
+	if (!bRecordRefused)
+	{
+		return FString();
+	}
+	// The stats could not be read (client policy): what the two boards say about the local player, if anything.
+	int32 Score[NumLeaderboards] = {};
+	int32 Rank[NumLeaderboards] = {};
+	for (int32 Index = 0; Index < NumLeaderboards; ++Index)
+	{
+		if (const FHCJLeaderboardRow* Row = Leaderboards[Index].Rows.FindByPredicate([](const FHCJLeaderboardRow& R) { return R.bLocal; }))
+		{
+			Score[Index] = Row->Score;
+			Rank[Index] = Row->Rank;
+		}
+	}
+	return HCJEos::DescribeBoardRecord(Score[0], Rank[0], Score[1], Rank[1]);
+}
+
 void UHCJEOSSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -269,11 +331,26 @@ void UHCJEOSSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 			Lobby.Dimension = 3 + Index % 3;
 			Lobby.Version = Index == 3 ? FString(TEXT("00000000")) : GetBuildVersion();
 			Lobby.LobbyId = FString::Printf(TEXT("demo%d"), Index);
+			// (The first row is what a 0.18 host advertises: none of the optional attributes.)
+			if (Index > 0)
+			{
+				Lobby.Difficulty = Index;
+				Lobby.FragLimit = Index == 1 ? 25 : 0;
+				Lobby.EndsUnix = Index == 2 ? 0 : NowUnix() + 400;
+				Lobby.Pilots = Index == 1 ? FString(TEXT("Hedy, Alan_T")) : FString();
+			}
 			Lobby.Sanitize();
 		}
 		// As a real search does: only what this build can join, best first.
 		const int32 NumHidden = HCJEos::FilterJoinableLobbies(Lobbies, GetBuildVersion(), GetLocalAddresses(), NowUnix(), &HiddenLobbies);
 		LobbyStatus = FString::Printf(TEXT("%d games found, %d not shown (%s)  (made-up rows of -HCJEosDemo)"), Lobbies.Num(), NumHidden, *HiddenLobbies);
+		CountOpenMatches(false);
+		PilotRecord.Kills = 37;
+		PilotRecord.Deaths = 21;
+		PilotRecord.Wins = 3;
+		PilotRecord.Turrets = 9;
+		PilotRecord.Matches = 6;
+		PilotRecord.bLoaded = true;
 		for (FHCJLeaderboardView& View : Leaderboards)
 		{
 			TArray<FHCJLeaderboardRow> Records;
@@ -459,6 +536,20 @@ bool UHCJEOSSubsystem::Tick(float DeltaTime)
 	{
 		IngestPending();
 	}
+
+	// The title page shows how many matches are open: the search of FIND GAMES, every 45 s while that page is up.
+	if (bTitleMenuVisible && !bSearching && !QuickPlay.IsActive() && Now - LastSearchTime > TitleSearchSeconds)
+	{
+		// (Its result is logged only when it differs from the last one: a title page may stay up all night.)
+		bBackgroundSearch = true;
+		RefreshLobbies();
+		bBackgroundSearch = false;
+		// A record that a failed query left unknown is asked for again on the same clock (no-op when refused or running).
+		if (!PilotRecord.bLoaded)
+		{
+			RefreshPilotRecord();
+		}
+	}
 	return true;
 }
 
@@ -563,6 +654,11 @@ void UHCJEOSSubsystem::OnLoggedIn()
 	if (bFirst)
 	{
 		RefreshLeaderboards();
+	}
+	// (Also after a renewed sign-in when a query failed before it.)
+	if (bFirst || !PilotRecord.bLoaded)
+	{
+		RefreshPilotRecord();
 	}
 }
 
@@ -723,9 +819,10 @@ void UHCJEOSSubsystem::PushLobbyAttributes()
 				const bool bFirst = !bLobbyHasAttributes;
 				AdvertisedInfo = Sent;
 				bLobbyHasAttributes = true;
-				UE_LOG(LogHCJ, Log, TEXT("EOS: lobby %s: '%s' %d/%d players, %d bots, %s, port %d, %d LAN address(es), public address %s"),
-					bFirst ? TEXT("advertised") : TEXT("updated"), *Sent.HostName, Sent.Players, Sent.MaxPlayers, Sent.Bots, *Sent.DescribeMap(), Sent.Port,
-					Sent.LanAddresses.Num(), Sent.PublicAddress.IsEmpty() ? TEXT("not set") : TEXT("set"));
+				const FString Rules = Sent.DescribeRules(NowUnix());
+				UE_LOG(LogHCJ, Log, TEXT("EOS: lobby %s: '%s' %d/%d players, %d bots, %s, port %d, %d LAN address(es), public address %s, rules: %s"),
+					bFirst ? TEXT("advertised") : TEXT("updated"), *Sent.HostName, Sent.Players, Sent.MaxPlayers, Sent.Bots, *Sent.DescribeMapAndDifficulty(), Sent.Port,
+					Sent.LanAddresses.Num(), Sent.PublicAddress.IsEmpty() ? TEXT("not set") : TEXT("set"), Rules.IsEmpty() ? TEXT("not said") : *Rules);
 			}
 			else
 			{
@@ -771,6 +868,7 @@ void UHCJEOSSubsystem::RefreshLobbies()
 		SearchError.Reset();
 		++SearchSerial;
 		UE_LOG(LogHCJ, Log, TEXT("EOS demo: lobby search: %d listed (made-up rows)"), Lobbies.Num());
+		CountOpenMatches(false);
 		return;
 	}
 	if (Impl == nullptr || State != EHCJEosState::Ready || bSearching)
@@ -788,6 +886,9 @@ void UHCJEOSSubsystem::RefreshLobbies()
 		LobbyStatus = FString::Printf(TEXT("Search failed (%s)"), *ResultText(Result));
 		SearchError = LobbyStatus;
 		++SearchSerial;
+		// (Not again in the next tick: the title page waits its 45 s.)
+		LastSearchTime = FPlatformTime::Seconds();
+		CountOpenMatches(true);
 		Touch();
 		return;
 	}
@@ -809,6 +910,8 @@ void UHCJEOSSubsystem::RefreshLobbies()
 		LobbyStatus = FString::Printf(TEXT("Search failed (%s)"), *ResultText(Result));
 		SearchError = LobbyStatus;
 		++SearchSerial;
+		LastSearchTime = FPlatformTime::Seconds();
+		CountOpenMatches(true);
 		Touch();
 		return;
 	}
@@ -817,10 +920,12 @@ void UHCJEOSSubsystem::RefreshLobbies()
 	FindOptions.ApiVersion = EOS_LOBBYSEARCH_FIND_API_LATEST;
 	FindOptions.LocalUserId = Impl->LocalUser;
 	bSearching = true;
+	LastSearchTime = FPlatformTime::Seconds();
 	LobbyStatus = TEXT("Searching...");
 	Touch();
+	const bool bBackground = bBackgroundSearch;
 	EOS_LobbySearch_Find(Search, &FindOptions, MakeCall<EOS_LobbySearch_FindCallbackInfo>(this,
-		[this, Search](const EOS_LobbySearch_FindCallbackInfo& Info)
+		[this, Search, bBackground](const EOS_LobbySearch_FindCallbackInfo& Info)
 		{
 			bSearching = false;
 			Lobbies.Reset();
@@ -914,13 +1019,33 @@ void UHCJEOSSubsystem::RefreshLobbies()
 				LobbyStatus = FString::Printf(TEXT("Search failed (%s)"), *ResultText(Info.ResultCode));
 				SearchError = LobbyStatus;
 			}
-			UE_LOG(LogHCJ, Log, TEXT("EOS: lobby search: %s, %d listed, %d skipped, %d not joinable%s%s"), *ResultText(Info.ResultCode), Lobbies.Num(), NumSkipped, NumHidden,
+			// A search of the title page's timer is logged when its answer differs from the last logged one (result,
+			// counts, the lobbies listed and their players); one that somebody asked for always. (Finishing review.)
+			const FString Summary = FString::Printf(TEXT("%s, %d listed, %d skipped, %d not joinable%s%s"), *ResultText(Info.ResultCode), Lobbies.Num(), NumSkipped, NumHidden,
 				NumHidden > 0 ? TEXT(": ") : TEXT(""), *HiddenLobbies);
+			FString Fingerprint = Summary;
 			for (const FHCJLobbyInfo& Listed : Lobbies)
 			{
-				UE_LOG(LogHCJ, Log, TEXT("EOS: lobby listed: '%s' %d/%d players, %d bots, %s, seed %d, port %d, version %s"), *Listed.HostName, Listed.Players, Listed.MaxPlayers,
-					Listed.Bots, *Listed.DescribeMap(), Listed.Seed, Listed.Port, *Listed.Version);
+				Fingerprint += FString::Printf(TEXT("|%s:%d"), *Listed.LobbyId, Listed.Players);
 			}
+			const bool bQuiet = bBackground && Fingerprint == LoggedSearch;
+			LoggedSearch = Fingerprint;
+			if (!bQuiet)
+			{
+				UE_LOG(LogHCJ, Log, TEXT("EOS: lobby search: %s"), *Summary);
+			}
+			for (const FHCJLobbyInfo& Listed : Lobbies)
+			{
+				if (bQuiet)
+				{
+					break;
+				}
+				const FString Rules = Listed.DescribeRules(NowUnix());
+				UE_LOG(LogHCJ, Log, TEXT("EOS: lobby listed: '%s' %d/%d players, %d bots, %s, seed %d, port %d, version %s, rules: %s"), *Listed.HostName, Listed.Players, Listed.MaxPlayers,
+					Listed.Bots, *Listed.DescribeMapAndDifficulty(), Listed.Seed, Listed.Port, *Listed.Version, Rules.IsEmpty() ? TEXT("not said") : *Rules);
+			}
+			// The title page's counter: what FIND GAMES lists (after the filter), so the two never disagree.
+			CountOpenMatches(Info.ResultCode != EOS_EResult::EOS_Success && Info.ResultCode != EOS_EResult::EOS_NotFound);
 			++SearchSerial;
 			EOS_LobbySearch_Release(Search);
 			Touch();
@@ -1022,6 +1147,11 @@ void UHCJEOSSubsystem::IngestPending()
 	Options.StatsCount = static_cast<uint32_t>(Data.Num());
 	Options.TargetUserId = Impl->LocalUser;
 	bIngestInFlight = true;
+	// A record query that is on its way now may or may not see this ingest: its answer is not used, it is asked again.
+	if (bRecordLoading)
+	{
+		bRecordWanted = true;
+	}
 	UE_LOG(LogHCJ, Log, TEXT("EOS: sending stats: kills +%d, deaths +%d, wins +%d, turrets +%d, matches +%d"),
 		Delta.Kills, Delta.Deaths, Delta.Wins, Delta.Turrets, Delta.Matches);
 	EOS_Stats_IngestStat(Impl->Stats, &Options, MakeCall<EOS_Stats_IngestStatCompleteCallbackInfo>(this,
@@ -1032,6 +1162,13 @@ void UHCJEOSSubsystem::IngestPending()
 			{
 				StatsStatus = TEXT("Stats sent to Epic Online Services (leaderboards update after a few minutes)");
 				UE_LOG(LogHCJ, Log, TEXT("EOS: stats accepted"));
+				// The record on the menus grows at once, without a second request.
+				// (Not when a query is due anyway: its answer holds this ingest, and adding it too would count it twice.)
+				SessionTotals.Add(Delta);
+				if (PilotRecord.bLoaded && !bRecordWanted && !bRecordLoading)
+				{
+					PilotRecord.Add(Delta);
+				}
 			}
 			else
 			{
@@ -1040,8 +1177,110 @@ void UHCJEOSSubsystem::IngestPending()
 				StatsStatus = TEXT("Stats not sent: Epic Online Services did not answer");
 				UE_LOG(LogHCJ, Log, TEXT("EOS: stats not accepted (%s), kept for the next try"), *ResultText(Info.ResultCode));
 			}
+			// The record query that waited for this ingest (or was overtaken by it). While one still runs, its answer does it.
+			if (bRecordWanted && !bRecordLoading)
+			{
+				bRecordWanted = false;
+				RefreshPilotRecord();
+			}
 			Touch();
 		}), &THCJEosCall<EOS_Stats_IngestStatCompleteCallbackInfo>::Thunk);
+}
+
+// ---- pilot record ----
+
+void UHCJEOSSubsystem::RefreshPilotRecord()
+{
+	if (Impl == nullptr || State != EHCJEosState::Ready || bRecordLoading || bRecordRefused)
+	{
+		return;
+	}
+	// (Finishing review) Not while stats are on their way: the answer could hold them or not, and the ingest's own
+	// answer adds them to the record. Asked when the ingest has answered.
+	if (bIngestInFlight)
+	{
+		bRecordWanted = true;
+		return;
+	}
+	// The converters must outlive the call: the SDK copies the names inside EOS_Stats_QueryStats.
+	const FTCHARToUTF8 Kills(HCJEos::StatKills());
+	const FTCHARToUTF8 Deaths(HCJEos::StatDeaths());
+	const FTCHARToUTF8 Wins(HCJEos::StatWins());
+	const FTCHARToUTF8 Turrets(HCJEos::StatTurrets());
+	const FTCHARToUTF8 Matches(HCJEos::StatMatches());
+	const char* Names[] = { Kills.Get(), Deaths.Get(), Wins.Get(), Turrets.Get(), Matches.Get() };
+
+	EOS_Stats_QueryStatsOptions Options = {};
+	Options.ApiVersion = EOS_STATS_QUERYSTATS_API_LATEST;
+	Options.LocalUserId = Impl->LocalUser;
+	Options.StartTime = EOS_STATS_TIME_UNDEFINED;
+	Options.EndTime = EOS_STATS_TIME_UNDEFINED;
+	Options.StatNames = Names;
+	Options.StatNamesCount = UE_ARRAY_COUNT(Names);
+	Options.TargetUserId = Impl->LocalUser;
+	bRecordLoading = true;
+	EOS_Stats_QueryStats(Impl->Stats, &Options, MakeCall<EOS_Stats_OnQueryStatsCompleteCallbackInfo>(this,
+		[this](const EOS_Stats_OnQueryStatsCompleteCallbackInfo& Info)
+		{
+			bRecordLoading = false;
+			if (bRecordWanted)
+			{
+				// Stats were sent while this query ran: asked again (now, or by the ingest's answer when that is still out).
+				if (!bIngestInFlight)
+				{
+					bRecordWanted = false;
+					RefreshPilotRecord();
+				}
+				return;
+			}
+			if (Info.ResultCode != EOS_EResult::EOS_Success && Info.ResultCode != EOS_EResult::EOS_NotFound)
+			{
+				// (EOS_InvalidAuth is not among them: an expired sign-in gives it too, and that mends itself.)
+				const bool bRefused = Info.ResultCode == EOS_EResult::EOS_AccessDenied || Info.ResultCode == EOS_EResult::EOS_MissingPermissions;
+				if (bRefused)
+				{
+					// The one line that says so; the menus fall back to the local rows of the two leaderboards.
+					bRecordRefused = true;
+					UE_LOG(LogHCJ, Log, TEXT("EOS: pilot record not read (%s): the client policy of this product does not allow reading stats; "
+						"the menus show kills and wins from the leaderboards instead, and the query is not tried again in this run"), *ResultText(Info.ResultCode));
+				}
+				else
+				{
+					// Network or service trouble: what was shown before stays; the next occasion asks again.
+					UE_LOG(LogHCJ, Log, TEXT("EOS: pilot record not read (%s), kept as it was"), *ResultText(Info.ResultCode));
+				}
+				Touch();
+				return;
+			}
+			int32 NumFound = 0;
+			const auto Read = [this, &NumFound](const TCHAR* Name) -> int32
+			{
+				const FTCHARToUTF8 NameUtf8(Name);
+				EOS_Stats_CopyStatByNameOptions CopyOptions = {};
+				CopyOptions.ApiVersion = EOS_STATS_COPYSTATBYNAME_API_LATEST;
+				CopyOptions.TargetUserId = Impl->LocalUser;
+				CopyOptions.Name = NameUtf8.Get();
+				EOS_Stats_Stat* Stat = nullptr;
+				int32 Value = 0;
+				// EOS_NotFound: the player never ingested this stat -> 0.
+				if (EOS_Stats_CopyStatByName(Impl->Stats, &CopyOptions, &Stat) == EOS_EResult::EOS_Success && Stat != nullptr)
+				{
+					Value = Stat->Value;
+					++NumFound;
+					EOS_Stats_Stat_Release(Stat);
+				}
+				return Value;
+			};
+			PilotRecord.Kills = Read(HCJEos::StatKills());
+			PilotRecord.Deaths = Read(HCJEos::StatDeaths());
+			PilotRecord.Wins = Read(HCJEos::StatWins());
+			PilotRecord.Turrets = Read(HCJEos::StatTurrets());
+			PilotRecord.Matches = Read(HCJEos::StatMatches());
+			PilotRecord.bLoaded = true;
+			UE_LOG(LogHCJ, Log, TEXT("EOS: pilot record: %s  (%s, %d of 5 stats held by the service: kills %d, deaths %d, wins %d, turrets %d, matches %d)"),
+				*PilotRecord.Describe(), *ResultText(Info.ResultCode), NumFound, PilotRecord.Kills, PilotRecord.Deaths, PilotRecord.Wins, PilotRecord.Turrets, PilotRecord.Matches);
+			Touch();
+		}), &THCJEosCall<EOS_Stats_OnQueryStatsCompleteCallbackInfo>::Thunk);
 }
 
 // ---- leaderboards ----

@@ -113,6 +113,23 @@ void UHCJEOSSubsystem::DemoSendStats() {}
 void UHCJEOSSubsystem::FlushStats(bool bScoreLineGone) {}
 void UHCJEOSSubsystem::IngestPending() {}
 void UHCJEOSSubsystem::RefreshLeaderboards() {}
+void UHCJEOSSubsystem::RefreshPilotRecord() {}
+void UHCJEOSSubsystem::CountOpenMatches(bool bFailed) {}
+
+int32 UHCJEOSSubsystem::GetOpenMatches() const
+{
+	return -1;
+}
+
+FString UHCJEOSSubsystem::GetPilotRecordLine() const
+{
+	return FString();
+}
+
+FString UHCJEOSSubsystem::GetTitleStatusLine() const
+{
+	return GetStatusLine();
+}
 void UHCJEOSSubsystem::QueryLeaderboard(int32 Index) {}
 
 #endif // !HCJ_WITH_EOS

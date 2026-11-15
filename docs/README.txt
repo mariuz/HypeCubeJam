@@ -24,6 +24,10 @@ Find games:  FIND GAMES in the menu lists the matches other players host (throug
         QUICK PLAY is listed for the others automatically. Games are joined by
         network address: on one network that just works; over the internet the host must forward UDP port 7777
         and start with   HypeCubeJam.exe -HCJPublicAddress=<its public address>
+        Under the two buttons the menu says how many matches are open right now and how many pilots fly in them
+        (checked every 45 seconds), and shows your own record: kills, deaths, wins, matches, turrets.
+        A row of FIND GAMES also shows the bot difficulty and, under the host's name, the frag limit, the time left
+        and who else is in the match (hosts of this version and later).
 Leaderboards:  LEADERBOARDS in the menu shows the top pilots by kills and by wins and your own row. Your kills,
         deaths, wins, destroyed turrets and matches are sent when a match ends and when you leave; the boards
         follow a few minutes later. A pilot is the Windows user of a PC (no account, no login).
@@ -140,5 +144,11 @@ Host options without the menu (append to the exe as one argument):
 Music: three tracks generated with Google Lyria (Gemini) - title menu, exploring, combat. SETTINGS can switch to the
 older layered stems. Sound effects (and those stems) are from Epic's "Lyra Starter Game". Volumes: SETTINGS in the menu.
 
+Computer voice: the ship speaks a few warnings - "Fore shield down", "Hull critical", "Torpedo incoming", "Missile
+locked on", "Enemy behind", "Gravity well. Boost away", "Tractor beam. Boost free", "Sector clear". It stays quiet
+rather than nag (at most five lines a minute, usually fewer). SETTINGS > Computer voice switches it off; it follows
+the Interface volume.
+
 Credits: Space Station 4 by Gerardo Justel (CC-BY). Intro video generated with Google Veo (Gemini). Music generated
-with Google Lyria (Gemini). Everything else: see NOTICES.txt.
+with Google Lyria (Gemini). Voice: Flite speech synthesiser, Carnegie Mellon University. Everything else: see
+NOTICES.txt.

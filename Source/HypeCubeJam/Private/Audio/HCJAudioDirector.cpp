@@ -18,8 +18,10 @@
 #include "Game/HCJUserSettings.h"
 #include "HypeCubeJam.h"
 #include "Ship/HCJHealthComponent.h"
+#include "Ship/HCJShieldFacings.h"
 #include "Ship/HCJShipCharacter.h"
 #include "Ship/HCJShipMovementComponent.h"
+#include "World/HCJBlackHole.h"
 #include "World/HCJPickup.h"
 #include "World/HCJTurret.h"
 #include "World/HCJUniverse.h"
@@ -38,6 +40,27 @@ namespace
 	constexpr float MusicTensionIntensity = 0.45f;
 	/** Seconds the music stays intense after the last shot / hit. */
 	constexpr float CombatHeatSeconds = 10.0f;
+
+	/**
+	 * The ship computer. One per process, like FHCJHintDirector in HCJHUDHints.cpp: the director is created again with
+	 * every world, and "welcome once" and the cooldowns must not start over then. The clock is game time summed over those worlds.
+	 */
+	FHCJVoiceLimiter GVoiceLimiter;
+	double GVoiceClock = 0.0;
+	bool bGVoiceWelcomed = false;
+
+	TAutoConsoleVariable<int32> CVarVoice(TEXT("hcj.Audio.Voice"), -1,
+		TEXT("Ship computer voice: 0 off, 1 on, negative = the Computer voice setting of the menu."));
+
+	/** The voice is switched on: its level is not 0 and the console variable, or else the menu's setting, says so. */
+	bool IsVoiceEnabled()
+	{
+		const int32 Override = CVarVoice.GetValueOnGameThread();
+		return UHCJAssetSettings::Get().VoiceVolume > 0.0f && (Override >= 0 ? Override != 0 : UHCJUserSettings::Get().bComputerVoice);
+	}
+
+	/** The victim name the game mode puts into the kill feed for a destroyed turret (AHCJGameMode::NotifyTurretDestroyed). */
+	const TCHAR* const TurretVictimName = TEXT("a station turret");
 
 	float PickVolume(const TAutoConsoleVariable<float>& CVar, float ConfigValue)
 	{
@@ -68,6 +91,11 @@ void UHCJAudioDirector::Deinitialize()
 	{
 		BlackHoleLoop->Stop();
 		BlackHoleLoop = nullptr;
+	}
+	if (VoiceComponent != nullptr)
+	{
+		VoiceComponent->Stop();
+		VoiceComponent = nullptr;
 	}
 	StopMusicTracks();
 	Super::Deinitialize();
@@ -104,6 +132,8 @@ void UHCJAudioDirector::Tick(float DeltaTime)
 	const bool bIntermission = GameState->GetMatchPhase() == EHCJMatchPhase::Intermission;
 
 	TickMatchCues();
+	// Before the cues: "Hull critical." holds the low-hull beep of the same frame back.
+	TickVoice(DeltaTime, LocalShip);
 	TickLocalPlayerCues(Now, LocalShip);
 	TickBlackHoleRumble(LocalShip != nullptr ? LocalShip->GetActorLocation() : ViewLocation);
 	// The title menu: the local host sits in it as a spectator while the bots play behind it.
@@ -205,6 +235,216 @@ void UHCJAudioDirector::NotifyKillEvent(const FString& KillerName, const FString
 	{
 		NotifyCombat();
 		UHCJAssetSettings::PlaySound2D(this, Settings.KillSounds, TEXT("kill cue"), Settings.UiCueVolume);
+		// The ship computer looks a moment later whether that emptied the sector - the sector the player was in at
+		// the kill, and only for a ship: a turret down leaves the rest of its station firing. (Finishing review.)
+		const AHCJShipCharacter* OwnShip = VoiceShip.Get();
+		if (VictimName != TurretVictimName && OwnShip != nullptr && !OwnShip->IsDead())
+		{
+			VoiceSectorCheckTime = static_cast<float>(GVoiceClock) + 1.5f;
+			VoiceSectorCheckSector = OwnShip->GetCurrentSector();
+		}
+	}
+}
+
+bool UHCJAudioDirector::RequestVoice(EHCJVoiceLine Line)
+{
+	UWorld* World = GetWorld();
+	const int32 Index = static_cast<int32>(Line) - 1;
+	const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
+	if (World == nullptr || World->GetNetMode() == NM_DedicatedServer || !Settings.VoiceLines.IsValidIndex(Index))
+	{
+		return false;
+	}
+	// The wave first: the limiter counts a line as spoken when it says yes.
+	USoundBase* Sound = UHCJAssetSettings::Load<USoundBase>(Settings.VoiceLines[Index], TEXT("computer voice"));
+	if (Sound == nullptr)
+	{
+		return false;
+	}
+	// (Finishing review) Only the computer of a live own ship speaks: a missile warning that arrives after the ship
+	// was destroyed is not said over the death camera. VoiceShip is what TickVoice saw last.
+	if (const AHCJShipCharacter* OwnShip = VoiceShip.Get(); OwnShip == nullptr || OwnShip->IsDead())
+	{
+		return false;
+	}
+	// (Review change) Nothing during the intermission: the board is up and the ship no longer matters.
+	if (const AHCJGameState* GameState = World->GetGameState<AHCJGameState>(); GameState != nullptr && GameState->GetMatchPhase() == EHCJMatchPhase::Intermission)
+	{
+		return false;
+	}
+	const bool bEnabled = IsVoiceEnabled();
+	const EHCJVoiceDecision Decision = GVoiceLimiter.Request(Line, static_cast<float>(GVoiceClock), Sound->GetDuration(), bEnabled);
+	if (Decision == EHCJVoiceDecision::Drop)
+	{
+		// (With the voice switched off nothing is said about it: the HUD asks every few seconds.)
+		if (GVoiceLimiter.GetLastRefusal() != EHCJVoiceRefusal::Disabled)
+		{
+			UE_LOG(LogHCJ, Log, TEXT("Voice: %s declined, %s (%d spoken, %d declined so far)"), FHCJVoiceLimiter::GetRule(Line).Asset,
+				FHCJVoiceLimiter::DescribeRefusal(GVoiceLimiter.GetLastRefusal()), GVoiceLimiter.GetNumPlayed(), GVoiceLimiter.GetNumDropped());
+		}
+		return false;
+	}
+
+	if (VoiceComponent == nullptr)
+	{
+		VoiceComponent = UGameplayStatics::CreateSound2D(World, Sound, Settings.VoiceVolume, 1.0f, 0.0f, nullptr, /*bPersistAcrossLevelTransition*/ false, /*bAutoDestroy*/ false);
+		if (VoiceComponent != nullptr)
+		{
+			VoiceComponent->bIsUISound = true;
+		}
+	}
+	if (VoiceComponent != nullptr)
+	{
+		// Stop() is what "Interrupt" asks for, and harmless when nothing plays.
+		VoiceComponent->Stop();
+		VoiceComponent->SetSound(Sound);
+		VoiceComponent->SetVolumeMultiplier(Settings.VoiceVolume);
+		VoiceComponent->Play(0.0f);
+		bVoiceFadingOut = false;
+	}
+	UE_LOG(LogHCJ, Log, TEXT("Voice: %s%s (%d spoken, %d declined so far)"), FHCJVoiceLimiter::GetRule(Line).Asset,
+		Decision == EHCJVoiceDecision::Interrupt ? TEXT(", cut the line before it off") : TEXT(""), GVoiceLimiter.GetNumPlayed(), GVoiceLimiter.GetNumDropped());
+	return true;
+}
+
+void UHCJAudioDirector::TickVoice(float DeltaTime, AHCJShipCharacter* LocalShip)
+{
+	GVoiceClock += DeltaTime;
+	const float Now = static_cast<float>(GVoiceClock);
+	// (Finishing review) Switched off in SETTINGS or by the console variable, or the match is over: the line being
+	// spoken stops as well, not only the next ones.
+	if (VoiceComponent != nullptr && !bVoiceFadingOut && VoiceComponent->IsPlaying())
+	{
+		const AHCJGameState* GameState = GetWorld() != nullptr ? GetWorld()->GetGameState<AHCJGameState>() : nullptr;
+		const bool bIntermission = GameState != nullptr && GameState->GetMatchPhase() == EHCJMatchPhase::Intermission;
+		if (!IsVoiceEnabled() || bIntermission)
+		{
+			// (Once per line: a fade asked for again every frame would start over each time.)
+			bVoiceFadingOut = true;
+			VoiceComponent->FadeOut(0.15f, 0.0f);
+			UE_LOG(LogHCJ, Log, TEXT("Voice: the line being spoken is faded out (%s)"), bIntermission ? TEXT("the match is over") : TEXT("the voice was switched off"));
+		}
+	}
+	if (LocalShip == nullptr)
+	{
+		// (Review change) The ship is gone: its computer does not finish the sentence over the explosion.
+		// (Once: VoiceShip is explicitly null from the next frame on, also when the dead ship actor was destroyed at once.)
+		if (!VoiceShip.IsExplicitlyNull() && VoiceComponent != nullptr && VoiceComponent->IsPlaying())
+		{
+			VoiceComponent->FadeOut(0.15f, 0.0f);
+		}
+		VoiceShip = nullptr;
+		return;
+	}
+	const UHCJAssetSettings& Settings = UHCJAssetSettings::Get();
+
+	if (VoiceShip.Get() != LocalShip)
+	{
+		// A new ship: nothing is said for a moment, and nothing that was true before it counts as news.
+		VoiceShip = LocalShip;
+		VoiceShipTime = Now;
+		GVoiceLimiter.NotifySpawn(Now);
+		for (int32 Facing = 0; Facing < HCJShield::NumFacings && Facing < 4; ++Facing)
+		{
+			VoiceFacingCollapse[Facing] = LocalShip->GetFacingCollapseTime(Facing);
+		}
+		bVoiceHullArmed = true;
+		bVoiceInWell = false;
+		bVoiceHeld = false;
+		VoiceSectorCheckTime = -1.0f;
+		return;
+	}
+
+	// Welcome: once per run, when the first ship's grace period is over. (Finishing review: asked once the voice is
+	// on and a match runs, so that a run that starts with the voice off still gets it when it is switched on.)
+	if (!bGVoiceWelcomed && Now - VoiceShipTime >= FHCJVoiceLimiter::SpawnGraceSeconds && IsVoiceEnabled())
+	{
+		const AHCJGameState* GameState = GetWorld() != nullptr ? GetWorld()->GetGameState<AHCJGameState>() : nullptr;
+		if (GameState == nullptr || GameState->GetMatchPhase() != EHCJMatchPhase::Intermission)
+		{
+			bGVoiceWelcomed = true;
+			RequestVoice(EHCJVoiceLine::Welcome);
+		}
+	}
+
+	// A shield facing went down (its collapse time moved on).
+	for (int32 Facing = 0; Facing < HCJShield::NumFacings && Facing < 4; ++Facing)
+	{
+		const float CollapseTime = LocalShip->GetFacingCollapseTime(Facing);
+		if (CollapseTime > VoiceFacingCollapse[Facing] + 0.01f)
+		{
+			RequestVoice(FHCJVoiceLimiter::ShieldLine(Facing));
+		}
+		VoiceFacingCollapse[Facing] = CollapseTime;
+	}
+
+	// The hull fell under the mark of the low-hull beep; armed again above half.
+	if (const UHCJHealthComponent* Health = LocalShip->GetHealthComponent())
+	{
+		const float Fraction = Health->GetHealthFraction();
+		if (bVoiceHullArmed && Fraction < Settings.LowHealthFraction)
+		{
+			bVoiceHullArmed = false;
+			if (RequestVoice(EHCJVoiceLine::HullCritical))
+			{
+				// The beep waits until the words are out (NextLowHealthTime is on the world clock).
+				NextLowHealthTime = FMath::Max(NextLowHealthTime, static_cast<float>(GetWorld()->GetTimeSeconds()) + 1.5f);
+			}
+		}
+		else if (Fraction > 0.5f)
+		{
+			bVoiceHullArmed = true;
+		}
+	}
+
+	// Past the point of a gravity well where only boost gets the ship out (the HUD's "BLACK HOLE - BOOST AWAY").
+	bool bInWell = false;
+	if (const AHCJUniverse* Universe = AHCJUniverse::Get(this); Universe != nullptr && Universe->IsBuilt())
+	{
+		const UHCJShipMovementComponent* Movement = LocalShip->GetShipMovement();
+		const double Distance = Universe->GetBlackHoleDistance(LocalShip->GetActorLocation());
+		bInWell = Distance >= 0.0 && Distance < FHCJBlackHole::ComputeNoEscapeRadius(Movement != nullptr ? Movement->GetCruiseSpeed() : 3000.0f, Universe->GetBlackHoleSettings());
+	}
+	if (bInWell && !bVoiceInWell)
+	{
+		RequestVoice(EHCJVoiceLine::GravityWell);
+	}
+	bVoiceInWell = bInWell;
+
+	// Caught by a tractor beam.
+	const bool bHeld = LocalShip->GetTractorHolder() != nullptr;
+	if (bHeld && !bVoiceHeld)
+	{
+		RequestVoice(EHCJVoiceLine::TractorCaught);
+	}
+	bVoiceHeld = bHeld;
+
+	// A moment after the local player's kill: is anybody left in this sector?
+	if (VoiceSectorCheckTime >= 0.0f && Now >= VoiceSectorCheckTime)
+	{
+		VoiceSectorCheckTime = -1.0f;
+		const int32 Sector = LocalShip->GetCurrentSector();
+		// (Finishing review) Not when the player has left the sector of the kill. A cloaked ship does not count, as
+		// in the HUD's "enemies in sector" - the voice must not give it away -, a live turret does.
+		bool bCompany = Sector != VoiceSectorCheckSector;
+		for (TActorIterator<AHCJShipCharacter> It(GetWorld()); It && !bCompany; ++It)
+		{
+			bCompany = *It != LocalShip && !It->IsDead() && !It->IsCloakHidden() && It->GetCurrentSector() == Sector;
+		}
+		const AHCJUniverse* SectorUniverse = AHCJUniverse::Get(this);
+		for (const TWeakObjectPtr<AHCJTurret>& Turret : AHCJTurret::GetAll())
+		{
+			if (bCompany || SectorUniverse == nullptr)
+			{
+				break;
+			}
+			bCompany = Turret.IsValid() && Turret->GetWorld() == GetWorld() && !Turret->IsTurretDestroyed()
+				&& SectorUniverse->GetSectorAtLocation(Turret->GetActorLocation()) == Sector;
+		}
+		if (!bCompany && Sector != INDEX_NONE)
+		{
+			RequestVoice(EHCJVoiceLine::SectorClear);
+		}
 	}
 }
 
