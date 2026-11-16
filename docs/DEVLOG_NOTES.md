@@ -3046,6 +3046,37 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
       - Easy over the network with a second person: the help applies to every ship flown by a person, as the
         fairness rules do; only the headless join test above ran it.
 
+## 16 Nov 2026 (twenty-fourth session) - web build of 0.21.0 rebuilt
+39. The web (Wasm) build made again from commit cf0543b (0.21.0, easier Easy and visible pickups; tree clean) by
+    item 28's procedure, as in items 35 and 37. Nothing was committed, pushed or uploaded.
+    - Package: `PackagedWeb\Ship` deleted, then the Shipping BuildCookRun (log `PackagedWeb\logs\bcr_ship6.log`):
+      exit code 0, BUILD SUCCESSFUL, 35 min 52 s (compile, link and wasm-opt 1617 s - the PC was in use; the cook
+      121 s). **The new code of item 38 compiled for Wasm as it is - no source change.** Cook: 1095 packages, 1032
+      cooked, 63 skipped for the platform, "Success - 0 error(s), 0 warning(s)". One warning in the log, the
+      linker's known `-pthread + ALLOW_MEMORY_GROWTH` line.
+    - Stage `PackagedWeb\Ship\Wasm`: 56 files, 300 794 564 bytes with the `.br` copies; 33 files, 261 676 413 bytes
+      without them. Wasm 142 494 582 bytes (26.6 MB as Brotli; +9 476 bytes), container `.ucas` **99 492 320
+      bytes**, the same as in items 35 and 37 (the columns and halos use existing meshes and the pads' material;
+      507 680 bytes under 100 000 000), pak 9 158 707.
+    - `check_stage.py`: all passed, release scan 0 findings (1 warning, the stock engine font path).
+      `web_secret_scan.py` with UnrealPak: 56 staged files and 1077 extracted files (84 ini), 0 hits, RESULT clean.
+    - Browser (harness, off-screen Chrome, deferred tier, `hcj_click_play`, fixture unchanged):
+      `PackagedWeb\runs\ship6_deferred` (engine server, port 8090): PASS, READY after 8.0 s, 0 WebGPU errors, no
+      error line in the console log; `title.png` shows the new Easy line ("One bot at a time, from the front. ...")
+      and a yellow pad with its column behind the menu; `match_a..c.png` show the pickups of item 38: a yellow
+      column on a PULSE pad with its diamond marker and distance, green columns on REPAIR and SHIELD pads (cross
+      markers, "REPAIR 140 m"), the pad icons on the radar, and the match (HUD, hypercube map, kill feed, a missile
+      lock, the player's ship killed twice). `PackagedWeb\runs\pages6_noheaders` (the GitHubPages folder from
+      `web_plain_server.py`, port 8091): "PAGE ISOLATION reload under the service worker", compatibility check
+      passed, READY after 6.4 s, PASS, 0 error lines; `match_c.png` shows REPAIR (37 m, a glowing cube on its pad)
+      and SHIELD (90 m) columns in green. Both servers stopped.
+    - `PackagedWeb\GitHubPages` (deleted, then `web_split_for_pages.py`, exit 0): **36 files, 261 676 809 bytes**,
+      the wasm in three parts (50 000 000 + 50 000 000 + 42 494 582), the container 99 492 320 as it is (largest
+      file), no `.br`, `.nojekyll` there; no file of 100 000 000 bytes or more.
+    - Not verified: a magenta (power-up) column and a pad taken and refilled in a picture, the Easy rules played by a
+      person in the browser, the forward tier, the 10-minute soak, sound by ear, a controller, the site on GitHub
+      Pages itself, other browsers. `PackagedWeb\itch` and the itch zip are still the old build (item 28).
+
 ## Measurements
 - Automation tests: 9 at the start, 84 now (item 38: 84 of 84; item 36: 81 of 81; items 33 and 34: 77 of 77), all passing (added: the beginner's help of Easy, the kinds / light columns of the pads and the pad markers of the HUD; the game controller - aim stick, switch, menu focus, prompt names -; the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station
