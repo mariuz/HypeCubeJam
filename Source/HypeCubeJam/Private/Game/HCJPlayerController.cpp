@@ -3,6 +3,7 @@
 #include "World/HCJUniverse.h"
 #include "Engine/DamageEvents.h"
 #include "EngineUtils.h"
+#include "World/HCJPickup.h"
 #include "World/HCJTurret.h"
 #include "AI/HCJBotController.h"
 #include "World/HCJSectorLayout.h"
@@ -2051,6 +2052,93 @@ void AHCJPlayerController::HCJMenuCmd(const FString& Action, const FString& Argu
 	{
 		// Listen host: bots hold still and hold their fire ("peace 0" ends it), so that a parked enemy stays where it is.
 		AHCJBotController::SetDebugIdle(Argument != TEXT("0"));
+	}
+	else if (Action == TEXT("padview"))
+	{
+		// Listen host, with "peace", for pictures of the pads (item 38): "padview <uu>[,<item A>[,<item B>[,<yaw>[,<hull>]]]]"
+		// puts the own ship <uu> from the filled pad of its sector that is nearest to it, looking at it. <item A>
+		// (EHCJPickupItem, -1 = as it is) is put on that pad; <item B> on the pad nearest to that one, and the ship then
+		// looks at the middle between the two from a point from which both are seen side by side. <yaw> turns the ship
+		// away from it by that many degrees afterwards (the pad out of view: the pointer), <hull> sets the hull points.
+		TArray<FString> Parts;
+		Argument.ParseIntoArray(Parts, TEXT(","));
+		AHCJShipCharacter* Ship = HasAuthority() ? GetShip() : nullptr;
+		const AHCJUniverse* Universe = AHCJUniverse::Get(this);
+		const float ViewDistance = Parts.Num() > 0 ? FMath::Max(FCString::Atof(*Parts[0]), 300.0f) : 3000.0f;
+		const int32 ItemA = Parts.Num() > 1 ? FCString::Atoi(*Parts[1]) : -1;
+		const int32 ItemB = Parts.Num() > 2 ? FCString::Atoi(*Parts[2]) : -1;
+		const float Yaw = Parts.Num() > 3 ? FCString::Atof(*Parts[3]) : 0.0f;
+		const float Hull = Parts.Num() > 4 ? FCString::Atof(*Parts[4]) : -1.0f;
+		if (Ship != nullptr && Universe != nullptr)
+		{
+			const FVector ShipLocation = Ship->GetActorLocation();
+			const int32 Sector = Universe->GetSectorAtLocation(ShipLocation);
+			const auto FindPad = [this, Universe, Sector](const FVector& From, const AHCJPickup* Except, bool bFilledOnly)
+			{
+				AHCJPickup* Best = nullptr;
+				double BestSq = 0.0;
+				for (const TWeakObjectPtr<AHCJPickup>& Entry : AHCJPickup::GetAll())
+				{
+					AHCJPickup* Pad = Entry.Get();
+					if (Pad == nullptr || Pad == Except || Pad->GetWorld() != GetWorld() || (bFilledOnly && !Pad->IsActive()) || Universe->GetSectorAtLocation(Pad->GetActorLocation()) != Sector)
+					{
+						continue;
+					}
+					const double DistSq = FVector::DistSquared(Pad->GetActorLocation(), From);
+					if (Best == nullptr || DistSq < BestSq)
+					{
+						Best = Pad;
+						BestSq = DistSq;
+					}
+				}
+				return Best;
+			};
+			AHCJPickup* PadA = FindPad(ShipLocation, nullptr, ItemA < 0);
+			AHCJPickup* PadB = (PadA != nullptr && ItemB >= 0) ? FindPad(PadA->GetActorLocation(), PadA, false) : nullptr;
+			if (PadA != nullptr)
+			{
+				if (ItemA >= 0)
+				{
+					PadA->ServerDebugSetItem(static_cast<EHCJPickupItem>(ItemA));
+				}
+				if (PadB != nullptr)
+				{
+					PadB->ServerDebugSetItem(static_cast<EHCJPickupItem>(ItemB));
+				}
+				const FVector LookAt = PadB != nullptr ? 0.5 * (PadA->GetActorLocation() + PadB->GetActorLocation()) : PadA->GetActorLocation();
+				FVector Direction = (LookAt - ShipLocation).GetSafeNormal();
+				if (PadB != nullptr)
+				{
+					// Across the line between the two pads, and level (their columns stand along Z).
+					const FVector Between = (PadB->GetActorLocation() - PadA->GetActorLocation()).GetSafeNormal();
+					Direction = FVector::CrossProduct(Between, FVector::UpVector).GetSafeNormal();
+				}
+				if (Direction.IsNearlyZero())
+				{
+					Direction = FVector::ForwardVector;
+				}
+				// (Two pads: far enough back for both to be in the picture.)
+				const double FromDistance = PadB != nullptr ? FMath::Max(static_cast<double>(ViewDistance), 1.1 * FVector::Dist(PadA->GetActorLocation(), PadB->GetActorLocation())) : ViewDistance;
+				const FVector Location = LookAt + FVector(0.0, 0.0, 300.0) - Direction * FromDistance;
+				FRotator Rotation = (LookAt + FVector(0.0, 0.0, 300.0) - Location).Rotation();
+				Rotation.Yaw += Yaw;
+				Ship->GetCharacterMovement()->StopMovementImmediately();
+				Ship->TeleportTo(Location, Rotation, false, true);
+				SetControlRotation(Rotation);
+				ClientSetRotation(Rotation);
+				if (UHCJHealthComponent* Health = Ship->GetHealthComponent(); Health != nullptr && Hull > 0.0f && Hull < Health->GetHealth())
+				{
+					Health->ApplyDamage(Health->GetShield() + Health->GetHealth() - Hull, nullptr, nullptr);
+				}
+				UE_LOG(LogHCJ, Log, TEXT("Debug: padview in sector %d from %.0f uu: %s%s%s, yaw %+.0f, hull %.0f"), Sector, FromDistance, HCJ::GetItemName(PadA->GetItem()),
+					PadB != nullptr ? TEXT(" and ") : TEXT(""), PadB != nullptr ? HCJ::GetItemName(PadB->GetItem()) : TEXT(""), Yaw,
+					Ship->GetHealthComponent() != nullptr ? Ship->GetHealthComponent()->GetHealth() : 0.0f);
+			}
+			else
+			{
+				UE_LOG(LogHCJ, Log, TEXT("Debug: padview: no pad in sector %d"), Sector);
+			}
+		}
 	}
 	else if (Action == TEXT("scene"))
 	{

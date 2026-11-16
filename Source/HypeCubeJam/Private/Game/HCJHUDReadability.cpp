@@ -842,21 +842,29 @@ void AHCJHUD::DrawRadar(const AHCJShipCharacter& Ship, const AHCJGameState& Game
 		}
 	}
 
-	// Pads that hold something: small diamonds in the colour of the item.
+	// Pads that hold something, by kind: a green cross (health), an amber diamond (weapon), a magenta triangle
+	// (power-up). The health pad the HUD points at on a low hull is larger, pulses inside a ring, and is drawn on the
+	// rim when it is out of range.
+	const AHCJPickup* GuidePad = HealthGuidePad.Get();
 	for (const TWeakObjectPtr<AHCJPickup>& Entry : AHCJPickup::GetAll())
 	{
 		const AHCJPickup* Pickup = Entry.Get();
-		if (Pickup == nullptr || Pickup->GetWorld() != World || !Pickup->IsActive() || FVector::DistSquared(Pickup->GetActorLocation(), ShipLocation) > FMath::Square(RadarRange))
+		const bool bGuide = Pickup != nullptr && Pickup == GuidePad;
+		if (Pickup == nullptr || Pickup->GetWorld() != World || !Pickup->IsActive()
+			|| (!bGuide && FVector::DistSquared(Pickup->GetActorLocation(), ShipLocation) > FMath::Square(RadarRange)))
 		{
 			continue;
 		}
 		const FVector2D P = Place(Pickup->GetActorLocation(), Height);
-		const FLinearColor Color = Faded(HCJ::GetItemColor(Pickup->GetItem()), 0.9f);
-		const float S = Mark * 0.8f;
-		DrawLine(P.X - S, P.Y, P.X, P.Y - S, Color, 1.5f);
-		DrawLine(P.X, P.Y - S, P.X + S, P.Y, Color, 1.5f);
-		DrawLine(P.X + S, P.Y, P.X, P.Y + S, Color, 1.5f);
-		DrawLine(P.X, P.Y + S, P.X - S, P.Y, Color, 1.5f);
+		const EHCJItemKind Kind = HCJ::GetItemKind(Pickup->GetItem());
+		const float Pulse = bGuide ? 0.65f + 0.35f * FMath::Sin(static_cast<float>(World->GetTimeSeconds()) * 7.0f) : 0.95f;
+		const FLinearColor Color = Faded(HCJ::GetItemKindColor(Kind), Pulse);
+		const float S = Mark * (bGuide ? 1.5f : 1.0f);
+		DrawPickupIcon(Kind, static_cast<float>(P.X), static_cast<float>(P.Y), S, Color, bGuide ? 2.0f : 1.5f);
+		if (bGuide)
+		{
+			DrawCircle(static_cast<float>(P.X), static_cast<float>(P.Y), S * 1.9f, Color, 1.5f, 14);
+		}
 	}
 
 	// Enemies: red dots, a tick up or down for above / below the ship's plane. Never a cloaked one.

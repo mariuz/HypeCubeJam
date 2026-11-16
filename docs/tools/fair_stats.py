@@ -14,6 +14,9 @@ Reads the server's "Fair: event=..." lines. One row per log; logs named <group>_
   held      bot Thinks in which a bot left a human alone because of the attack cap / held its fire in the rear arc /
             because the human had just arrived / because its attacker had just gone; "hunters" counts the times a bot
             that travels did not go to a human's sector because enough bots were there. All 0 on Ace and with -HCJNoFair.
+  help      the beginner's help of item 38 (Easy; 0 elsewhere, with -HCJNoFair and with -HCJClassicEasy, and in logs of
+            older builds): damage people did to bots and the part of it the scale added, hull points mended out of
+            combat, repair pads people took and what they restored. "K/D" is own kills over deaths (at least 1).
 """
 import glob
 import io
@@ -72,16 +75,19 @@ def row(r):
         'peak': str(int(f('peak_attackers'))), 'held_cap': int(f('held_cap')), 'held_rear': int(f('held_rear')), 'held_grace': int(f('held_grace')),
         'held_respite': int(f('held_respite')), 'held_hunters': int(f('held_hunters')), 'kills': int((r['human'] or {}).get('kills', 0)), 'all_kills': int((r['stats'] or {}).get('kills', 0)),
         'errors': r['errors'], 'bad': r['bad'], 'other': other,
+        'human_dmg': f('human_dmg'), 'human_bonus': f('human_dmg_bonus'), 'hull_regen': f('hull_regen'), 'repairs': int(f('repairs')), 'repair_points': f('repair_points'),
     }
 
 
 def show(x):
     pct = lambda part, whole: 100.0 * part / whole if whole > 0 else 0.0
     return ('%-20s level %s nofair %s  %5.1f min | bot damage %6.0f (%6.0f before the scale), rear %4.1f%% (lines %4.1f%%), aft facing %4.1f%% | deaths %3d = %4.2f/min, '
-            'by bots %3d, rear %2d (%2.0f%%), <12s %2d | peak %s | held cap/rear/grace/respite/hunters %d/%d/%d/%d/%d | own kills %d, all kills %d | error lines %d, stuck etc. %d%s') % (
+            'by bots %3d, rear %2d (%2.0f%%), <12s %2d | peak %s | held cap/rear/grace/respite/hunters %d/%d/%d/%d/%d | own kills %d = %4.2f/min, K/D %4.2f, all kills %d | '
+            'help: own damage %.0f (%.0f of it the bonus), hull mended %.0f, repair pads %d (%.0f points) | error lines %d, stuck etc. %d%s') % (
         x['name'], x['difficulty'], x['nofair'], x['minutes'], x['dmg'], x['unscaled'], pct(x['rear'], x['dmg']), pct(x['line_rear'], x['line_dmg']), pct(x['aft'], x['dmg']),
         x['deaths'], x['deaths'] / x['minutes'], x['bot_deaths'], x['rear_deaths'], pct(x['rear_deaths'], x['deaths']), x['quick'], x['peak'],
-        x['held_cap'], x['held_rear'], x['held_grace'], x['held_respite'], x['held_hunters'], x['kills'], x['all_kills'], x['errors'], x['bad'],
+        x['held_cap'], x['held_rear'], x['held_grace'], x['held_respite'], x['held_hunters'], x['kills'], x['kills'] / x['minutes'], x['kills'] / max(x['deaths'], 1), x['all_kills'],
+        x['human_dmg'], x['human_bonus'], x['hull_regen'], x['repairs'], x['repair_points'], x['errors'], x['bad'],
         ' | other deaths: %s' % x['other'] if x['other'] else '')
 
 
@@ -102,7 +108,7 @@ def main():
             continue
         total = {'name': '%s x%d' % (name, len(xs)), 'difficulty': xs[0]['difficulty'], 'nofair': xs[0]['nofair'], 'other': {}, 'peak': '/'.join(x['peak'] for x in xs)}
         for key in ('minutes', 'dmg', 'rear', 'aft', 'unscaled', 'line_dmg', 'line_rear', 'deaths', 'bot_deaths', 'rear_deaths', 'quick', 'held_cap', 'held_rear', 'held_grace',
-                    'held_respite', 'held_hunters', 'kills', 'all_kills', 'errors', 'bad'):
+                    'held_respite', 'held_hunters', 'kills', 'all_kills', 'errors', 'bad', 'human_dmg', 'human_bonus', 'hull_regen', 'repairs', 'repair_points'):
             total[key] = sum(x[key] for x in xs)
         for x in xs:
             for cause, count in x['other'].items():

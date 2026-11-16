@@ -11,6 +11,29 @@ class UMaterialInstanceDynamic;
 class USphereComponent;
 class UStaticMeshComponent;
 
+/** How a filled pad shows itself from far away: sizes in uu, pure functions of the distance to the view (tested). */
+namespace HCJPickupLook
+{
+	/** The light column: its height above the pad, its width next to the view, and the share of the view distance it is at least wide (about 5 pixels at 1280x720), up to a limit. */
+	inline constexpr float BeamHeight = 4200.0f;
+	inline constexpr float BeamWidth = 70.0f;
+	inline constexpr float BeamAngularWidth = 0.008f;
+	inline constexpr float BeamMaxWidth = 520.0f;
+	/** The halo around the item: edge of its quad next to the view, the share of the view distance it is at least, and its limit. */
+	inline constexpr float HaloEdge = 900.0f;
+	inline constexpr float HaloAngularEdge = 0.09f;
+	inline constexpr float HaloMaxEdge = 4500.0f;
+	/** Column and halo are not drawn for a view farther away than this (another sector). */
+	inline constexpr float MaxViewDistance = 90000.0f;
+
+	/** Width of the column for a view ViewDistance away. */
+	HYPECUBEJAM_API float BeamWidthAt(float ViewDistance);
+	/** Edge of the halo quad for a view ViewDistance away, before the pulse. */
+	HYPECUBEJAM_API float HaloEdgeAt(float ViewDistance);
+	/** The slow pulse of the halo, 0.8 .. 1.0; Phase shifts it per pad so that the pads of a sector do not beat together. */
+	HYPECUBEJAM_API float HaloPulse(float TimeSeconds, float Phase);
+}
+
 /**
  * One pickup pad and the item on it.
  *
@@ -25,7 +48,10 @@ class UStaticMeshComponent;
  * is refilled after RespawnMin..MaxSeconds with an item picked by UHCJGameplaySettings::PickItem.
  *
  * COSMETICS (not on a dedicated server): a flat pad and a spinning, glowing shape in the item's colour; pickup
- * and refill sounds where the replicated state changes.
+ * and refill sounds where the replicated state changes. So that a pad can be found from the other end of a sector
+ * (item 38): a column of light above a filled pad and a pulsing halo around the item, both in the colour of the
+ * item's KIND (HCJ::GetItemKindColor: green health, amber weapons, magenta power-ups) and both kept at a minimum
+ * size on the screen (HCJPickupLook); the pad has the same colour. Local looks only: nothing of it is replicated.
  */
 UCLASS(NotBlueprintable)
 class HYPECUBEJAM_API AHCJPickup : public AActor
@@ -42,6 +68,8 @@ public:
 
 	/** SERVER: puts the first item on the pad. Called once right after the spawn. */
 	void ServerFill();
+	/** SERVER, development (HCJMenuCmd padview): puts this item on the pad, filled, for a picture. */
+	void ServerDebugSetItem(EHCJPickupItem NewItem);
 
 	EHCJPickupItem GetItem() const { return static_cast<EHCJPickupItem>(Item); }
 	/** True while an item lies on the pad. */
@@ -65,6 +93,8 @@ protected:
 	void ServerTryCollect(AHCJShipCharacter* Ship);
 	/** Every machine but a dedicated server: shape, colour and visibility from Item / bActive. */
 	void RefreshVisuals();
+	/** Every machine but a dedicated server, every frame: column and halo sized and turned for the local view; hidden on an empty pad and from another sector. */
+	void TickBeacon(float Now);
 
 	/** Root; overlaps Pawn only (server). */
 	UPROPERTY(VisibleAnywhere, Category = "HCJ")
@@ -82,6 +112,19 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> ItemMaterial;
 
+	/** The light column above a filled pad (a thin cylinder with the glow material) and the halo around the item (a quad facing the view with the glint material). */
+	UPROPERTY(VisibleAnywhere, Category = "HCJ")
+	TObjectPtr<UStaticMeshComponent> BeamMesh;
+
+	UPROPERTY(VisibleAnywhere, Category = "HCJ")
+	TObjectPtr<UStaticMeshComponent> HaloMesh;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> BeamMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> HaloMaterial;
+
 	/** EHCJPickupItem. */
 	UPROPERTY(ReplicatedUsing = OnRep_State)
 	uint8 Item = 0;
@@ -93,6 +136,9 @@ protected:
 	bool bShownActive = false;
 	bool bVisualsReady = false;
 	bool bGlowMaterial = false;
+	/** Local: whether column and halo are drawn right now, and the column width last set (it is only set again when it changes by a few percent). */
+	bool bBeaconShown = false;
+	float ShownBeamWidth = 0.0f;
 
 	FTimerHandle RefillTimer;
 };

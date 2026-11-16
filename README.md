@@ -192,7 +192,7 @@ Menu sizes follow the engine's DPI scaling of viewport widgets, HUD sizes `HCJUi
 0.67 at 1280x720; text never below 0.8).
 
 - Title menu: the first row is **Difficulty** (Easy / Normal / Hard / Ace) with one line under it that says what the
-  level does to the player ("One bot at a time. Slow, wide aim, and they come at you from the front." on Easy; see
+  level does to the player ("One bot at a time, from the front. Your guns hit harder, your hull mends." on Easy; see
   "Bots and people: the fairness rules"). Then QUICK PLAY (first button: joins an open match found through Epic Online Services, hosts one when there is
   none - see "Online"), PLAY (host with bots - one click; Enter), HANGAR (ship type, hull and paint with a turning 3D preview and stat
   bars; see "Ship types, warp drive, cloak, tractor beam"), bots 0-15, hypercube 3D-5D, seed, pilot name, JOIN
@@ -214,8 +214,8 @@ Menu sizes follow the engine's DPI scaling of viewport widgets, HUD sizes `HCJUi
   decides what is up: first the onboarding prompts in order (move, fire, boost, target keys), each until the
   player does it or 12-14 s pass; then contextual hints by priority, each at most 1-3 times per session with a
   cooldown: black hole and low hull (urgent: they interrupt), new item (once per item type), station turrets,
-  boost empty, wormhole, portal, pad, empty sector, the goal. On a low hull a green marker / edge chevron leads to
-  the nearest repair pad. After a death the respawn screen says who or what did it and gives one tip. H or the
+  boost empty, wormhole, portal, pad, empty sector, the goal. On a low hull a green marker / edge chevrons lead to
+  the nearest repair pad (drawn with the pad markers, also with the hints off; see "Pickups, power-ups and weapons"). After a death the respawn screen says who or what did it and gives one tip. H or the
   settings page switches hints off (`bHints` in `UHCJUserSettings`).
 - Layout: top left sector, sky, `KILLS n / limit`, the objective line (`HCJHints::MakeObjectiveText`: who leads, by
   how much), clock; top centre for 4.5 s after entering a sector a banner with its id and contents (black hole,
@@ -247,7 +247,8 @@ Menu sizes follow the engine's DPI scaling of viewport widgets, HUD sizes `HCJUi
   centre instead of the 60 uu of its movement collision - an extra query-only sphere on every ship, the same on
   server and clients, that only projectiles collide with. 0 switches it off.
 - Radar (bottom left, above the bars): the sector from above with forward up; enemies as red squares with a tick
-  for above / below, portals as squares, wormhole, station, black hole and filled pads; over it "ENEMIES IN
+  for above / below, portals as squares, wormhole, station, black hole and filled pads (a green cross for health, an
+  amber diamond for a weapon, a magenta triangle for a power-up); over it "ENEMIES IN
   SECTOR: n" or, when there is none, the sector of the nearest enemy and the portal or wormhole that leads there
   (route table), which is also marked "ENEMIES THIS WAY" in the world or by a chevron at the screen edge.
 - Also: spread circle on the crosshair, an arc showing where damage came from, a red vignette on a low hull.
@@ -555,8 +556,11 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
   | scout ambush from cloak, close passes around a player (`bFlankHumans`) | no | no | yes | yes |
   | left alone after appearing in a sector (`ArrivalGrace`; also under the spawn shield) | 4 s | 3.5 s | 1 s | - |
   | left alone after the attacker is gone (`RespiteSeconds`) | 6 s | 5 s | - | - |
-  | damage of a bot's hit on a player (`DamageToHumanScale`) | 50 % | 55 % | 100 % | 100 % |
+  | damage of a bot's hit on a player (`DamageToHumanScale`) | 40 % | 55 % | 100 % | 100 % |
   | torpedoes a bot would fire at a player that are fired (`TorpedoOnHumanChance`) | 35 % | 45 % | 100 % | 100 % |
+  | **beginner's help** (item 38): damage of a player's hit on a bot (`DamageFromHumanScale`) | 150 % | 100 % | 100 % | 100 % |
+  | the player's hull mends out of combat (`HumanHullRegenRate`) | 4 points a second | - | - | - |
+  | a repair pad restores, on a player's ship (`HumanRepairScale`) | 100 hull | 60 | 60 | 60 |
 
   - "Rear arc": more than about 107 degrees off the nose of the player's ship (`HCJBalance::RearArcDot`). The wait
     starts again every time the bot gets there; the HUD's ENEMY BEHIND is the warning for it.
@@ -570,6 +574,16 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
   - Ace (`?Difficulty=3`) is Hard's flying with none of these rules - what Hard was before. `-HCJNoFair` switches
     the rules off on every level (for comparisons with the same binary; the spawn changes - 3 s of spawn shield,
     80 m, facing the nearest ship - and the HUD stay).
+  - **Beginner's help, Easy only** (devlog item 38; server only, nothing replicated; the other levels and the bots
+    among themselves are untouched): every hit of a player on a bot's ship does 1.5 times its damage
+    (`AHCJShipCharacter::TakeDamage`, all weapons); the hull of a player's ship mends by 4 points a second once
+    nothing has taken hull or shield from it for 5 s, up to 75 % of the full hull
+    (`HCJBalance::StepHullRegen`, `HullRegenDelay`, `HullRegenCeiling` - the last quarter is what repair pads are
+    for); a repair pad makes a player's ship whole (100 instead of 60); and a bot's hit does 40 % instead of 50 %.
+    `-HCJClassicEasy` takes these four away again (`FHCJBotSkill::ClearBeginnerHelp`: Easy as build 0.20.0 had it,
+    for comparisons with the same binary); `-HCJNoFair` takes them away with everything else. The
+    `Fair: event=rules` line has `classic_easy= human_damage_scale= hull_regen= repair_scale=`, the
+    `Fair: event=status` line `human_kills= human_dmg= human_dmg_bonus= hull_regen= repairs= repair_points=`.
   - The server logs what happened to the people in a match: `Fair: event=rules | spawn | hit | death | status`
     (key=value; see "Fairness telemetry" in docs/DEVLOG_NOTES.md, item 29, for the fields and how to read the rear
     share and the deaths per minute out of a log).
@@ -849,7 +863,7 @@ ship that touches an active pad gets the item, and the pad is refilled after 20 
 
 | Item | Effect |
 |---|---|
-| Repair | +60 hull (refused at full hull) |
+| Repair | +60 hull (refused at full hull); on Easy a player's ship is made whole (+100) |
 | Shield cell | +50 shield, the weakest facings first, each up to twice its capacity |
 | Overdrive | 10 s of 1.5 x speed and 1.6 x acceleration |
 | Quad damage | 10 s of 4 x damage; the hull and the bolts glow magenta |
@@ -871,7 +885,30 @@ ship that touches an active pad gets the item, and the pad is refilled after 20 
 - G drops a pickup weapon. Bots collect what they can use and keep each weapon to its range.
 - Log: `Pickups t=...` every 15 s on the server (pads holding an item, items taken by type, kills by weapon);
   `Local t=...` on every client (pads known, own weapon, movement corrections received).
-- Development console commands: `HCJGive <0..8>` gives the local ship an item.
+- Development console commands: `HCJGive <0..8>` gives the local ship an item. `HCJMenuCmd padview
+  <uu>[,<item A>[,<item B>[,<yaw>[,<hull>]]]]` (listen host, with `peace`) puts the own ship that far from the nearest
+  filled pad of its sector, looking at it; `<item A>` is put on that pad, `<item B>` on the pad next to it (the ship
+  then looks at both from the side), `<yaw>` turns the ship away afterwards, `<hull>` sets the hull points - for
+  pictures of the pads, the markers and the low-hull pointer.
+- **Finding the pads** (devlog item 38; local looks, nothing replicated). Every item has a KIND with a colour of its
+  own (`HCJ::GetItemKind`, `GetItemKindColor`): **health** (repair, shield cell) green, **weapons** (the four pickup
+  weapons and the torpedoes) amber, **power-ups** (overdrive, quad damage, cloak) magenta.
+  - In the world (`AHCJPickup`, `HCJPickupLook`): pad and item are half as big again (pad 6.2 m, item 2.3 m); above a
+    filled pad stands a column of light 42 m high in the kind's colour (a cylinder with the glow material - opaque,
+    so a bright nebula behind it does not wash it out) and around the item pulses a halo (the glint material of the
+    ships, with its dark backing). Both keep a minimum size on the screen: the column is at least 0.8 % of the
+    distance to the view wide (about 5 pixels at 1280x720), the halo at least 9 %. The pad shows the kind's colour,
+    the item keeps its own. An empty pad has neither column nor halo. `PickupBeamBrightness`,
+    `PickupHaloBrightness`, `PickupHaloBacking` in the asset settings.
+  - On the HUD (`AHCJHUD::DrawPickupMarkers`): the six nearest filled pads of the sector (up to 450 m, i.e. all of
+    them; 120 m before) have a marker - a cross for health, a diamond for a weapon, a triangle for a power-up, in the
+    kind's colour - with a short name and the distance ("REPAIR  120 m"), smaller and fainter far away, never on a
+    HUD panel. **On a low hull** (below 35 %) the nearest REPAIR pad - a SHIELD cell when there is no repair - is
+    drawn larger and pulsing inside a ring, and when it is out of view three chevrons at the screen edge point to
+    it with its name and distance. This no longer depends on the hints being on. The label strings are kept from
+    frame to frame (`FPickupLabel`): none is built per frame.
+  - On the radar: the same three icons in the kind's colours instead of small diamonds in the item's colour; the
+    pad the HUD points at is larger, pulses inside a ring and is drawn on the rim when it is out of range.
 
 ## Audio
 
@@ -1011,7 +1048,10 @@ hardware.
 & "F:\EpicGames\UE_5.9\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "F:\work\HypeCubeJam\HypeCubeJam.uproject" -ExecCmds="Automation RunTests HypeCubeJam; Quit" -unattended -nullrhi -nosplash -log "-ini:EditorPerProjectUserSettings:[/Script/ModelContextProtocol.ModelContextProtocolSettings]:bAutoStartServer=False"
 ```
 
-81 automation tests (about a minute; four of them `HypeCubeJam.Input.*`: the aim stick's dead zone and curve, the
+84 automation tests (about a minute; three of them new with devlog item 38: `HypeCubeJam.Balance.BeginnerHelp` -
+Easy alone has the help, the classic switch, the hull mending rule -, `HypeCubeJam.Pickups.Visibility` - item kinds,
+their colours and short names, the size of the light column and the halo by distance -, `HypeCubeJam.UI.PickupMarkers`
+- the nearest-pads list, marker strength, distance text; four of them `HypeCubeJam.Input.*`: the aim stick's dead zone and curve, the
 controller switch and the device in use, the menu focus, the pad names of the prompts). Two of them are playthroughs (`HypeCubeJam.Playthrough.*`): a real game world
 with the game mode, the universe and bots, ticked by hand at 30 frames per game second - a match of six hard bots to
 a frag limit of 4 and the start of the next one on another layout, and three minutes of an open match of eight bots
@@ -1056,16 +1096,19 @@ autopilot against seven bots, headless, several processes at a time, and read ou
 ```powershell
 python docs\tools\fair_matches.py Saved\Fair easy_nofair:0:nofair:3 easy_fair:0:fair:3
 python docs\tools\fair_matches.py Saved\Fair blind_nofair:0:nofair:3:blind blind_fair:0:fair:3:blind
+python docs\tools\fair_matches.py Saved\Fair classic:0:classic:3 help:0:fair:3     # Easy of 0.20.0 against Easy now
 python docs\tools\fair_stats.py Saved\Fair\*.log
 ```
 
-`<tag>:<difficulty 0..3>:<fair|nofair>[:<count>[:blind]]` - `nofair` adds `-HCJNoFair` (the bots before the rules),
-`blind` takes the autopilot that only circles and fires straight ahead instead of the one that aims (the aiming one
+`<tag>:<difficulty 0..3>:<fair|nofair|classic>[:<count>[:blind]]` - `nofair` adds `-HCJNoFair` (the bots before the
+rules), `classic` adds `-HCJClassicEasy` (Easy without the beginner's help of item 38), `blind` takes the autopilot that only circles and fires straight ahead instead of the one that aims (the aiming one
 faces its attacker, so only the blind one shows how much damage comes from behind). `fair_stats.py` prints per log
 and per group: deaths per minute, the share of bot damage from the player's rear arc, deaths by a bot in the rear
 arc, deaths within 12 s of the spawn, the most bots on the player at once, and how often the cap, the rear rule,
-the arrival grace and the respite held a bot back. It works on any game log - also the one of a real match
-(`Saved\Logs\HypeCubeJam.log` of the host). Numbers: docs/DEVLOG_NOTES.md, item 29.
+the arrival grace and the respite held a bot back, the player's own kills per minute and kills over deaths, and what
+the beginner's help did (the player's damage on bots and the part the scale added, hull points mended, repair pads
+taken). It works on any game log - also the one of a real match (`Saved\Logs\HypeCubeJam.log` of the host).
+Numbers: docs/DEVLOG_NOTES.md, items 29, 31 and 38.
 
 ## MCP (Unreal MCP server)
 

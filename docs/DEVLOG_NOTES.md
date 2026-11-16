@@ -2810,8 +2810,244 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
       row on the web, the forward tier, the 10-minute soak, sound by ear, the site on GitHub Pages itself, other
       browsers. `PackagedWeb\itch` and the itch zip are still the old build (item 28).
 
+## 16 Nov 2026 (twenty-third session) - Easy for a beginner, pickups that can be seen
+38. "Improve the easy mode gameplay , make the health/weapons packs more visible" (the player, after two more matches
+    on Easy against 7 bots). From commit b32461f (0.20.0, tree clean). No replicated property, no RPC, no lobby key
+    changed (`ProjectVersion` stays 0.2.0); the changes to Easy are the server's, the pads' new looks and the HUD are
+    local. Layout checksum of seed 1234 unchanged (7C0CB60C, playthrough suite). Nothing was committed, pushed or
+    uploaded.
+    - **What the player's two logs say** (`F:\work\HCJ_push\play19\...\Saved\Logs`, build 0.19.0 with the fairness
+      rules of items 29 / 31, Easy, 7 bots; `fair_stats.py` and the `Kill:`, `Pickups t=`, `Local t=` lines).
+
+      | | match 1 (9.2 min) | match 2 (8.7 min) |
+      |---|---|---|
+      | kills / deaths | 1 / 11 (10 at its last `event=human` line) | 4 / 9 |
+      | deaths a minute | 1.20 | 1.03 |
+      | killed by | bots 8 (blaster 3, rapid pulse 2, torpedo 2, scatter 1), out of the sector 2, a turret 1 | bots 9 (homing missiles 3, scatter 3, rapid pulse 2, phaser 1) |
+      | by a bot in the rear arc / within 12 s of the spawn | 0 / 0 | 0 / 0 |
+      | bearing of the killer, seconds alive | - | 6 to 34 degrees off the nose; 39 to 82 s, median 47 |
+      | pads emptied in the match, by bots | 128, 127 | 105, 103 |
+      | `own ship:` in the 15 s status lines | PHASER, no ammunition, no power-up in all 35 | PHASER in 30, RAPID PULSE in 2 |
+
+      - The rules of item 29 do what they were made for: one bot at a time, from the front, nobody dies at the spawn.
+        What is left is a duel, nose to nose, that the player loses after three quarters of a minute.
+      - The player took one pad in the first match and two in the second, the bots 230. In the second match eight of
+        the nine deaths came from a weapon a bot had taken from a pad; the player fought with the phaser. The
+        low-hull hint ("a REPAIR pad is in this sector. Follow the green marker") was shown three times in each
+        match, which is its limit - and the green marker only existed while hints were on.
+      - The player's kills: 2 by torpedo, 1 blaster, 1 phaser in match 2. An Easy bot breaks off at 45 % hull and runs
+        for a repair pad; a beginner's phaser does not finish it.
+      - The same pilot the measurements use (the aiming autopilot) has 1.3 kills for every death on that Easy; the
+        player 0.1 and 0.44. The autopilot is a far better shot than a beginner.
+    - **A. Easy: help for a beginner** (`FHCJBotSkill`, three new fields next to the fairness fields, "off" on Normal,
+      Hard and Ace; `README.md`, "Bots and people", has the table). Server only. Bots among themselves are untouched.
+      - *A person's hits do 1.5 times their damage to a bot's ship* (`DamageFromHumanScale`;
+        `AHCJShipCharacter::TakeDamage`, where the bots' damage on a person is already scaled: every weapon, each
+        phaser step, the torpedo). The duel ends before the bot can run.
+      - *Bots do 40 % of their damage to a person* instead of 50 % (`DamageToHumanScale`).
+      - *The hull mends out of combat*: 4 points a second once nothing has taken hull or shield from the ship for
+        5 s, up to 75 % of the full hull (`HumanHullRegenRate`, `HCJBalance::StepHullRegen`, `HullRegenDelay`,
+        `HullRegenCeiling`; `AHCJShipCharacter::ServerTickHullRegen` - "hit" is any loss of hull or shield since the
+        last tick, so a station, the void and a development command count like a weapon). The last quarter is what
+        repair pads are for. With the 6 s of respite after a fight this is 20 to 40 points between two fights.
+      - *A repair pad makes the ship whole*: 100 instead of 60 (`HumanRepairScale`, `ServerGiveItem`).
+      - The line under the Difficulty row: "One bot at a time, from the front. Your guns hit harder, your hull
+        mends." (73 characters; the test allows 73).
+      - `-HCJClassicEasy` (`AHCJGameMode::IsClassicEasy`, `FHCJBotSkill::ClearBeginnerHelp`): Easy without these four
+        - Easy as 0.20.0 had it, in the same binary; it changes nothing on the other levels (tested). `-HCJNoFair`
+        clears them with the rest. `AHCJGameMode::GetFairSkill` is now the one place where the two switches are
+        applied to the row; the bots, the damage scales and the `Fair: event=rules` line read it.
+      - Not built: slower or wider bot fire at a person (the aim of an Easy bot is 7 degrees wide already, and the
+        deaths are few once the duel is shorter), more forgiving torpedoes (two of the player's five kills were
+        torpedoes: they work).
+      - Telemetry: `Fair: event=rules ... classic_easy= human_damage_scale= hull_regen= repair_scale=`;
+        `Fair: event=status ... human_kills= human_dmg= human_dmg_bonus= hull_regen= repairs= repair_points=` (damage
+        people did to bots as applied and the part the scale added, hull points mended, repair pads people took and
+        what they restored). `fair_stats.py` prints them, and the own kills a minute and kills over deaths;
+        `fair_matches.py` has `<tag>:<level>:classic`.
+    - **Measured** (`fair_matches.py`, as in items 29 and 31: one aiming autopilot - `-HCJAutoFly -HCJAutoAim
+      -HCJAutoTorpedo` - against seven bots, `?Bots=8`, seed 99, no limits, 245 s a process, six at a time, three
+      "before" and three "after" side by side in each batch, headless editor binary; "before" is the same binary with
+      `-HCJClassicEasy`; logs `Saved\Fair\item38_a`, `item38_b`, `item38_normal`). Batch A ran on the binary with the
+      Easy changes only, batch B on the final one.
+
+      | Easy, aiming pilot | matches / minutes | kills (a minute) | deaths (a minute) | kills over deaths | kills per match | deaths per match | median s alive at death | bot damage applied (before the scale) | own damage on bots (of it the bonus) | hull mended | kills in the match, all ships |
+      |---|---|---|---|---|---|---|---|---|---|---|---|
+      | before, batch A | 3 / 12.1 | 14 (1.15) | 13 (1.07) | 1.08 | 3 4 7 | 4 5 4 | | 2617 (5232) | 5613 (0) | 0 | 185 |
+      | after, batch A | 3 / 12.1 | 29 (2.39) | 7 (0.58) | 4.14 | 9 12 8 | 3 2 2 | | 2096 (5240) | 6007 (2002) | 303 | 192 |
+      | before, batch B | 3 / 12.2 | 18 (1.47) | 11 (0.90; 9 by bots, 2 by a turret) | 1.64 | 7 8 3 | 5 2 4 | | 2258 (4515) | 5896 (0) | 0 | 193 |
+      | after, batch B | 3 / 12.2 | 29 (2.37) | 7 (0.57) | 4.14 | 9 9 11 | 2 2 3 | | 2232 (5581) | 6588 (2196) | 256 | 178 |
+      | **before, both** | 6 / 24.3 | **32 (1.32)** | **24 (0.99)** | **1.33** | 3 to 8 | 2 to 5 | 38 | 4875 (9747) | 11509 (0) | 0 | 378 |
+      | **after, both** | 6 / 24.3 | **58 (2.39)** | **14 (0.58)** | **4.14** | 8 to 12 | 2 to 3 | 76 | 4328 (10821) | 12595 (4198) | 559 | 370 |
+
+      - Read. Kills over deaths 1.33 -> 4.14; kills a minute +81 %, deaths a minute -41 % (target: clearly better
+        kills over deaths, deaths a minute not higher). Every "after" match has at least as many kills as the best
+        "before" match (8) and at most 3 deaths. 14 deaths put the "after" rate at 0.58 +- 0.15, 24 the "before" rate
+        at 0.99 +- 0.2. It is still a fight: the pilot is destroyed every 100 s on average, 14 times in six matches
+        (scatter cannon 8, homing missiles 4, rail 1, blaster 1), and the bots deal as much raw damage as before
+        (10821 against 9747 before the scale: the pilot lives longer and is shot at longer).
+      - The pilot's damage on bots before the scale is lower than before (8397 = 12595 - 4198, against 11509), for
+        nearly twice the kills: 145 raw points a kill against 360. The hull mended 93 points a match (28 a life,
+        20 lives): this pilot never stops fighting. It took **no repair pad** in any of the twelve matches (`repairs=0`), so the 100-point repair
+        was not exercised by the measurement (see the check below). The bots still fight each other: 370 against 378
+        kills in the matches.
+      - No error line in the 18 logs of the three batches; one `event=stuck` (a Normal match, Bot-07 for 20 s at 37
+        uu/s next to its target Bot-04, 242 uu apart, on the way to a pad: the case of items 27 and 36).
+      - **Normal is unchanged.** By the code: `FHCJBotSkill::Get(1)` was not touched and has the three new fields at
+        "off" (unit test, and `ClearBeginnerHelp` changes nothing above Easy); `GetFairSkill` returns the same row as
+        the two lines it replaced in `AHCJBotController::Think`; the new branch of `TakeDamage` multiplies by 1; the
+        hull tick returns at a rate of 0; the repair scale is 1. The `Fair: event=rules` line of a Normal match is
+        the one of item 31 plus `classic_easy=0 human_damage_scale=1.00 hull_regen=0.0 repair_scale=1.00`. By
+        measurement (six Normal matches of this binary at a time, three of them with `-HCJClassicEasy`, which is a
+        no-op there): 2.94 deaths a minute (36; per match 3.18, 2.20, 3.44) and 2.78 (34; 2.20, 2.94, 3.18), own
+        kills 7 and 10, bot damage 4917 and 4998 at the scale 0.55, `peak_attackers` 2 in all six, `hull_regen=0`,
+        `human_dmg_bonus=0` in all six, and the one repair pad the pilot took restored 60 points (`repairs=1
+        repair_points=60`). Item 31 measured 2.69 (six matches, 1.96 to 3.92). Hard and Ace: by the code and the
+        unit tests only.
+      - **Repair pad and hull mending, by command** (headless editor binary, three processes side by side, bots held
+        still: `padview ...,20` sets the hull to 20, `HCJGive 0` three seconds later is a repair pad, then the hull is
+        set to 20 again and left alone for 16 s; `Saved\Item38\repair`). Easy: `repairs=1 repair_points=80` (20 ->
+        100) and `hull_regen=44` (20 -> 64: 11 s at 4 a second after the 5 s wait). Easy with `-HCJClassicEasy` and
+        Normal: `repair_points=60`, `hull_regen=0`.
+    - **B. Pads that can be seen.** Until now a pad was a disc of 4.2 m with a 1.5 m shape over it in a sector 520 m
+      across, its marker appeared within 120 m, and the radar had a small diamond per pad.
+      - *Kinds* (`HCJ::GetItemKind`, `GetItemKindColor`, `GetItemShortName`): **health** (repair, shield cell) green,
+        **weapons** (scatter, rail, missiles, pulse, torpedoes) amber, **power-ups** (overdrive, quad damage, cloak)
+        magenta. The pad, its column, its halo, its HUD marker and its radar icon have the kind's colour; the
+        turning shape keeps the item's own.
+      - *In the world* (`AHCJPickup`, `HCJPickupLook`): pad 6.2 m, shape 2.3 m (half as big again). Over a filled pad
+        a column of light 42 m high - a cylinder with the pads' glow material, opaque, so that a bright nebula
+        behind it does not wash it out - and around the shape a pulsing halo (the ships' glint material with its
+        dark backing, a quad turned to the view). Both keep a size on the screen: the column is at least 0.8 % of
+        the distance to the view wide (5 pixels at 1280x720; 0.7 m next to the view, 5.2 m at most), the halo quad at
+        least 9 %. An empty pad has neither. Cost: two more mesh components per pad (64 pads in a 16-sector match,
+        about five of them in view), no light, no particle system; per frame and filled pad one distance, one
+        rotation and one scale for the halo, the column's scale only when it changes by 3 %; the view is asked for
+        once a frame for all pads; nothing for a pad more than 900 m away (another sector).
+      - *HUD* (`AHCJHUD::DrawPickupMarkers`, `DrawPickupIcon`): the six nearest filled pads within 450 m (all pads of
+        the sector; 120 m before) have a marker - cross / diamond / triangle by kind - with a short name and the
+        distance ("REPAIR  120 m"; beyond 50 m in steps of 5 m), smaller and fainter with the distance (strength 1
+        up to 70 m, 0.7 from 260 m; the text never below 0.9), not on a HUD panel. **Hull below 35 %**: the nearest
+        REPAIR pad (a SHIELD cell when the sector has no repair) is drawn larger and pulsing inside a ring; out of
+        view, three chevrons on the edge ellipse point to it with name and distance on a dark plate. This was a
+        part of the hint system (circle and two chevrons, only with hints on); it now belongs to the markers and is
+        always there. No string is built per frame: the label of a marker slot is made again only when its pad,
+        item or shown distance changes (`FPickupLabel`, `FString::Reset` + `Appendf`); the nearest six are kept in
+        an array on the stack (`HCJUi::InsertNearest`).
+      - *Radar*: green cross, amber diamond, magenta triangle; the pad the HUD points at is larger, pulses inside a
+        ring and sits on the rim when it is beyond the radar's 160 m.
+      - `docs/README.txt` says what the colours mean.
+    - **Tests.** Three new automation tests - `HypeCubeJam.Balance.BeginnerHelp` (Easy alone has the help and still
+      hurts, the classic switch gives back Easy's old row and changes no other level, the hull mending rule),
+      `HypeCubeJam.Pickups.Visibility` (every item has a kind and a short name of at most 9 characters, the three
+      colours are far from each other and from the red of an enemy, column and halo by distance),
+      `HypeCubeJam.UI.PickupMarkers` (the nearest-N list against a full sort over 200 random streams, marker
+      strength, distance text) - and the changed checks of `Balance.BotDifficulty` (Easy 0.4; `ClearFairness` also
+      clears the help). **84 automation tests.**
+      - First full run (sources before the pictures were tuned): **84 of 84**, exit code 0.
+      - Second full run: **83 of 84**, exit code 255. The failure, verbatim: `Test Completed. Result={Fail}
+        Name={Visibility} Path={HypeCubeJam.Pickups.Visibility}` - `Expected 'column at 100 m: still its own width'
+        to be 70.000000, but it was 80.000000 and outside tolerance 0.000100.` The test's own number was stale: the
+        column's minimum share of the distance had been raised from 0.6 to 0.8 % after the first pictures. The check
+        now asks at 80 m.
+      - Third full run, final sources: **84 of 84**, exit code 0 (`OpenMatchKeepsMoving` passed in all three).
+    - **Verification.** `HypeCubeJamEditor` (Win64 Development) built, 0 errors, 0 warnings of the project.
+      - Playthrough suite, editor binary, headless, `--port 7910`: **8 of 8**, 514 s, exit code 0
+        (`Saved\Playthrough\20261116_123441`). It ran before the last two changes (a dark plate behind the pointer's
+        label in the HUD; the test above). Again on the final sources: **8 of 8**, 513 s, exit code 0
+        (`Saved\Playthrough\20261116_132047`). The table is the first run's.
+
+        | scenario | result | checks | what it saw |
+        |---|---|---|---|
+        | `match_cycle` | pass | 21 | match 1 won with 5 kills after 85 s; layouts 7C0CB60C -> 5671F10D |
+        | `difficulty_easy` | pass | 30 | 50 kills, 45 portal / 9 wormhole jumps, 57 pickups |
+        | `difficulty_normal` | pass | 31 | 68 kills, 66 / 5 jumps, 61 pickups |
+        | `difficulty_hard` | pass | 31 | 63 kills, 78 / 8 jumps, 66 pickups |
+        | `small_universe` | pass | 13 | 92 kills on four sectors; 86 turret shots, 1 turret destroyed |
+        | `net_host_client_late` | pass | 49 | client 0 kills / 3 deaths, 6.7 corrections per 100 s; late joiner 1 / 5, 5.5 per 100 s and one rock already gone; 4 rocks destroyed (host with `-HCJNoFair`) |
+        | `autopilot_hangar_match` | pass | 17 | cruiser chosen, PLAY, three matches to the limit of 4 (Normal); the player 1 kill / 2 deaths |
+        | `all_matches_together` | pass | 20 | kills: phaser 119, torpedo 95, missiles 55, blaster 45, rail 43, scatter 34, pulse 24; 8 ships shot down by turrets, 6 turrets destroyed, 13 rocks |
+
+      - **Packaged** (the command of the README; log `Saved\Item38\bcr.log`): exit code 0, BUILD SUCCESSFUL, 211 s;
+        1095 packages in the cook (1066 cooked, 29 skipped for the platform - no new content), 0 errors, 0 warnings.
+        `docs\tools\make_zip.ps1` (exit code 0): `Packaged\mariuz_HypeCubeJam.zip` 585.2 MB (613,646,422 bytes), 884.2
+        MB unpacked, 48 files; `python -I` / `zipfile.testzip()`: nothing wrong, 48 entries, forward slashes, no
+        `.pdb`; the `README.txt` in it has the pad colours and the new Easy lines.
+      - Playthrough suite on the packaged build (`--binary packaged --port 7940`, headless; final sources): **7 of
+        8**, 489 s, exit code 1 (`Saved\Playthrough\20261116_130121`). The failure, verbatim: `net_host_client_late
+        FAIL       49     254  late joiner: no kill and no death on the host's board`. The host's log has both: the
+        late joiner (Lena) lived 103 s, was destroyed at t = 203 s (`Fair: event=death t=203 name=Lena killer=Clive`)
+        and destroyed the client at t = 209 s (`Kill: Lena destroyed Clive (PHASER)`), then its process ended; the
+        board is written every 15 s and its last line for Lena (0 / 0) is older than both. The host of this scenario
+        runs with `-HCJNoFair`, which switches the help of this item off with the rules. The scenario again (`--only
+        net_host_client_late --port 7950`): **1 of 1**, 254 s, exit code 0 (`Saved\Playthrough\20261116_131013`:
+        client 5 kills / 2 deaths, late joiner 2 / 3). The other seven of the first run: 63 / 80 / 67 kills on easy /
+        normal / hard, 97 on four sectors, match 1 won after 65 s, the autopilot player 6 kills / 0 deaths as a
+        cruiser over three matches (Normal).
+      - **0.20.0 and this build join each other** (headless, both ways, 95 s of host and 62 s of client each, Easy,
+        6 bots, both on the aiming autopilot; "0.20.0" is a copy of the zip stage of item 36 made before this
+        package; `Saved\Item38\join`). New host, 0.20.0 client: `Player joined ... (remote) -> 2 humans, 4 bots`, the
+        client's six status lines have `ship=1` and the host's layout checksum (3976D716), it knows the pads of its
+        sector (`3 pickup pads known`), 0 kills / 0 deaths in its minute; the host counts the client's and its own
+        damage with the bonus (`human_dmg=539 human_dmg_bonus=180`). 0.20.0 host, new client: joined, `ship=1`, same
+        checksum, 1 kill / 1 death, `5 pickup pads known, 5 hold an item`. Exit code 0 of all four processes; one
+        error line per log, the known CelestialVault message. Not looked at: what the new client draws (headless).
+    - Development aids added: `-HCJClassicEasy`, `HCJMenuCmd padview <uu>[,<item A>[,<item B>[,<yaw>[,<hull>]]]]`
+      (listen host, with `peace`: the own ship that far from the nearest filled pad of its sector, looking at it;
+      items put on that pad and the one next to it; the ship turned away; the hull set),
+      `AHCJPickup::ServerDebugSetItem` (not in shipping builds), the `classic` mode of `fair_matches.py`, the help
+      and kill columns of `fair_stats.py`.
+    - Pictures (editor binary with `-game`, a 1280x720 window, the capture switch every 2.5 s, bots held still with
+      `peace`, the ship placed by `padview`; seed 1234, Easy; four runs of 40, 31, 38 and 22 s of match - the first
+      two to look at the first version and to find that a picture taken in the frame of a `padview` shows the chase
+      camera half way round; 185, 190 and 191 are from the last run, the others from the third, which lacks only the
+      dark plate of the pointer's label):
+      `Media/185_pickup_pads_from_far_away_columns_and_halos.png` (a cloak, a shield cell and a rapid pulse pad at
+      160 to 225 m: magenta, green and amber columns with halos and labels),
+      `186_health_and_weapon_pads_side_by_side_shield_and_missiles.png` (80 m each, three more pads behind at 130 to
+      220 m; the radar with its icons),
+      `187_power_up_pad_overdrive_and_hud_markers.png` (magenta column and triangle at 60 m; hull 27: the repair pad
+      at 135 m in its ring),
+      `188_low_hull_repair_and_scatter_pads_against_a_bright_nebula.png` (hull 17; the columns stay green and amber
+      on the white core of a nebula),
+      `189_low_hull_repair_marker_emphasised.png` (hull 25: "REPAIR  90 m" large, the cross in a ring, the same
+      ringed cross on the radar, the hint line),
+      `190_low_hull_pointer_to_repair_pad_behind.png` and `191_low_hull_pointer_to_repair_pad_on_the_right.png` (the
+      pad out of view: three green chevrons with "REPAIR  90 m" on its plate; in 190 two enemy arrows lie next to
+      it),
+      `192_radar_pad_icons_enlarged_4x_crop_of_189.png` (the radar of 189, cut out and enlarged four times without
+      smoothing). In 187 and 188 the hull was low because the first `padview` of that run had put the ship outside
+      the sector's safe radius (RETURN TO SECTOR), not by a command; in 186 and 191 the hull bar reads 46 and 35
+      where a command had set 25 ten and seven seconds earlier - the hull mending at work.
+    - **Not verified.**
+      - Nobody has played this build. Every number about Easy is the aiming autopilot's, which aims far better than
+        the player whose logs started this item (1.3 kills per death on the old Easy against the player's 0.1 and
+        0.44). For that pilot Easy is now lopsided (4.1 kills per death); what it is for a beginner is a guess: the
+        player's damage is multiplied by 1.5 and the bots' by 0.8 of before. The blind pilot of item 29 was not run.
+      - The hull mending and the 100-point repair were seen working in headless runs and in the hull bar of two
+        pictures; how they feel (whether 4 points a second is noticed at all) is untested. A hull that mends has no
+        sound and no HUD cue of its own - the bar simply rises.
+      - Twelve Easy matches of 4 minutes: a match has 2 to 5 deaths, so one match says little; the two batches agree
+        (kills over deaths 4.14 in both, by chance to the last digit: 29 / 7 twice).
+      - The pads' new looks were judged from eight still pictures of the editor binary on one PC, in three sectors.
+        Not seen: the columns in motion, a pad taken and refilled (the column going out and coming back), the pulse
+        of the halo, a network client (the looks are local and read the replicated item and flag, as before), the
+        packaged build rendered (it ran headless only), 1920x1080, the mobile renderer of the web build. From
+        straight above or below a column is seen end-on and only the halo is left. The columns stand along world Z
+        whatever the ship's "up" is.
+      - Frame cost was not measured against 0.20.0: no rendered A/B run was made (somebody was using the PC). The
+        capture runs logged 49 to 118 fps averages over 2.5 s with a picture taken in each interval, which says
+        nothing either way.
+      - With five pads in view the screen carries five more labels than before in a fight; whether that is too much
+        was not judged by anybody who plays.
+      - The low-hull pointer and the enemy arrows share the edge ellipse and can lie on each other (picture 190).
+      - The web (Wasm) build was not compiled: the new code uses nothing Windows-only (`GFrameCounter`, canvas
+        lines, two mesh components).
+      - Easy over the network with a second person: the help applies to every ship flown by a person, as the
+        fairness rules do; only the headless join test above ran it.
+
 ## Measurements
-- Automation tests: 9 at the start, 81 now (item 36: 81 of 81; items 33 and 34: 77 of 77), all passing (added: the game controller - aim stick, switch, menu focus, prompt names -; the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
+- Automation tests: 9 at the start, 84 now (item 38: 84 of 84; item 36: 81 of 81; items 33 and 34: 77 of 77), all passing (added: the beginner's help of Easy, the kinds / light columns of the pads and the pad markers of the HUD; the game controller - aim stick, switch, menu focus, prompt names -; the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station
   placement, lead aim).
 - Frame rate (editor binary, -game, 8 s averages): 101-128 fps with basic shapes (`-HCJNoAssets`), 98-129 fps
@@ -2822,6 +3058,14 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
   also with basic shapes only.
 
 ## Not done / open
+- Item 38 (Easy for a beginner, pads that can be seen; packaged as `Packaged\mariuz_HypeCubeJam.zip`): **nobody has
+  played it.** Easy was measured with the aiming autopilot only (kills over deaths 1.33 -> 4.14, deaths a minute 0.99
+  -> 0.58, twelve matches of four minutes), which aims far better than the player it was made for; whether Easy is
+  now right, still too hard or too easy for a beginner is open. The pads' columns, halos, markers and the low-hull
+  pointer were judged from eight still pictures of the editor binary; not seen in motion, not on a network client,
+  not in the packaged build (headless only), not in the web build (not compiled). Frame cost not measured against
+  0.20.0. The playthrough suite failed once on the packaged build in `net_host_client_late` (the late joiner's
+  first kill and death came after the board's last line; passed when run again).
 - Item 36 (game controller): **no controller was attached or used.** The bindings, the SETTINGS switch, the menu
   focus and the pad prompts were shown with injected key events (`HCJMenuCmd padtest`, `HCJMenuCmd nav`), unit tests
   and pictures. Open: an Xbox pad and a Steam Controller in the hand (is it seen, the feel of the aim stick, the left

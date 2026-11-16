@@ -35,8 +35,12 @@ FHCJBotSkill FHCJBotSkill::Get(int32 Difficulty)
 		Skill.bFlankHumans = false;
 		Skill.ArrivalGrace = 4.0f;
 		Skill.RespiteSeconds = 6.0f;
-		Skill.DamageToHumanScale = 0.5f;
+		Skill.DamageToHumanScale = 0.4f;
 		Skill.TorpedoOnHumanChance = 0.35f;
+		// Help for a beginner (item 38): its guns hit harder, its hull mends between fights, a repair pad makes it whole.
+		Skill.DamageFromHumanScale = 1.5f;
+		Skill.HumanHullRegenRate = 4.0f;
+		Skill.HumanRepairScale = 100.0f / 60.0f;
 		break;
 	case 1:
 		Skill.AimErrorDeg = 3.5f;
@@ -123,6 +127,22 @@ void FHCJBotSkill::ClearFairness()
 	RespiteSeconds = Off.RespiteSeconds;
 	DamageToHumanScale = Off.DamageToHumanScale;
 	TorpedoOnHumanChance = Off.TorpedoOnHumanChance;
+	DamageFromHumanScale = Off.DamageFromHumanScale;
+	HumanHullRegenRate = Off.HumanHullRegenRate;
+	HumanRepairScale = Off.HumanRepairScale;
+}
+
+void FHCJBotSkill::ClearBeginnerHelp()
+{
+	const FHCJBotSkill Off;
+	if (DamageFromHumanScale != Off.DamageFromHumanScale || HumanHullRegenRate != Off.HumanHullRegenRate || HumanRepairScale != Off.HumanRepairScale)
+	{
+		// (Only the row that has the help - Easy - had its damage scale lowered with it.)
+		DamageToHumanScale = FMath::Max(DamageToHumanScale, HCJBalance::ClassicEasyDamageToHumanScale);
+	}
+	DamageFromHumanScale = Off.DamageFromHumanScale;
+	HumanHullRegenRate = Off.HumanHullRegenRate;
+	HumanRepairScale = Off.HumanRepairScale;
 }
 
 const TCHAR* HCJBalance::GetDifficultyName(int32 Difficulty)
@@ -140,7 +160,7 @@ const TCHAR* HCJBalance::GetDifficultyDescription(int32 Difficulty)
 {
 	switch (FMath::Clamp(Difficulty, 0, NumBotDifficulties - 1))
 	{
-	case 0: return TEXT("One bot at a time. Slow, wide aim, and they come at you from the front.");
+	case 0: return TEXT("One bot at a time, from the front. Your guns hit harder, your hull mends.");
 	case 1: return TEXT("Two on you at most. A moment's warning before any fire from behind.");
 	case 2: return TEXT("Three on you. Sharp aim, torpedo combos, scouts ambush from cloak.");
 	default: return TEXT("No rules: every bot hunts you, from any side, with everything it has.");
@@ -308,4 +328,14 @@ float HCJBalance::StepShieldRegen(float Shield, float MaxShield, float SecondsSi
 		return Shield;
 	}
 	return FMath::Min(MaxShield, Shield + RegenRate * DeltaSeconds);
+}
+
+float HCJBalance::StepHullRegen(float Hull, float MaxHull, float SecondsSinceDamage, float DeltaSeconds, float RegenRate, bool bDepleted)
+{
+	const float Ceiling = MaxHull * HullRegenCeiling;
+	if (bDepleted || Hull <= 0.0f || Hull >= Ceiling || RegenRate <= 0.0f || SecondsSinceDamage < HullRegenDelay)
+	{
+		return Hull;
+	}
+	return FMath::Min(Ceiling, Hull + RegenRate * FMath::Max(DeltaSeconds, 0.0f));
 }

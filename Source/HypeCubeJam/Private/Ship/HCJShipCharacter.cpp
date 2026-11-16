@@ -304,6 +304,7 @@ void AHCJShipCharacter::Tick(float DeltaSeconds)
 	ServerTickPhaser(DeltaSeconds);
 	ServerTickWeapon();
 	ServerTickBounds(DeltaSeconds);
+	ServerTickHullRegen(DeltaSeconds);
 	if (FairBeamLogs.Num() > 0)
 	{
 		FlushFairBeamLogs(false);
@@ -719,7 +720,17 @@ bool AHCJShipCharacter::ServerGiveItem(EHCJPickupItem Item)
 	switch (Item)
 	{
 	case EHCJPickupItem::Repair:
-		return HealthComponent->Heal(Gameplay.RepairAmount) > 0.0f;
+	{
+		// Beginner's help (item 38): on Easy a repair pad makes a person's ship whole.
+		const AHCJGameMode* GameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>();
+		const bool bHuman = GameMode != nullptr && Cast<APlayerController>(GetController()) != nullptr;
+		const float Restored = HealthComponent->Heal(Gameplay.RepairAmount * (bHuman ? GameMode->GetHumanRepairScale() : 1.0f));
+		if (bHuman && Restored > 0.0f)
+		{
+			GetWorld()->GetAuthGameMode<AHCJGameMode>()->NotifyHumanRepair(Restored);
+		}
+		return Restored > 0.0f;
+	}
 	case EHCJPickupItem::ShieldCell:
 		return HealthComponent->AddShield(Gameplay.ShieldCellAmount, Gameplay.ShieldOverchargeFactor) > 0.0f;
 	case EHCJPickupItem::Overdrive:
@@ -951,7 +962,11 @@ float AHCJShipCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Dama
 	AHCJGameMode* FairGameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>();
 	const bool bHumanVictim = Cast<APlayerController>(GetController()) != nullptr;
 	const bool bBotAttacker = EventInstigator != GetController() && Cast<AHCJBotController>(EventInstigator) != nullptr;
-	const float DamageScale = (bHumanVictim && bBotAttacker && FairGameMode != nullptr) ? FairGameMode->GetBotDamageToHumanScale() : 1.0f;
+	// Beginner's help (item 38, Easy only): what a person does to a bot's ship is scaled up the same way.
+	const bool bHumanOnBot = !bHumanVictim && FairGameMode != nullptr && Cast<AHCJBotController>(GetController()) != nullptr
+		&& EventInstigator != nullptr && Cast<APlayerController>(EventInstigator) != nullptr;
+	const float DamageScale = (bHumanVictim && bBotAttacker && FairGameMode != nullptr) ? FairGameMode->GetBotDamageToHumanScale()
+		: bHumanOnBot ? FairGameMode->GetHumanDamageToBotScale() : 1.0f;
 	const float ActualDamage = UnscaledDamage * DamageScale;
 
 	{
@@ -1076,6 +1091,10 @@ float AHCJShipCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Dama
 		// Enough of this and the beam lets go (ServerTickSystems).
 		TractorDamageTaken += Applied;
 	}
+	if (bHumanOnBot)
+	{
+		FairGameMode->NotifyHumanDamageToBot(Applied, Applied - Applied / FMath::Max(DamageScale, 1.0f));
+	}
 
 	if (bHumanVictim)
 	{
@@ -1176,6 +1195,40 @@ float AHCJShipCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Dama
 		}
 	}
 	return Applied;
+}
+
+void AHCJShipCharacter::ServerTickHullRegen(float DeltaSeconds)
+{
+	// Beginner's help (item 38, Easy only): the hull of a ship flown by a person mends slowly once nothing has hit it
+	// for a few seconds, up to HCJBalance::HullRegenCeiling of the full hull. Bots never; the rate is 0 on the other levels.
+	if (HealthComponent == nullptr || Cast<APlayerController>(GetController()) == nullptr)
+	{
+		return;
+	}
+	// "Hit" is any loss of hull or shield since the last tick, whatever it came from (a weapon, a station, the void).
+	const float Now = static_cast<float>(GetWorld()->GetTimeSeconds());
+	const float Hull = HealthComponent->GetHealth();
+	const float Vitals = Hull + HealthComponent->GetShield();
+	if (Vitals < RegenSeenVitals - 0.01f)
+	{
+		LastHullDamageTime = Now;
+	}
+	RegenSeenVitals = Vitals;
+	if (Hull >= HealthComponent->GetMaxHealth() * HCJBalance::HullRegenCeiling)
+	{
+		return;
+	}
+	AHCJGameMode* GameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>();
+	const float Rate = GameMode != nullptr ? GameMode->GetHumanHullRegenRate() : 0.0f;
+	if (Rate <= 0.0f)
+	{
+		return;
+	}
+	const float NewHull = HCJBalance::StepHullRegen(Hull, HealthComponent->GetMaxHealth(), Now - LastHullDamageTime, DeltaSeconds, Rate, HealthComponent->IsDepleted());
+	if (NewHull > Hull)
+	{
+		GameMode->NotifyHumanHullRegen(HealthComponent->Heal(NewHull - Hull));
+	}
 }
 
 void AHCJShipCharacter::LogFairHit(const FString& AttackerName, bool bAttackerIsBot, const TCHAR* Weapon, const TCHAR* Facing, float Bearing, float Distance, float Applied, float Unscaled,

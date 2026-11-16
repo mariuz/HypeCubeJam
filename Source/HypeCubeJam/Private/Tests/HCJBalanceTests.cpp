@@ -70,7 +70,7 @@ bool FHCJBotSkillTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("no flanking of people on easy and normal"), FHCJBotSkill::Get(0).bFlankHumans || FHCJBotSkill::Get(1).bFlankHumans);
 	TestTrue(TEXT("flanking on hard"), FHCJBotSkill::Get(2).bFlankHumans);
 	TestEqual(TEXT("easy: one attacker"), FHCJBotSkill::Get(0).MaxAttackersOnHuman, 1);
-	TestEqual(TEXT("easy: bots do half of their damage to a person"), FHCJBotSkill::Get(0).DamageToHumanScale, 0.5f);
+	TestEqual(TEXT("easy: bots do two fifths of their damage to a person"), FHCJBotSkill::Get(0).DamageToHumanScale, 0.4f);
 	TestEqual(TEXT("normal: a little more than half"), FHCJBotSkill::Get(1).DamageToHumanScale, 0.55f);
 	TestEqual(TEXT("hard: full damage"), FHCJBotSkill::Get(2).DamageToHumanScale, 1.0f);
 	{
@@ -88,6 +88,7 @@ bool FHCJBotSkillTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("cleared: ace's rules"), Cleared.MaxAttackersOnHuman == 0 && Cleared.MaxHuntersPerHuman == 0 && Cleared.RearFireDelay == 0.0f && Cleared.RearAimErrorScale == 1.0f
 				&& Cleared.FrontBias == 0.0f && Cleared.HumanTailScore == 1.5f && Cleared.bFlankHumans && Cleared.ArrivalGrace == 0.0f && Cleared.RespiteSeconds == 0.0f
 				&& Cleared.DamageToHumanScale == 1.0f && Cleared.TorpedoOnHumanChance == 1.0f);
+			TestTrue(TEXT("cleared: no beginner's help"), Cleared.DamageFromHumanScale == 1.0f && Cleared.HumanHullRegenRate == 0.0f && Cleared.HumanRepairScale == 1.0f);
 			TestTrue(TEXT("cleared: the skill numbers stay"), Cleared.AimErrorDeg == Row.AimErrorDeg && Cleared.ReactionDelay == Row.ReactionDelay && Cleared.Tactics == Row.Tactics);
 			// What the menu says about the level: a name and one line that fits the page (the 13 pt line of the web build is 74 characters).
 			const FString Name = HCJBalance::GetDifficultyName(Level);
@@ -204,6 +205,64 @@ bool FHCJBoostMeterTest::RunTest(const FString& Parameters)
 			break;
 		}
 	}
+	return true;
+}
+
+/**
+ * Beginner's help (item 38): Easy alone has it, the other levels are exactly "off", the switch that takes it away gives
+ * back Easy's row of before and touches no other level; the hull mending rule.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHCJBeginnerHelpTest, "HypeCubeJam.Balance.BeginnerHelp", HCJBalanceTestFlags)
+
+bool FHCJBeginnerHelpTest::RunTest(const FString& Parameters)
+{
+	using namespace HCJBalance;
+	const FHCJBotSkill Easy = FHCJBotSkill::Get(0);
+	TestTrue(TEXT("easy: a person's guns do more to a bot, but not double"), Easy.DamageFromHumanScale > 1.0f && Easy.DamageFromHumanScale <= 2.0f);
+	TestTrue(TEXT("easy: the hull mends, slowly (a full hull is 100)"), Easy.HumanHullRegenRate > 0.0f && Easy.HumanHullRegenRate <= 10.0f);
+	TestTrue(TEXT("easy: a repair pad restores more"), Easy.HumanRepairScale > 1.0f && Easy.HumanRepairScale <= 2.0f);
+	TestTrue(TEXT("easy: bots still hurt"), Easy.DamageToHumanScale >= 0.25f && Easy.DamageToHumanScale < ClassicEasyDamageToHumanScale);
+	for (int32 Level = 1; Level < NumBotDifficulties; ++Level)
+	{
+		const FHCJBotSkill Row = FHCJBotSkill::Get(Level);
+		TestTrue(TEXT("no help above easy"), Row.DamageFromHumanScale == 1.0f && Row.HumanHullRegenRate == 0.0f && Row.HumanRepairScale == 1.0f);
+		FHCJBotSkill Classic = Row;
+		Classic.ClearBeginnerHelp();
+		TestTrue(TEXT("the classic switch changes nothing above easy"), Classic.DamageToHumanScale == Row.DamageToHumanScale && Classic.MaxAttackersOnHuman == Row.MaxAttackersOnHuman
+			&& Classic.ArrivalGrace == Row.ArrivalGrace && Classic.RespiteSeconds == Row.RespiteSeconds && Classic.TorpedoOnHumanChance == Row.TorpedoOnHumanChance);
+	}
+	TestEqual(TEXT("normal's damage scale is what it was"), FHCJBotSkill::Get(1).DamageToHumanScale, 0.55f);
+	{
+		FHCJBotSkill Classic = Easy;
+		Classic.ClearBeginnerHelp();
+		TestTrue(TEXT("classic easy: no help"), Classic.DamageFromHumanScale == 1.0f && Classic.HumanHullRegenRate == 0.0f && Classic.HumanRepairScale == 1.0f);
+		TestEqual(TEXT("classic easy: bots at half damage"), Classic.DamageToHumanScale, 0.5f);
+		TestTrue(TEXT("classic easy: the fairness rules stay"), Classic.MaxAttackersOnHuman == 1 && Classic.ArrivalGrace == Easy.ArrivalGrace && Classic.RespiteSeconds == Easy.RespiteSeconds
+			&& Classic.RearFireDelay == Easy.RearFireDelay && Classic.TorpedoOnHumanChance == Easy.TorpedoOnHumanChance && Classic.AimErrorDeg == Easy.AimErrorDeg);
+	}
+
+	// Hull mending: nothing inside the delay, then at the rate up to the ceiling; a hull above the ceiling is left alone.
+	constexpr float Max = 100.0f;
+	constexpr float Rate = 4.0f;
+	const float Ceiling = Max * HullRegenCeiling;
+	TestTrue(TEXT("the ceiling leaves something for the repair pads"), HullRegenCeiling > 0.3f && HullRegenCeiling < 1.0f);
+	TestEqual(TEXT("nothing inside the delay"), StepHullRegen(20.0f, Max, HullRegenDelay - 0.1f, 0.5f, Rate, false), 20.0f, 0.0001f);
+	TestEqual(TEXT("mends after the delay"), StepHullRegen(20.0f, Max, HullRegenDelay, 0.5f, Rate, false), 22.0f, 0.0001f);
+	TestEqual(TEXT("stops at the ceiling"), StepHullRegen(Ceiling - 0.5f, Max, 60.0f, 0.5f, Rate, false), Ceiling, 0.0001f);
+	TestEqual(TEXT("a hull above the ceiling is left alone"), StepHullRegen(90.0f, Max, 60.0f, 0.5f, Rate, false), 90.0f, 0.0001f);
+	TestEqual(TEXT("a full hull is left alone"), StepHullRegen(Max, Max, 60.0f, 0.5f, Rate, false), Max, 0.0001f);
+	TestEqual(TEXT("a destroyed ship mends nothing"), StepHullRegen(0.0f, Max, 60.0f, 0.5f, Rate, false), 0.0f, 0.0001f);
+	TestEqual(TEXT("... nor one that is flagged destroyed"), StepHullRegen(20.0f, Max, 60.0f, 0.5f, Rate, true), 20.0f, 0.0001f);
+	TestEqual(TEXT("no rate, no mending"), StepHullRegen(20.0f, Max, 60.0f, 0.5f, 0.0f, false), 20.0f, 0.0001f);
+	TestEqual(TEXT("a negative step mends nothing"), StepHullRegen(20.0f, Max, 60.0f, -1.0f, Rate, false), 20.0f, 0.0001f);
+	float Hull = 10.0f;
+	float Time = 0.0f;
+	while (Hull < Ceiling && Time < 60.0f)
+	{
+		Time += 1.0f / 60.0f;
+		Hull = StepHullRegen(Hull, Max, Time, 1.0f / 60.0f, Rate, false);
+	}
+	TestEqual(TEXT("time from 10 to the ceiling"), Time, HullRegenDelay + (Ceiling - 10.0f) / Rate, 0.05f);
 	return true;
 }
 

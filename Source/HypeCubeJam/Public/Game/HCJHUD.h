@@ -5,10 +5,12 @@
 #include "HCJHUD.generated.h"
 
 class AHCJGameState;
+class AHCJPickup;
 class AHCJPlayerController;
 class AHCJPlayerState;
 class AHCJShipCharacter;
 class UFont;
+enum class EHCJItemKind : uint8;
 struct FHCJHypercubeGraph;
 
 /**
@@ -50,8 +52,16 @@ protected:
 	void DrawSystems(const AHCJShipCharacter& Ship);
 	/** Bottom right: weapon and ammunition, running power-ups with their seconds; centre: the last pickup for a moment. */
 	void DrawLoadout(const AHCJShipCharacter& Ship, const AHCJPlayerController* Controller);
-	/** Markers (diamond, item name, distance) over the pickup pads near the local ship that hold an item. */
+	/**
+	 * Markers over the filled pickup pads of the sector (the HCJUi::MaxPickupMarkers nearest): an icon in the colour of
+	 * the item's kind - a cross for health, a diamond for weapons, a triangle for power-ups -, a short name and the
+	 * distance; fainter and smaller far away. On a low hull the nearest REPAIR pad (else the nearest SHIELD cell) is
+	 * drawn larger, pulsing, with a ring, and when it is out of view three chevrons at the screen edge point to it. Also the
+	 * labels of the station and the wormhole of the sector.
+	 */
 	void DrawPickupMarkers(const AHCJShipCharacter& Ship);
+	/** One pad marker: Kind's icon with half size R around (X, Y). */
+	void DrawPickupIcon(EHCJItemKind Kind, float X, float Y, float R, const FLinearColor& Color, float Thickness);
 	/** Out-of-bounds warning for the local ship. */
 	void DrawBoundsWarning(const AHCJShipCharacter& Ship);
 	/** Sector id in binary, score and match clock. LocalSector may be INDEX_NONE. */
@@ -256,9 +266,29 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "HCJ|HUD")
 	float KillFeedSeconds = 6.0f;
 
-	/** Pads farther than this from the local ship get no marker (uu). */
+	/** Pads farther than this from the local ship get no marker (uu): the whole sector (item 38; 12 000 before). */
 	UPROPERTY(EditDefaultsOnly, Category = "HCJ|HUD")
-	float PickupMarkerDistance = 12000.0f;
+	float PickupMarkerDistance = 45000.0f;
+
+	/** Pad markers are drawn at full strength up to the first distance and at half strength from the second (uu). */
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|HUD")
+	float PickupMarkerNearDistance = 7000.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "HCJ|HUD")
+	float PickupMarkerFarDistance = 26000.0f;
+
+	/** Text of the pad markers, one per marker slot: made again only when the pad, its item or the distance shown changes (no string is built per frame). */
+	struct FPickupLabel
+	{
+		TWeakObjectPtr<const AHCJPickup> Pad;
+		int32 Item = INDEX_NONE;
+		int32 Metres = INDEX_NONE;
+		FString Text;
+	};
+	static constexpr int32 NumPickupLabels = 6;
+	FPickupLabel PickupLabels[NumPickupLabels];
+	/** Set by DrawPickupMarkers each frame: the health pad the HUD points at while the hull is low (the radar marks it too). */
+	TWeakObjectPtr<const AHCJPickup> HealthGuidePad;
 
 	/** Map width at 1080p, in pixels: up to 16 sectors, and from 32 sectors on. */
 	UPROPERTY(EditDefaultsOnly, Category = "HCJ|HUD")

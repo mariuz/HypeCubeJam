@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Fairness measurement matches: one human on the autopilot against bots, headless, several processes at a time.
 
-    python docs/tools/fair_matches.py <out dir> <tag>:<difficulty>:<fair|nofair>[:<count>[:blind]] ...
+    python docs/tools/fair_matches.py <out dir> <tag>:<difficulty>:<fair|nofair|classic>[:<count>[:blind]] ...
                                       [--seconds 245] [--bots 8] [--seed 99] [--port 7860] [--engine F:/EpicGames/UE_5.9]
 
     python docs/tools/fair_matches.py Saved/Fair easy_nofair:0:nofair:3 easy_fair:0:fair:3
@@ -9,7 +9,8 @@
     python docs/tools/fair_stats.py Saved/Fair/*.log
 
 Each match is a listen host on the editor binary (-game -nullrhi): Seed=99, no kill or time limit, ?Bots=8 (seven bots and
-the human), -HCJQuitAfter. "nofair" adds -HCJNoFair (the bots before the fairness rules). Two pilots:
+the human), -HCJQuitAfter. "nofair" adds -HCJNoFair (the bots before the fairness rules), "classic" adds
+-HCJClassicEasy (Easy without the beginner's help of item 38: Easy as build 0.20.0 had it). Two pilots:
   the autopilot of the playthrough tests (-HCJAutoFly -HCJAutoAim -HCJAutoTorpedo): its nose follows the nearest ship in
       sight and it fires all the time - a player who always fights. It faces whoever attacks it, so nearly none of its
       damage comes from behind, with or without the rules: it measures deaths, not the rear share.
@@ -50,11 +51,11 @@ def main():
             engine = args.pop(0)
         else:
             parts = arg.split(':')
-            if len(parts) < 3 or parts[2] not in ('fair', 'nofair'):
+            if len(parts) < 3 or parts[2] not in ('fair', 'nofair', 'classic'):
                 print('not understood: %s' % arg)
                 return 2
             for index in range(int(parts[3]) if len(parts) > 3 else 1):
-                specs.append(('%s_%d' % (parts[0], index + 1), int(parts[1]), parts[2] == 'nofair', len(parts) > 4 and parts[4] == 'blind'))
+                specs.append(('%s_%d' % (parts[0], index + 1), int(parts[1]), parts[2], len(parts) > 4 and parts[4] == 'blind'))
     exe = os.path.join(engine, 'Engine', 'Binaries', 'Win64', 'UnrealEditor-Cmd.exe')
     if not os.path.exists(exe):
         print('binary not found: %s' % exe)
@@ -71,8 +72,10 @@ def main():
                '-ini:GameUserSettings:[/Script/HypeCubeJam.HCJUserSettings]:PlayerName=Pilot']
         if not blind:
             cmd += ['-HCJAutoAim', '-HCJAutoTorpedo']
-        if nofair:
+        if nofair == 'nofair':
             cmd.append('-HCJNoFair')
+        elif nofair == 'classic':
+            cmd.append('-HCJClassicEasy')
         procs.append((tag, subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)))
         print('started %s (pid %d)' % (tag, procs[-1][1].pid))
         sys.stdout.flush()

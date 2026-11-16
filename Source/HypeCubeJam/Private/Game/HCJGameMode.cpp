@@ -121,14 +121,46 @@ void AHCJGameMode::SetBotDifficulty(int32 Difficulty)
 void AHCJGameMode::LogFairRules() const
 {
 	// The fairness rules in force (bots towards human ships), so that a log says what a match was played with.
+	const FHCJBotSkill Skill = GetFairSkill();
+	UE_LOG(LogHCJ, Log, TEXT("Fair: event=rules match=%d difficulty=%d level=%s nofair=%d max_attackers=%d max_hunters=%d rear_fire_delay=%.1f rear_aim_scale=%.1f front_bias=%.1f tail_score=%.1f flank=%d arrival_grace=%.1f damage_scale=%.2f respite=%.1f torpedo_chance=%.2f classic_easy=%d human_damage_scale=%.2f hull_regen=%.1f repair_scale=%.2f"),
+		CurrentConfig.MatchNumber, BotDifficulty, *FString(HCJBalance::GetDifficultyName(BotDifficulty)).ToLower(), IsNoFair() ? 1 : 0, Skill.MaxAttackersOnHuman, Skill.MaxHuntersPerHuman,
+		Skill.RearFireDelay, Skill.RearAimErrorScale, Skill.FrontBias, Skill.HumanTailScore, Skill.bFlankHumans ? 1 : 0, Skill.ArrivalGrace, Skill.DamageToHumanScale, Skill.RespiteSeconds, Skill.TorpedoOnHumanChance,
+		IsClassicEasy() ? 1 : 0, Skill.DamageFromHumanScale, Skill.HumanHullRegenRate, Skill.HumanRepairScale);
+}
+
+bool AHCJGameMode::IsClassicEasy()
+{
+	static const bool bClassicEasy = FParse::Param(FCommandLine::Get(), TEXT("HCJClassicEasy"));
+	return bClassicEasy;
+}
+
+FHCJBotSkill AHCJGameMode::GetFairSkill() const
+{
 	FHCJBotSkill Skill = FHCJBotSkill::Get(BotDifficulty);
 	if (IsNoFair())
 	{
 		Skill.ClearFairness();
 	}
-	UE_LOG(LogHCJ, Log, TEXT("Fair: event=rules match=%d difficulty=%d level=%s nofair=%d max_attackers=%d max_hunters=%d rear_fire_delay=%.1f rear_aim_scale=%.1f front_bias=%.1f tail_score=%.1f flank=%d arrival_grace=%.1f damage_scale=%.2f respite=%.1f torpedo_chance=%.2f"),
-		CurrentConfig.MatchNumber, BotDifficulty, *FString(HCJBalance::GetDifficultyName(BotDifficulty)).ToLower(), IsNoFair() ? 1 : 0, Skill.MaxAttackersOnHuman, Skill.MaxHuntersPerHuman,
-		Skill.RearFireDelay, Skill.RearAimErrorScale, Skill.FrontBias, Skill.HumanTailScore, Skill.bFlankHumans ? 1 : 0, Skill.ArrivalGrace, Skill.DamageToHumanScale, Skill.RespiteSeconds, Skill.TorpedoOnHumanChance);
+	else if (IsClassicEasy())
+	{
+		Skill.ClearBeginnerHelp();
+	}
+	return Skill;
+}
+
+float AHCJGameMode::GetHumanDamageToBotScale() const
+{
+	return FMath::Clamp(GetFairSkill().DamageFromHumanScale, 1.0f, 4.0f);
+}
+
+float AHCJGameMode::GetHumanHullRegenRate() const
+{
+	return FMath::Max(GetFairSkill().HumanHullRegenRate, 0.0f);
+}
+
+float AHCJGameMode::GetHumanRepairScale() const
+{
+	return FMath::Clamp(GetFairSkill().HumanRepairScale, 1.0f, 4.0f);
 }
 
 bool AHCJGameMode::IsNoFair()
@@ -139,7 +171,7 @@ bool AHCJGameMode::IsNoFair()
 
 float AHCJGameMode::GetBotDamageToHumanScale() const
 {
-	return IsNoFair() ? 1.0f : FMath::Clamp(FHCJBotSkill::Get(BotDifficulty).DamageToHumanScale, 0.05f, 1.0f);
+	return FMath::Clamp(GetFairSkill().DamageToHumanScale, 0.05f, 1.0f);
 }
 
 void AHCJGameMode::NotifyFairHit(float Applied, float Unscaled, float BearingDeg, bool bAft, bool bFatal, bool bAttackerIsBot)
@@ -178,10 +210,11 @@ void AHCJGameMode::LogFairStatus() const
 	{
 		HumanShips += HasLiveShip(It->Get()) ? 1 : 0;
 	}
-	UE_LOG(LogHCJ, Log, TEXT("Fair: event=status t=%.0f match=%d difficulty=%d nofair=%d humans=%d dmg_total=%.0f dmg_rear=%.0f dmg_aft=%.0f deaths=%d rear_deaths=%d peak_attackers=%d held_cap=%d held_rear=%d held_grace=%d bot_deaths=%d dmg_unscaled=%.0f human_ships=%d match_t=%.0f held_respite=%d held_hunters=%d"),
+	UE_LOG(LogHCJ, Log, TEXT("Fair: event=status t=%.0f match=%d difficulty=%d nofair=%d humans=%d dmg_total=%.0f dmg_rear=%.0f dmg_aft=%.0f deaths=%d rear_deaths=%d peak_attackers=%d held_cap=%d held_rear=%d held_grace=%d bot_deaths=%d dmg_unscaled=%.0f human_ships=%d match_t=%.0f held_respite=%d held_hunters=%d human_kills=%d human_dmg=%.0f human_dmg_bonus=%.0f hull_regen=%.0f repairs=%d repair_points=%.0f"),
 		World->GetTimeSeconds(), CurrentConfig.MatchNumber, BotDifficulty, IsNoFair() ? 1 : 0, GetNumHumanPlayers(), MatchStats.FairDamage, MatchStats.FairDamageRear, MatchStats.FairDamageAft,
 		MatchStats.FairDeaths, MatchStats.FairRearDeaths, MatchStats.FairPeakAttackers, MatchStats.FairHeldCap, MatchStats.FairHeldRear, MatchStats.FairHeldGrace,
-		MatchStats.FairBotDeaths, MatchStats.FairDamageUnscaled, HumanShips, World->GetTimeSeconds() - MatchStats.StartTime, MatchStats.FairHeldRespite, MatchStats.FairHeldHunters);
+		MatchStats.FairBotDeaths, MatchStats.FairDamageUnscaled, HumanShips, World->GetTimeSeconds() - MatchStats.StartTime, MatchStats.FairHeldRespite, MatchStats.FairHeldHunters,
+		MatchStats.HelpHumanKills, MatchStats.HelpDamageDealt, MatchStats.HelpDamageBonus, MatchStats.HelpHullRegen, MatchStats.HelpRepairs, MatchStats.HelpRepairPoints);
 }
 
 void AHCJGameMode::LogPlaythroughStats() const
@@ -749,6 +782,7 @@ void AHCJGameMode::NotifyShipKilled(AController* VictimController, AController* 
 		{
 			KillerState->AddKill();
 			KillerName = KillerState->GetPlayerName();
+			MatchStats.HelpHumanKills += Cast<APlayerController>(KillerController) != nullptr ? 1 : 0;
 			const AHCJShipCharacter* KillerShip = Cast<AHCJShipCharacter>(KillerController->GetPawn());
 			KillerType = KillerShip != nullptr ? static_cast<int32>(KillerShip->GetShipType()) : static_cast<int32>(KillerState->GetShipType());
 			if (KillerType >= 0 && KillerType < HCJShipTypes::NumTypes)

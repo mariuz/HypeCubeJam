@@ -78,8 +78,21 @@ struct HYPECUBEJAM_API FHCJBotSkill
 	/** A bot that would fire a photon torpedo at a human ship does so with this chance (a torpedo through an open facing nearly ends a ship). */
 	float TorpedoOnHumanChance = 1.0f;
 
-	/** Sets the fairness fields back to the defaults above ("off"). */
+	// ---- help for a beginner (docs/DEVLOG_NOTES.md, item 38) ----
+	// Easy only; like the fairness fields these are about ships flown by a person, are "off" by default and are
+	// cleared by ClearFairness (-HCJNoFair) and, by themselves, by ClearBeginnerHelp (-HCJClassicEasy: Easy as it was in 0.20.0).
+
+	/** Damage a person's ship does to a bot's ship is multiplied by this on the server (every weapon). */
+	float DamageFromHumanScale = 1.0f;
+	/** Hull points per second a person's ship mends by itself once nothing has hit it for HCJBalance::HullRegenDelay seconds (0 = never). */
+	float HumanHullRegenRate = 0.0f;
+	/** A repair pad restores this many times the usual amount on a person's ship. */
+	float HumanRepairScale = 1.0f;
+
+	/** Sets the fairness fields and the beginner's help back to the defaults above ("off"). */
 	void ClearFairness();
+	/** Sets only the beginner's help back to "off" and the damage scale of Easy to what it was before item 38. */
+	void ClearBeginnerHelp();
 
 	/** The row for Difficulty (0 easy, 1 normal, 2 hard, 3 ace; clamped). */
 	static FHCJBotSkill Get(int32 Difficulty);
@@ -129,6 +142,11 @@ namespace HCJBalance
 	inline constexpr float SideArcDot = 0.5f;
 	/** A bot that a human hit this recently may answer, whatever the attack cap, the grace or the rear hold say (seconds). */
 	inline constexpr float ProvokedSeconds = 4.0f;
+	/** Beginner's help: a person's hull starts to mend this long after the last damage (seconds), and mends up to this share of the full hull - the rest is what repair pads are for. */
+	inline constexpr float HullRegenDelay = 5.0f;
+	inline constexpr float HullRegenCeiling = 0.75f;
+	/** DamageToHumanScale of Easy before item 38 (-HCJClassicEasy). */
+	inline constexpr float ClassicEasyDamageToHumanScale = 0.5f;
 
 	/** "Easy", "Normal", "Hard", "Ace" (clamped). */
 	HYPECUBEJAM_API const TCHAR* GetDifficultyName(int32 Difficulty);
@@ -181,6 +199,14 @@ namespace HCJBalance
 	 * from a shield cell stays); otherwise RegenRate points per second up to MaxShield. Pure; the server runs it.
 	 */
 	HYPECUBEJAM_API float StepShieldRegen(float Shield, float MaxShield, float SecondsSinceDamage, float DeltaSeconds, float RegenDelay, float RegenRate, bool bDepleted);
+
+	/**
+	 * One step of the hull mending of a beginner's ship: the new hull value. Nothing happens for HullRegenDelay seconds
+	 * after the last damage, on a destroyed ship, without a rate, or to a hull at or above HullRegenCeiling of MaxHull
+	 * (a repair pad may have taken it higher: it stays); otherwise RegenRate points per second up to that ceiling.
+	 * Pure; the server runs it for ships flown by a person.
+	 */
+	HYPECUBEJAM_API float StepHullRegen(float Hull, float MaxHull, float SecondsSinceDamage, float DeltaSeconds, float RegenRate, bool bDepleted);
 
 	/**
 	 * One step of the boost meter (energy 0..1). Drains over DrainSeconds while boosting, refills over

@@ -585,6 +585,16 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Pickups")
 	float PickupPadBrightness = 1.0f;
 
+	/** The light column above a filled pad (brightness of the glow material) and the halo around the item (the glint material: brightness, and how much it darkens the sky behind it - see ShipGlintBacking). */
+	UPROPERTY(Config, EditAnywhere, Category = "Pickups", meta = (ClampMin = "0.0"))
+	float PickupBeamBrightness = 3.0f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Pickups", meta = (ClampMin = "0.0"))
+	float PickupHaloBrightness = 2.2f;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Pickups", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float PickupHaloBacking = 0.6f;
+
 	/** Somebody took a power-up / a weapon from a pad; a pad got a new item. Played at the pad. */
 	UPROPERTY(Config, EditAnywhere, Category = "Pickups")
 	TArray<FSoftObjectPath> PickupPowerupSounds;

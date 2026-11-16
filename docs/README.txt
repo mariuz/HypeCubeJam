@@ -148,7 +148,9 @@ A fresh ship has a 3 s spawn shield (lights shimmer white) until it fires, and i
 Difficulty (first row of the menu; Easy is the default). The bots treat a human pilot by rules that depend on the level:
   Easy    One bot at a time. Slow, wide aim, and they come at you from the front. A bot that gets behind you holds its
           fire for 2.5 s first, bots leave you alone for 4 s after you appear in a sector and for 6 s after your
-          attacker is gone, their hits on you do half the damage, and they fire few torpedoes at you.
+          attacker is gone, their hits on you do 40 % of the damage, and they fire few torpedoes at you.
+          Your own hits on bots do one and a half times the damage. Your hull mends by itself, slowly, once nothing
+          has hit you for 5 s (up to three quarters), and a REPAIR pad makes the ship whole.
   Normal  Two on you at most. A moment's warning (1.2 s) before any fire from behind; left alone for 3.5 s after you
           appear in a sector and for 5 s after your attacker is gone; 55 % damage, fewer torpedoes.
   Hard    Three on you. Sharp aim, torpedo combos, scouts ambush from cloak; full damage.
@@ -162,6 +164,10 @@ turrets can be destroyed.
 Bright ringed spheres are wormholes: shortcuts to far sectors (dashed lines on the map).
 Glowing pads hold pickups: repair, shield cell, overdrive (speed), quad damage, cloak cell, torpedoes, and four
 limited-ammo weapons (scatter cannon, rail shot, homing missiles, rapid pulse). Fly over a pad to take it.
+A filled pad has a tall column of light and a halo that can be seen across the sector, and a marker with its name
+and distance. The colour says what it is: GREEN (a cross) is health - repair or shield cell; AMBER (a diamond) is a
+weapon or torpedoes; MAGENTA (a triangle) is a power-up. The radar shows the same icons. When your hull is low the
+nearest REPAIR pad pulses inside a ring, and arrows at the edge of the screen point to it when it is out of view.
 Host options without the menu (append to the exe as one argument):
   "/Engine/Maps/Entry?listen?Seed=1234?Dim=4?Bots=8?Difficulty=0?Pickups=1?Wormholes=4?Stations=1"
   (Difficulty: 0 easy, 1 normal, 2 hard, 3 ace)

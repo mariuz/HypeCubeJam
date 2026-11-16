@@ -439,3 +439,42 @@ void HCJMenuFlow::NotifyFailure(const FString& Notice)
 	GFailure = true;
 	RequestMenu(Notice);
 }
+
+int32 HCJUi::InsertNearest(TArrayView<FHCJNearSlot> Slots, int32 Num, double DistSq, int32 Index)
+{
+	const int32 Capacity = Slots.Num();
+	Num = FMath::Clamp(Num, 0, Capacity);
+	if (Capacity == 0 || (Num == Capacity && DistSq >= Slots[Num - 1].DistSq))
+	{
+		return Num;
+	}
+	// Where it goes: behind every entry that is as near or nearer.
+	int32 At = Num < Capacity ? Num : Num - 1;
+	while (At > 0 && Slots[At - 1].DistSq > DistSq)
+	{
+		Slots[At] = Slots[At - 1];
+		--At;
+	}
+	Slots[At].DistSq = DistSq;
+	Slots[At].Index = Index;
+	return FMath::Min(Num + 1, Capacity);
+}
+
+float HCJUi::PickupMarkerStrength(float Distance, float NearDistance, float FarDistance, bool bEmphasis)
+{
+	if (bEmphasis || Distance <= NearDistance)
+	{
+		return 1.0f;
+	}
+	if (FarDistance <= NearDistance)
+	{
+		return PickupMarkerFarStrength;
+	}
+	return FMath::Lerp(1.0f, PickupMarkerFarStrength, FMath::Clamp((Distance - NearDistance) / (FarDistance - NearDistance), 0.0f, 1.0f));
+}
+
+int32 HCJUi::MarkerMetres(float Distance)
+{
+	const int32 Metres = FMath::Max(FMath::RoundToInt32(Distance / 100.0f), 0);
+	return Metres <= 50 ? Metres : 5 * FMath::RoundToInt32(Metres / 5.0f);
+}

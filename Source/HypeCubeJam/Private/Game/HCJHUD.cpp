@@ -732,43 +732,164 @@ void AHCJHUD::DrawPickupMarkers(const AHCJShipCharacter& Ship)
 		}
 	}
 
-	for (const TWeakObjectPtr<AHCJPickup>& Entry : AHCJPickup::GetAll())
+	// The filled pads of this sector, the nearest first; on a low hull the one to fly to.
+	static_assert(NumPickupLabels >= HCJUi::MaxPickupMarkers, "one label per pad marker");
+	const UWorld* World = GetWorld();
+	const float Now = World != nullptr ? static_cast<float>(World->GetTimeSeconds()) : 0.0f;
+	const UHCJHealthComponent* Health = Ship.GetHealthComponent();
+	const bool bLowHull = Health != nullptr && Health->GetHealthFraction() < HCJUi::LowHullFraction;
+	const TArray<TWeakObjectPtr<AHCJPickup>>& Pads = AHCJPickup::GetAll();
+	FHCJNearSlot Slots[HCJUi::MaxPickupMarkers];
+	int32 NumSlots = 0;
+	int32 GuideIndex = INDEX_NONE;
+	double GuideSq = 0.0;
+	bool bGuideRepair = false;
+	for (int32 Index = 0; Index < Pads.Num(); ++Index)
 	{
-		const AHCJPickup* Pickup = Entry.Get();
-		if (Pickup == nullptr || Pickup->GetWorld() != GetWorld() || !Pickup->IsActive())
+		const AHCJPickup* Pickup = Pads[Index].Get();
+		if (Pickup == nullptr || Pickup->GetWorld() != World || !Pickup->IsActive())
 		{
 			continue;
 		}
-		const FVector Location = Pickup->GetActorLocation();
-		const double Distance = FVector::Dist(Location, ShipLocation);
-		if (Distance > PickupMarkerDistance || FVector::DotProduct(Location - ViewLocation, ViewDirection) <= 0.0)
+		const double DistSq = FVector::DistSquared(Pickup->GetActorLocation(), ShipLocation);
+		if (DistSq > FMath::Square(static_cast<double>(PickupMarkerDistance)))
 		{
 			continue;
 		}
-		const FVector Screen = Canvas->Project(Location + FVector(0.0, 0.0, 420.0), false);
+		NumSlots = HCJUi::InsertNearest(MakeArrayView(Slots), NumSlots, DistSq, Index);
+		if (bLowHull && HCJ::GetItemKind(Pickup->GetItem()) == EHCJItemKind::Health)
+		{
+			// A repair pad before any shield cell, then the nearer one.
+			const bool bRepair = Pickup->GetItem() == EHCJPickupItem::Repair;
+			if (GuideIndex == INDEX_NONE || (bRepair && !bGuideRepair) || (bRepair == bGuideRepair && DistSq < GuideSq))
+			{
+				GuideIndex = Index;
+				GuideSq = DistSq;
+				bGuideRepair = bRepair;
+			}
+		}
+	}
+	HealthGuidePad = GuideIndex != INDEX_NONE ? Pads[GuideIndex].Get() : nullptr;
+	if (GuideIndex != INDEX_NONE && NumSlots > 0)
+	{
+		// The pad to fly to is always among the markers.
+		bool bListed = false;
+		for (int32 Slot = 0; Slot < NumSlots; ++Slot)
+		{
+			bListed |= Slots[Slot].Index == GuideIndex;
+		}
+		if (!bListed)
+		{
+			Slots[NumSlots - 1].Index = GuideIndex;
+			Slots[NumSlots - 1].DistSq = GuideSq;
+		}
+	}
+
+	const float TextScale = HCJUi::ComputeTextScale(UIScale);
+	const FRotationMatrix ViewAxes(ViewRotation);
+	for (int32 Slot = 0; Slot < NumSlots; ++Slot)
+	{
+		const AHCJPickup* Pickup = Pads[Slots[Slot].Index].Get();
+		const bool bGuide = Slots[Slot].Index == GuideIndex;
+		const EHCJPickupItem Item = Pickup->GetItem();
+		const EHCJItemKind Kind = HCJ::GetItemKind(Item);
+		const FVector Location = Pickup->GetActorLocation() + FVector(0.0, 0.0, 560.0);
+		const float Distance = static_cast<float>(FMath::Sqrt(Slots[Slot].DistSq));
+
+		// "REPAIR  120 m": the text is kept from frame to frame.
+		FPickupLabel& Label = PickupLabels[Slot];
+		const int32 Metres = HCJUi::MarkerMetres(Distance);
+		if (Label.Pad.Get() != Pickup || Label.Item != static_cast<int32>(Item) || Label.Metres != Metres)
+		{
+			Label.Pad = Pickup;
+			Label.Item = static_cast<int32>(Item);
+			Label.Metres = Metres;
+			Label.Text.Reset();
+			Label.Text.Appendf(TEXT("%s  %d m"), HCJ::GetItemShortName(Item), Metres);
+		}
+
+		const float Strength = HCJUi::PickupMarkerStrength(Distance, PickupMarkerNearDistance, PickupMarkerFarDistance, bGuide);
+		const float Pulse = bGuide ? 0.7f + 0.3f * FMath::Sin(Now * 7.0f) : 1.0f;
+		const FLinearColor Color = WithAlpha(HCJ::GetItemKindColor(Kind), Strength * Pulse);
+		const FVector ToPad = Location - ViewLocation;
+		const FVector Screen = Canvas->Project(Location, false);
 		const float X = static_cast<float>(Screen.X);
 		const float Y = static_cast<float>(Screen.Y);
-		if (X < 0.0f || Y < 0.0f || X > Canvas->ClipX || Y > Canvas->ClipY)
+		const bool bOnScreen = FVector::DotProduct(ToPad, ViewDirection) > 0.0 && X >= 0.0f && Y >= 0.0f && X <= Canvas->ClipX && Y <= Canvas->ClipY;
+		if (!bOnScreen)
+		{
+			if (bGuide)
+			{
+				// Out of view: three chevrons at the edge of the screen towards it, the label on their inner side.
+				float Angle = 0.0f;
+				const FVector2D Position = HCJUi::ComputeEdgeMarker(static_cast<float>(FVector::DotProduct(ToPad, ViewAxes.GetUnitAxis(EAxis::Y))),
+					static_cast<float>(FVector::DotProduct(ToPad, ViewAxes.GetUnitAxis(EAxis::Z))), FVector2D(Canvas->ClipX * 0.5f, Canvas->ClipY * 0.5f),
+					FVector2D(Canvas->ClipX * 0.5f - 24.0f * UIScale - 380.0f * TextScale, Canvas->ClipY * 0.5f - 225.0f * TextScale), Angle);
+				const FVector2D Forward(FMath::Cos(Angle), FMath::Sin(Angle));
+				const FVector2D Side(-Forward.Y, Forward.X);
+				const float Size = 22.0f * TextScale;
+				const float Line = FMath::Max(3.0f, 4.0f * UIScale);
+				for (int32 Chevron = 0; Chevron < 3; ++Chevron)
+				{
+					const FVector2D Tip = Position + Forward * (Size * (1.0 + 0.7 * Chevron));
+					const FVector2D A = Tip - Forward * Size + Side * Size * 0.8;
+					const FVector2D B = Tip - Forward * Size - Side * Size * 0.8;
+					DrawLine(static_cast<float>(Tip.X), static_cast<float>(Tip.Y), static_cast<float>(A.X), static_cast<float>(A.Y), Color, Line);
+					DrawLine(static_cast<float>(Tip.X), static_cast<float>(Tip.Y), static_cast<float>(B.X), static_cast<float>(B.Y), Color, Line);
+				}
+				const FVector2D LabelPosition = Position - Forward * (Size + 14.0f * TextScale);
+				// (On a dark plate: straight behind, the pointer lies over the own ship.)
+				const FVector2D LabelSize = MeasureLabel(Label.Text, 1.15f, true);
+				const float LabelTop = static_cast<float>(LabelPosition.Y) - 7.0f * TextScale;
+				DrawRect(FLinearColor(0.0f, 0.02f, 0.05f, 0.6f), static_cast<float>(LabelPosition.X - LabelSize.X * 0.5) - 6.0f * UIScale, LabelTop - 2.0f * UIScale,
+					static_cast<float>(LabelSize.X) + 12.0f * UIScale, static_cast<float>(LabelSize.Y) + 4.0f * UIScale);
+				DrawLabel(Label.Text, FVector2D(LabelPosition.X, LabelTop), WithAlpha(Color, FMath::Max(Color.A, 0.9f)), 1.15f, true, true);
+			}
+			continue;
+		}
+
+		const float R = (bGuide ? 16.0f : 11.0f) * UIScale * (0.4f + 0.6f * Strength);
+		const float Thickness = FMath::Max(bGuide ? 2.0f : 1.5f, (bGuide ? 3.0f : 2.0f) * UIScale);
+		const float LabelScale = bGuide ? 1.15f : (0.7f + 0.3f * Strength);
+		const float LabelGap = R + 18.0f * UIScale * LabelScale;
+		// Not on a HUD panel (the pad and its column are still there to be seen); the pad to fly to always.
+		const float HalfWidth = FMath::Max(R, static_cast<float>(MeasureLabel(Label.Text, LabelScale, bGuide).X) * 0.5f);
+		if (!bGuide && !HCJUi::IsMarkerClear(FBox2D(FVector2D(X - HalfWidth, Y - LabelGap), FVector2D(X + HalfWidth, Y + R)), PrevPanelRects, 2.0f * UIScale))
 		{
 			continue;
 		}
-		// Fades in with the distance; a diamond so it is not mistaken for the square map dots.
-		const float Alpha = FMath::Clamp(1.2f - static_cast<float>(Distance) / PickupMarkerDistance, 0.25f, 1.0f);
-		const FLinearColor Color = WithAlpha(HCJ::GetItemColor(Pickup->GetItem()), Alpha);
-		const float R = 9.0f * UIScale;
-		const float Thickness = FMath::Max(1.0f, 2.0f * UIScale);
-		// Not on a HUD panel (the pad itself is still there to be seen).
-		const FString PadLabel = FString::Printf(TEXT("%s  %d m"), HCJ::GetItemName(Pickup->GetItem()), FMath::RoundToInt32(Distance / 100.0));
-		const float PadHalfWidth = FMath::Max(R, static_cast<float>(MeasureLabel(PadLabel, 1.0f).X) * 0.5f);
-		if (!HCJUi::IsMarkerClear(FBox2D(FVector2D(X - PadHalfWidth, Y - R - 18.0f * UIScale), FVector2D(X + PadHalfWidth, Y + R)), PrevPanelRects, 2.0f * UIScale))
+		DrawPickupIcon(Kind, X, Y, R, Color, Thickness);
+		if (bGuide)
 		{
-			continue;
+			DrawCircle(X, Y, R * 1.9f, Color, Thickness, 24);
 		}
+		// (The text keeps more of its strength than the icon: a faint label cannot be read.)
+		DrawLabel(Label.Text, FVector2D(X, Y - LabelGap), WithAlpha(Color, FMath::Max(Color.A, 0.9f * Pulse)), LabelScale, true, bGuide);
+	}
+}
+
+void AHCJHUD::DrawPickupIcon(EHCJItemKind Kind, float X, float Y, float R, const FLinearColor& Color, float Thickness)
+{
+	switch (Kind)
+	{
+	case EHCJItemKind::Health:
+		// A cross, heavier than the outlines: the one a pilot in trouble looks for.
+		DrawLine(X - R, Y, X + R, Y, Color, Thickness * 1.6f);
+		DrawLine(X, Y - R, X, Y + R, Color, Thickness * 1.6f);
+		break;
+	case EHCJItemKind::PowerUp:
+		// A triangle standing on its base.
+		DrawLine(X, Y - R, X + R, Y + R * 0.8f, Color, Thickness);
+		DrawLine(X + R, Y + R * 0.8f, X - R, Y + R * 0.8f, Color, Thickness);
+		DrawLine(X - R, Y + R * 0.8f, X, Y - R, Color, Thickness);
+		break;
+	default:
+		// A diamond (not mistaken for the square map dots).
 		DrawLine(X - R, Y, X, Y - R, Color, Thickness);
 		DrawLine(X, Y - R, X + R, Y, Color, Thickness);
 		DrawLine(X + R, Y, X, Y + R, Color, Thickness);
 		DrawLine(X, Y + R, X - R, Y, Color, Thickness);
-		DrawLabel(PadLabel, FVector2D(X, Y - R - 18.0f * UIScale), Color, 1.0f, true);
+		break;
 	}
 }
 

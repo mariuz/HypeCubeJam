@@ -465,6 +465,8 @@ protected:
 	void ServerTickWeapon();
 	/** Server tick: Die inside a black hole's event horizon; out-of-bounds damage beyond HCJ::SectorSafeRadius, Die beyond HCJ::SectorKillRadius. */
 	void ServerTickBounds(float DeltaSeconds);
+	/** Server tick, ships flown by a person, Easy only: the hull mends out of combat (HCJBalance::StepHullRegen). */
+	void ServerTickHullRegen(float DeltaSeconds);
 	/** Server: one shot of the current weapon: Pellets projectiles from GetMuzzleLocation() along GetAimRotation() within the spread cone, Owner = Instigator = this. */
 	void ServerFireProjectile();
 	/** Every machine: hides the meshes, disables collision and movement once bIsDead is set. */
@@ -850,6 +852,9 @@ protected:
 	/** Balance statistics: first and latest hit of the current engagement. */
 	float EngagementStartTime = -1.0f;
 	float LastHitTime = -1000.0f;
+	/** Beginner's help (ServerTickHullRegen): hull + shield as last seen, and the server time at which they last went down, from any cause. */
+	float RegenSeenVitals = 0.0f;
+	float LastHullDamageTime = -1000.0f;
 	/** See GetSectorArrivalTime and NoteBotAttack. */
 	float SectorArrivalTime = -1000.0f;
 	float LastBotAttackTime = -1000.0f;

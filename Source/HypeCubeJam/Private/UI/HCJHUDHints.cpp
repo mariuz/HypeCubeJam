@@ -35,7 +35,6 @@ namespace
 	const FLinearColor HintWarningColor(1.0f, 0.25f, 0.15f, 1.0f);
 	const FLinearColor HintDoneColor(0.3f, 1.0f, 0.35f, 1.0f);
 	const FLinearColor HintGuideColor(1.0f, 0.9f, 0.15f, 1.0f);
-	const FLinearColor RepairColor(0.3f, 1.0f, 0.4f, 1.0f);
 
 	/**
 	 * One per process, like the session it counts for: a HUD is created again with every world (joining, leaving),
@@ -636,49 +635,7 @@ void AHCJHUD::DrawHints(const AHCJShipCharacter* Ship, const AHCJPlayerControlle
 		return;
 	}
 
-	// Low hull: where the repair pad of this sector is.
-	if (bRepairPadKnown)
-	{
-		FVector ViewLocation;
-		FRotator ViewRotation;
-		PlayerOwner->GetPlayerViewPoint(ViewLocation, ViewRotation);
-		const FRotationMatrix ViewAxes(ViewRotation);
-		const FVector ToPad = RepairPadLocation - ViewLocation;
-		const FVector Screen = Canvas->Project(RepairPadLocation, false);
-		const int32 Metres = FMath::RoundToInt32(FVector::Dist(RepairPadLocation, Ship->GetActorLocation()) / 100.0);
-		const float Pulse = 0.7f + 0.3f * FMath::Sin(WorldNow * 7.0f);
-		const FLinearColor Color(RepairColor.R, RepairColor.G, RepairColor.B, Pulse);
-		const float Line = FMath::Max(2.0f, 3.0f * UIScale);
-		const bool bOnScreen = FVector::DotProduct(ToPad, ViewAxes.GetUnitAxis(EAxis::X)) > 0.0
-			&& Screen.X >= 0.0 && Screen.Y >= 0.0 && Screen.X <= Canvas->ClipX && Screen.Y <= Canvas->ClipY;
-		if (bOnScreen)
-		{
-			const float X = static_cast<float>(Screen.X);
-			const float Y = static_cast<float>(Screen.Y);
-			DrawCircle(X, Y, 22.0f * TextScale, Color, Line, 24);
-			DrawLabel(FString::Printf(TEXT("REPAIR  %d m"), Metres), FVector2D(X, Y + 26.0f * TextScale), Color, 1.1f, true, true);
-		}
-		else
-		{
-			float Angle = 0.0f;
-			const FVector2D Position = HCJUi::ComputeEdgeMarker(static_cast<float>(FVector::DotProduct(ToPad, ViewAxes.GetUnitAxis(EAxis::Y))),
-				static_cast<float>(FVector::DotProduct(ToPad, ViewAxes.GetUnitAxis(EAxis::Z))), FVector2D(CenterX, Canvas->ClipY * 0.5f),
-				FVector2D(Canvas->ClipX * 0.5f - 24.0f * UIScale - 380.0f * TextScale, Canvas->ClipY * 0.5f - 225.0f * TextScale), Angle);
-			const FVector2D Forward(FMath::Cos(Angle), FMath::Sin(Angle));
-			const FVector2D Side(-Forward.Y, Forward.X);
-			const float Size = 16.0f * TextScale;
-			for (int32 Chevron = 0; Chevron < 2; ++Chevron)
-			{
-				const FVector2D Tip = Position + Forward * (Size * (1.0 + 0.7 * Chevron));
-				const FVector2D A = Tip - Forward * Size + Side * Size * 0.8;
-				const FVector2D B = Tip - Forward * Size - Side * Size * 0.8;
-				DrawLine(static_cast<float>(Tip.X), static_cast<float>(Tip.Y), static_cast<float>(A.X), static_cast<float>(A.Y), Color, Line);
-				DrawLine(static_cast<float>(Tip.X), static_cast<float>(Tip.Y), static_cast<float>(B.X), static_cast<float>(B.Y), Color, Line);
-			}
-			const FVector2D LabelPosition = Position - Forward * (Size + 14.0f * TextScale);
-			DrawLabel(FString::Printf(TEXT("REPAIR  %d m"), Metres), FVector2D(LabelPosition.X, LabelPosition.Y - 7.0f * TextScale), Color, 1.0f, true, true);
-		}
-	}
+	// (Low hull: the way to the repair pad is drawn with the pad markers, AHCJHUD::DrawPickupMarkers - also with the hints off.)
 
 	const EHCJHint Hint = GHintDirector.GetCurrent();
 	if (Hint == EHCJHint::None || HintText.IsEmpty())

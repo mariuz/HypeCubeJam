@@ -53,6 +53,21 @@ enum class EHCJPickupItem : uint8
 	Count UMETA(Hidden)
 };
 
+/**
+ * What an item is to a pilot who sees its pad from far away: the colour family of the pad, of its light column and of
+ * its marker on the HUD and the radar (item 38). The item itself keeps its own colour (HCJ::GetItemColor).
+ */
+enum class EHCJItemKind : uint8
+{
+	/** Repair and shield cell: green, a cross. */
+	Health,
+	/** The four pickup weapons and the torpedo restock: amber, a diamond. */
+	Weapon,
+	/** Overdrive, quad damage, cloak: magenta, a triangle. */
+	PowerUp,
+	Count
+};
+
 /** Timed power-ups of a ship: bits of AHCJShipCharacter::PowerupFlags. */
 namespace EHCJPowerup
 {
@@ -175,4 +190,10 @@ namespace HCJ
 	HYPECUBEJAM_API EHCJWeapon ItemToWeapon(EHCJPickupItem Item);
 	/** Glow colour of an item on its pad and on the HUD. */
 	HYPECUBEJAM_API FLinearColor GetItemColor(EHCJPickupItem Item);
+	/** Health, weapon or power-up. */
+	HYPECUBEJAM_API EHCJItemKind GetItemKind(EHCJPickupItem Item);
+	/** The colour of a kind: green, amber, magenta. */
+	HYPECUBEJAM_API FLinearColor GetItemKindColor(EHCJItemKind Kind);
+	/** Short label of an item for a marker over its pad ("REPAIR", "MISSILES"; at most 9 characters). */
+	HYPECUBEJAM_API const TCHAR* GetItemShortName(EHCJPickupItem Item);
 }

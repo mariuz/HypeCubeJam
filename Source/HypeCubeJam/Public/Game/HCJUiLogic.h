@@ -120,6 +120,38 @@ namespace HCJUi
 }
 
 /** Where a hit came from, as the pilot saw it (the death recap). */
+/** One entry of a "the N nearest" list (HCJUi::InsertNearest): what it is (an index the caller knows) and how far. */
+struct FHCJNearSlot
+{
+	double DistSq = 0.0;
+	int32 Index = INDEX_NONE;
+};
+
+namespace HCJUi
+{
+	/** Hull fraction below which the HUD treats the hull as low: the red vignette, the hint, the pointer to a repair pad. */
+	inline constexpr float LowHullFraction = 0.35f;
+	/** Pads of the sector that get a marker at most (the nearest ones). */
+	inline constexpr int32 MaxPickupMarkers = 6;
+	/** Strength of the marker of a pad at the far end of the sector (still readable). */
+	inline constexpr float PickupMarkerFarStrength = 0.7f;
+
+	/**
+	 * Keeps the nearest entries seen so far in Slots, sorted nearest first, without allocating: adds (DistSq, Index)
+	 * to the Num entries already there when there is room or when it is nearer than the farthest. Returns the new
+	 * number of entries (at most Slots.Num()). An equal distance goes behind the entries already there.
+	 */
+	HYPECUBEJAM_API int32 InsertNearest(TArrayView<FHCJNearSlot> Slots, int32 Num, double DistSq, int32 Index);
+	/**
+	 * How strong the marker of a pad is drawn (alpha and size factor, PickupMarkerFarStrength .. 1): full up to
+	 * NearDistance, then fading linearly to PickupMarkerFarStrength at FarDistance and beyond. bEmphasis (the repair
+	 * pad on a low hull) is always 1.
+	 */
+	HYPECUBEJAM_API float PickupMarkerStrength(float Distance, float NearDistance, float FarDistance, bool bEmphasis);
+	/** Distance in metres as a marker shows it: to the metre up to 50 m, in steps of 5 m beyond (the text changes less often). Distance in uu. */
+	HYPECUBEJAM_API int32 MarkerMetres(float Distance);
+}
+
 enum class EHCJHitSide : uint8
 {
 	Ahead,

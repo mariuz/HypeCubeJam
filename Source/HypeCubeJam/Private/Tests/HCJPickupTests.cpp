@@ -3,6 +3,7 @@
 #include "Game/HCJGameplaySettings.h"
 #include "Ship/HCJWeapons.h"
 #include "World/HCJBlackHole.h"
+#include "World/HCJPickup.h"
 #include "World/HCJPickupPads.h"
 #include "World/HCJSectorLayout.h"
 
@@ -203,6 +204,83 @@ bool FHCJWeaponRulesTest::RunTest(const FString& Parameters)
 	}
 
 	HCJ_TEST_FINISH();
+}
+
+/**
+ * Pads that can be seen (item 38): every item has a kind - health, weapon, power-up - with a colour family of its own
+ * and a short name for its marker; the light column and the halo keep a minimum size on the screen, between limits.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHCJPickupVisibilityTest, "HypeCubeJam.Pickups.Visibility", HCJPickupTestFlags)
+
+bool FHCJPickupVisibilityTest::RunTest(const FString& Parameters)
+{
+	// Kinds.
+	TestTrue(TEXT("repair and shield cell are health"), HCJ::GetItemKind(EHCJPickupItem::Repair) == EHCJItemKind::Health && HCJ::GetItemKind(EHCJPickupItem::ShieldCell) == EHCJItemKind::Health);
+	TestTrue(TEXT("overdrive, quad damage and cloak are power-ups"), HCJ::GetItemKind(EHCJPickupItem::Overdrive) == EHCJItemKind::PowerUp
+		&& HCJ::GetItemKind(EHCJPickupItem::QuadDamage) == EHCJItemKind::PowerUp && HCJ::GetItemKind(EHCJPickupItem::Cloak) == EHCJItemKind::PowerUp);
+	int32 NumByKind[static_cast<int32>(EHCJItemKind::Count)] = {};
+	for (int32 Index = 0; Index < static_cast<int32>(EHCJPickupItem::Count); ++Index)
+	{
+		const EHCJPickupItem Item = static_cast<EHCJPickupItem>(Index);
+		const EHCJItemKind Kind = HCJ::GetItemKind(Item);
+		TestTrue(TEXT("a kind in range"), Kind < EHCJItemKind::Count);
+		++NumByKind[FMath::Min(static_cast<int32>(Kind), static_cast<int32>(EHCJItemKind::Count) - 1)];
+		// Whatever arms the ship is a weapon: the four pickup weapons and the torpedo restock.
+		TestEqual(*FString::Printf(TEXT("%s: weapon kind"), HCJ::GetItemName(Item)), Kind == EHCJItemKind::Weapon,
+			HCJ::ItemToWeapon(Item) != EHCJWeapon::Count || Item == EHCJPickupItem::Torpedoes);
+		const FString Short = HCJ::GetItemShortName(Item);
+		TestTrue(*FString::Printf(TEXT("%s: a short name of at most 9 characters ('%s')"), HCJ::GetItemName(Item), *Short), Short.Len() >= 4 && Short.Len() <= 9 && Short != TEXT("?"));
+		for (int32 Other = 0; Other < Index; ++Other)
+		{
+			TestTrue(TEXT("short names differ"), Short != HCJ::GetItemShortName(static_cast<EHCJPickupItem>(Other)));
+		}
+	}
+	TestTrue(TEXT("2 health, 5 weapon, 3 power-up items"), NumByKind[0] == 2 && NumByKind[1] == 5 && NumByKind[2] == 3);
+
+	// Colour families: saturated, bright, far from each other and from the red of an enemy.
+	const FLinearColor Enemy(1.0f, 0.2f, 0.06f);
+	for (int32 A = 0; A < static_cast<int32>(EHCJItemKind::Count); ++A)
+	{
+		const FLinearColor ColorA = HCJ::GetItemKindColor(static_cast<EHCJItemKind>(A));
+		TestTrue(TEXT("a bright colour"), ColorA.GetMax() >= 0.99f && ColorA.GetMin() <= 0.3f);
+		TestTrue(TEXT("not the red of an enemy"), FVector3f(ColorA.R - Enemy.R, ColorA.G - Enemy.G, ColorA.B - Enemy.B).Size() > 0.4f);
+		for (int32 B = 0; B < A; ++B)
+		{
+			const FLinearColor ColorB = HCJ::GetItemKindColor(static_cast<EHCJItemKind>(B));
+			TestTrue(TEXT("kinds are far apart in colour"), FVector3f(ColorA.R - ColorB.R, ColorA.G - ColorB.G, ColorA.B - ColorB.B).Size() > 0.7f);
+		}
+	}
+	TestTrue(TEXT("health is green"), HCJ::GetItemKindColor(EHCJItemKind::Health).G > 0.9f && HCJ::GetItemKindColor(EHCJItemKind::Health).R < 0.4f);
+
+	// The light column and the halo.
+	using namespace HCJPickupLook;
+	TestEqual(TEXT("column next to the view"), BeamWidthAt(0.0f), BeamWidth);
+	TestEqual(TEXT("column at 80 m: still its own width"), BeamWidthAt(8000.0f), BeamWidth);
+	TestEqual(TEXT("column at 250 m: a share of the distance"), BeamWidthAt(25000.0f), 25000.0f * BeamAngularWidth, 0.01f);
+	TestEqual(TEXT("column far away: the limit"), BeamWidthAt(500000.0f), BeamMaxWidth);
+	TestEqual(TEXT("a negative distance is no distance"), BeamWidthAt(-5.0f), BeamWidth);
+	TestEqual(TEXT("halo next to the view"), HaloEdgeAt(0.0f), HaloEdge);
+	TestEqual(TEXT("halo at 250 m"), HaloEdgeAt(25000.0f), 25000.0f * HaloAngularEdge, 0.01f);
+	TestEqual(TEXT("halo far away: the limit"), HaloEdgeAt(500000.0f), HaloMaxEdge);
+	float Last = 0.0f;
+	for (float Distance = 0.0f; Distance <= MaxViewDistance; Distance += 500.0f)
+	{
+		// From the far end of a sector (520 m across) the column is at least 0.5 % of the distance wide: 3 pixels at 1280x720, 90 degrees.
+		TestTrue(TEXT("the column never gets thinner with the distance"), BeamWidthAt(Distance) >= Last);
+		Last = BeamWidthAt(Distance);
+		if (Distance >= 12000.0f && Distance <= 52000.0f)
+		{
+			TestTrue(TEXT("at least 0.5 % of the distance across a sector"), BeamWidthAt(Distance) >= 0.005f * Distance);
+			TestTrue(TEXT("the halo at least 6 % of the distance across a sector"), HaloEdgeAt(Distance) >= 0.06f * Distance);
+		}
+	}
+	TestTrue(TEXT("the column is taller than it is ever wide"), BeamHeight > 5.0f * BeamMaxWidth);
+	for (int32 Step = 0; Step < 200; ++Step)
+	{
+		const float Pulse = HaloPulse(Step * 0.05f, Step * 0.3f);
+		TestTrue(TEXT("the pulse stays between 0.8 and 1"), Pulse >= 0.8f && Pulse <= 1.0f);
+	}
+	return true;
 }
 
 #endif // WITH_DEV_AUTOMATION_TESTS

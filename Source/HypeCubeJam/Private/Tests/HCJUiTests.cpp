@@ -280,4 +280,76 @@ bool FHCJHypercubeMapTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * Pad markers of the HUD (item 38): the list of the nearest pads without an allocation, the strength of a marker by
+ * its distance, the distance text in steps.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHCJPickupMarkerTest, "HypeCubeJam.UI.PickupMarkers", HCJUiTestFlags)
+
+bool FHCJPickupMarkerTest::RunTest(const FString& Parameters)
+{
+	// The nearest N of a stream, sorted, against a full sort.
+	FRandomStream Random(4711);
+	for (int32 Round = 0; Round < 200; ++Round)
+	{
+		const int32 Capacity = 1 + Round % HCJUi::MaxPickupMarkers;
+		const int32 NumItems = Round % 23;
+		FHCJNearSlot Slots[HCJUi::MaxPickupMarkers];
+		int32 Num = 0;
+		TArray<double> All;
+		for (int32 Index = 0; Index < NumItems; ++Index)
+		{
+			// (Few distinct values: equal distances happen.)
+			const double DistSq = static_cast<double>(Random.RandRange(0, 30)) * 1000.0;
+			All.Add(DistSq);
+			Num = HCJUi::InsertNearest(MakeArrayView(Slots, Capacity), Num, DistSq, Index);
+		}
+		TArray<double> Sorted = All;
+		Sorted.Sort();
+		bool bGood = Num == FMath::Min(NumItems, Capacity);
+		TSet<int32> Seen;
+		for (int32 Slot = 0; Slot < Num && bGood; ++Slot)
+		{
+			bGood = Slots[Slot].DistSq == Sorted[Slot] && All.IsValidIndex(Slots[Slot].Index) && All[Slots[Slot].Index] == Slots[Slot].DistSq && !Seen.Contains(Slots[Slot].Index);
+			Seen.Add(Slots[Slot].Index);
+		}
+		TestTrue(*FString::Printf(TEXT("round %d: the %d nearest of %d, nearest first, each once"), Round, Capacity, NumItems), bGood);
+	}
+	{
+		FHCJNearSlot Slots[3];
+		int32 Num = HCJUi::InsertNearest(MakeArrayView(Slots), 0, 5.0, 10);
+		Num = HCJUi::InsertNearest(MakeArrayView(Slots), Num, 5.0, 11);
+		TestTrue(TEXT("an equal distance goes behind"), Num == 2 && Slots[0].Index == 10 && Slots[1].Index == 11);
+		Num = HCJUi::InsertNearest(MakeArrayView(Slots), Num, 1.0, 12);
+		Num = HCJUi::InsertNearest(MakeArrayView(Slots), Num, 9.0, 13);
+		TestTrue(TEXT("a full list drops what is farther"), Num == 3 && Slots[0].Index == 12 && Slots[1].Index == 10 && Slots[2].Index == 11);
+		TestEqual(TEXT("no room at all"), HCJUi::InsertNearest(TArrayView<FHCJNearSlot>(), 0, 1.0, 1), 0);
+		TestEqual(TEXT("a wrong count is clamped"), HCJUi::InsertNearest(MakeArrayView(Slots), 99, 100.0, 14), 3);
+	}
+
+	// Strength.
+	TestEqual(TEXT("full strength near"), HCJUi::PickupMarkerStrength(3000.0f, 7000.0f, 26000.0f, false), 1.0f);
+	TestEqual(TEXT("the far strength far away"), HCJUi::PickupMarkerStrength(40000.0f, 7000.0f, 26000.0f, false), HCJUi::PickupMarkerFarStrength);
+	TestEqual(TEXT("half way between"), HCJUi::PickupMarkerStrength(16500.0f, 7000.0f, 26000.0f, false), 0.5f * (1.0f + HCJUi::PickupMarkerFarStrength), 0.001f);
+	TestEqual(TEXT("the pad to fly to is always at full strength"), HCJUi::PickupMarkerStrength(40000.0f, 7000.0f, 26000.0f, true), 1.0f);
+	TestEqual(TEXT("no range between near and far"), HCJUi::PickupMarkerStrength(9000.0f, 7000.0f, 7000.0f, false), HCJUi::PickupMarkerFarStrength);
+	float Last = 1.0f;
+	for (float Distance = 0.0f; Distance < 50000.0f; Distance += 250.0f)
+	{
+		const float Strength = HCJUi::PickupMarkerStrength(Distance, 7000.0f, 26000.0f, false);
+		TestTrue(TEXT("never stronger farther away, never too faint to read"), Strength <= Last && Strength >= 0.6f);
+		Last = Strength;
+	}
+
+	// Distance text.
+	TestEqual(TEXT("12.4 m"), HCJUi::MarkerMetres(1240.0f), 12);
+	TestEqual(TEXT("50 m"), HCJUi::MarkerMetres(5000.0f), 50);
+	TestEqual(TEXT("52 m is shown as 50"), HCJUi::MarkerMetres(5200.0f), 50);
+	TestEqual(TEXT("53 m is shown as 55"), HCJUi::MarkerMetres(5300.0f), 55);
+	TestEqual(TEXT("238 m is shown as 240"), HCJUi::MarkerMetres(23800.0f), 240);
+	TestEqual(TEXT("a negative distance is 0"), HCJUi::MarkerMetres(-300.0f), 0);
+	TestTrue(TEXT("low hull is a third of the hull"), HCJUi::LowHullFraction > 0.2f && HCJUi::LowHullFraction < 0.5f);
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

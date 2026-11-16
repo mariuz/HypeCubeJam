@@ -185,6 +185,13 @@ Pillow -> `SourceAssets/Cinematic/*.png`) and `docs/tools/make_cinematic_materia
   server never reads it from the client). Quad -> damage multiplier at spawn. The Cloak bit is the cloaking device's now (not a timed power-up; a CLOAK pad
   refills its meter): see "Ship types, warp drive, cloak, tractor beam".
 - Bots: `FindUsefulPickup` every Think; Wander flies to it, Attack detours over it while firing.
+- Finding the pads (devlog item 38; local looks only): `HCJ::GetItemKind` / `GetItemKindColor` / `GetItemShortName`
+  (`Ship/HCJWeapons.h`: health green, weapon amber, power-up magenta). `AHCJPickup` has two more mesh components, the
+  light column (`BeamMesh`, a cylinder with the glow material) and the halo (`HaloMesh`, a quad with the ships' glint
+  material that `TickBeacon` turns to the local view); sizes by view distance in `HCJPickupLook` (pure, tested).
+  HUD: `AHCJHUD::DrawPickupMarkers` (the nearest `HCJUi::MaxPickupMarkers` pads of the sector through
+  `HCJUi::InsertNearest`, strength by `PickupMarkerStrength`, label text cached in `FPickupLabel`, the low-hull
+  pointer to `HealthGuidePad`), `DrawPickupIcon` (cross / diamond / triangle; the radar uses it too).
 
 ## Teleport protocol
 1. Portals of an edge are point reflections: `LocalPos(S, d) == -LocalPos(S ^ (1 << d), d)`.
@@ -232,6 +239,13 @@ Pillow -> `SourceAssets/Cinematic/*.png`) and `docs/tools/make_cinematic_materia
     shot with the phaser for up to 3.2 s), the station's reach (`StationDangerRadius`, applied in `SteerTowards`
     unless the bot attacks the turrets), warp towards a hostile far away (`bChasing` / `bWarpChase`).
   - `DescribeForLog`: the bot's state as key=value tokens, written by the game mode when its ship is stuck.
+- Beginner's help (devlog item 38; Easy only, server only, nothing replicated): three more fields of `FHCJBotSkill`
+  (`DamageFromHumanScale`, `HumanHullRegenRate`, `HumanRepairScale`; "off" on every other level, cleared by
+  `ClearFairness` and by `ClearBeginnerHelp` = `-HCJClassicEasy`). `AHCJGameMode::GetFairSkill` is the one place
+  that applies the two switches to the row (bots read it every `Think`); `GetHumanDamageToBotScale` is used in
+  `AHCJShipCharacter::TakeDamage` (a person's hit on a bot's ship), `GetHumanHullRegenRate` in
+  `ServerTickHullRegen` (`HCJBalance::StepHullRegen`; "hit" = any loss of hull or shield since the last tick),
+  `GetHumanRepairScale` in `ServerGiveItem`. Counters on the `Fair: event=status` line.
 - Fairness towards people (devlog item 29; server only, nothing replicated; numbers per difficulty in the fairness
   fields of `FHCJBotSkill`, all "off" on Ace = level 3 and with `-HCJNoFair`, which calls `FHCJBotSkill::ClearFairness`
   on the row every `Think`). The rules apply only when the other ship's controller is an `APlayerController`
@@ -384,10 +398,10 @@ D -> C `AHCJPlayerState::GetCurrentSector`.
 
 ## Menu, HUD and feel (added in the polish pass)
 - `Game/HCJUiLogic.h` (plain C++, tested): kill streaks, HUD scale, off-screen marker, start-menu command-line rule,
-  target selection, fire-now rule, radar projection, and `HCJMenuFlow` (process-wide "open the title menu" state).
+  target selection, fire-now rule, radar projection, the pad markers (nearest-N list, strength, distance text), and `HCJMenuFlow` (process-wide "open the title menu" state).
 - `Game/HCJBalance.h` (plain C++, tested): bot difficulty rows (four levels: easy, normal, hard, ace) with the
-  fairness fields, their names and menu descriptions, bearings and the rear arc, spawn scoring, boost meter step,
-  shield regeneration.
+  fairness fields and the beginner's help of Easy, their names and menu descriptions, bearings and the rear arc,
+  spawn scoring, boost meter step, shield regeneration, hull mending.
 - `Game/HCJUserSettings.h`: what the menu stores in the user's GameUserSettings.ini.
 - `Private/UI/HCJMenu.*`: the one Slate menu widget; every action goes through `AHCJPlayerController::Menu*`
   (the two online pages read `UHCJEOSSubsystem` directly).

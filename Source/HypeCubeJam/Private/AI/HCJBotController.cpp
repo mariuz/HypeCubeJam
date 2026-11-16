@@ -367,12 +367,8 @@ void AHCJBotController::Think(AHCJShipCharacter& Ship, const AHCJUniverse& Unive
 
 	if (const AHCJGameMode* GameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>())
 	{
-		Skill = FHCJBotSkill::Get(GameMode->GetBotDifficulty());
-		if (AHCJGameMode::IsNoFair())
-		{
-			// The bots before the fairness rules: a human ship is a ship like any other.
-			Skill.ClearFairness();
-		}
+		// (With -HCJNoFair the bots before the fairness rules: a human ship is a ship like any other.)
+		Skill = GameMode->GetFairSkill();
 	}
 	bHeldByCap = false;
 	bHeldByGrace = false;

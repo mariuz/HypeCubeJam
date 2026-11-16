@@ -135,8 +135,24 @@ public:
 	 * enemy, a new ship faces the nearest one), and so does everything the HUD tells the player.
 	 */
 	static bool IsNoFair();
+	/**
+	 * -HCJClassicEasy: Easy without the beginner's help of item 38 (a person's guns at their plain damage, no hull
+	 * mending, the plain repair pad, bots at half damage instead of 0.4) - Easy as build 0.20.0 had it, in the same
+	 * binary, for comparisons. Nothing else changes; the other levels have no such help to switch off.
+	 */
+	static bool IsClassicEasy();
+	/** The skill row of the difficulty in force, with what -HCJNoFair and -HCJClassicEasy switch off already cleared. */
+	FHCJBotSkill GetFairSkill() const;
 	/** What a bot's damage to a human ship is multiplied by at this difficulty (1 with -HCJNoFair). */
 	float GetBotDamageToHumanScale() const;
+	/** Beginner's help (Easy; 1 / 0 / 1 elsewhere and with -HCJNoFair or -HCJClassicEasy): what a person's damage to a bot's ship is multiplied by, the hull points a second a person's ship mends out of combat, and what a repair pad's amount is multiplied by for a person. */
+	float GetHumanDamageToBotScale() const;
+	float GetHumanHullRegenRate() const;
+	float GetHumanRepairScale() const;
+	/** Telemetry of the beginner's help: damage a person did to bots (as applied; Bonus = the part the scale added), hull points mended, a repair pad taken by a person. */
+	void NotifyHumanDamageToBot(float Applied, float Bonus) { MatchStats.HelpDamageDealt += Applied; MatchStats.HelpDamageBonus += Bonus; }
+	void NotifyHumanHullRegen(float Points) { MatchStats.HelpHullRegen += Points; }
+	void NotifyHumanRepair(float Points) { MatchStats.HelpRepairs += 1; MatchStats.HelpRepairPoints += Points; }
 	/**
 	 * A hit on a human ship (every damage step, also each step of a phaser beam). Applied is what the health component
 	 * absorbed, Unscaled the same before the difficulty's damage scale, BearingDeg the angle between the victim's nose and
@@ -525,6 +541,13 @@ protected:
 		int32 FairHeldGrace = 0;
 		int32 FairHeldRespite = 0;
 		int32 FairHeldHunters = 0;
+		/** Beginner's help (item 38), summed over all human ships: damage they did to bots and the part of it the scale added, hull points mended out of combat, repair pads taken and what they restored, kills by people. */
+		float HelpDamageDealt = 0.0f;
+		float HelpDamageBonus = 0.0f;
+		float HelpHullRegen = 0.0f;
+		int32 HelpRepairs = 0;
+		float HelpRepairPoints = 0.0f;
+		int32 HelpHumanKills = 0;
 	};
 	FMatchStats MatchStats;
 	float NextStatusLogTime = 0.0f;

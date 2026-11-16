@@ -202,3 +202,47 @@ FLinearColor HCJ::GetItemColor(EHCJPickupItem Item)
 	default: return FLinearColor::White;
 	}
 }
+
+EHCJItemKind HCJ::GetItemKind(EHCJPickupItem Item)
+{
+	switch (Item)
+	{
+	case EHCJPickupItem::Repair:
+	case EHCJPickupItem::ShieldCell:
+		return EHCJItemKind::Health;
+	case EHCJPickupItem::Overdrive:
+	case EHCJPickupItem::QuadDamage:
+	case EHCJPickupItem::Cloak:
+		return EHCJItemKind::PowerUp;
+	default:
+		return EHCJItemKind::Weapon;
+	}
+}
+
+FLinearColor HCJ::GetItemKindColor(EHCJItemKind Kind)
+{
+	switch (Kind)
+	{
+	case EHCJItemKind::Health: return FLinearColor(0.15f, 1.0f, 0.35f);
+	case EHCJItemKind::PowerUp: return FLinearColor(1.0f, 0.25f, 0.9f);
+	default: return FLinearColor(1.0f, 0.62f, 0.1f);
+	}
+}
+
+const TCHAR* HCJ::GetItemShortName(EHCJPickupItem Item)
+{
+	switch (Item)
+	{
+	case EHCJPickupItem::Repair: return TEXT("REPAIR");
+	case EHCJPickupItem::ShieldCell: return TEXT("SHIELD");
+	case EHCJPickupItem::Overdrive: return TEXT("OVERDRIVE");
+	case EHCJPickupItem::QuadDamage: return TEXT("QUAD");
+	case EHCJPickupItem::Cloak: return TEXT("CLOAK");
+	case EHCJPickupItem::Scatter: return TEXT("SCATTER");
+	case EHCJPickupItem::Rail: return TEXT("RAIL");
+	case EHCJPickupItem::Missile: return TEXT("MISSILES");
+	case EHCJPickupItem::Pulse: return TEXT("PULSE");
+	case EHCJPickupItem::Torpedoes: return TEXT("TORPEDOES");
+	default: return TEXT("?");
+	}
+}
