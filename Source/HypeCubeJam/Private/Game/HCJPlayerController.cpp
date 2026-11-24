@@ -1031,7 +1031,7 @@ void AHCJPlayerController::MenuPlay()
 	{
 		SetName(Name);
 	}
-	GameMode->StartMatchFromMenu(this, Settings.BotCount, Settings.Dimension, Settings.Seed, Settings.BotDifficulty);
+	GameMode->StartMatchFromMenu(this, Settings.BotCount, Settings.Dimension, Settings.Seed, Settings.GetBotDifficulty());
 }
 
 void AHCJPlayerController::MenuQuickPlay()
@@ -1353,15 +1353,15 @@ void AHCJPlayerController::MenuStepDifficulty(int32 Step)
 		return;
 	}
 	UHCJUserSettings& Settings = UHCJUserSettings::Get();
-	Settings.BotDifficulty = FMath::Clamp(GameMode->GetBotDifficulty() + Step, 0, HCJBalance::NumBotDifficulties - 1);
+	Settings.SetBotDifficulty(HCJBalance::StepDifficulty(GameMode->GetBotDifficulty(), Step));
 	Settings.Save();
-	GameMode->SetBotDifficulty(Settings.BotDifficulty);
+	GameMode->SetBotDifficulty(Settings.GetBotDifficulty());
 }
 
 int32 AHCJPlayerController::GetMenuDifficulty() const
 {
 	const AHCJGameMode* GameMode = GetWorld() != nullptr ? GetWorld()->GetAuthGameMode<AHCJGameMode>() : nullptr;
-	return GameMode != nullptr ? GameMode->GetBotDifficulty() : UHCJUserSettings::Get().BotDifficulty;
+	return GameMode != nullptr ? GameMode->GetBotDifficulty() : UHCJUserSettings::Get().GetBotDifficulty();
 }
 
 void AHCJPlayerController::MenuResume()
@@ -1609,8 +1609,13 @@ void AHCJPlayerController::HCJMenuCmd(const FString& Action, const FString& Argu
 	{
 		// What the Difficulty row of the title menu does: "difficulty 2" sets the level (not saved until PLAY), no number steps it up.
 		UHCJUserSettings& Settings = UHCJUserSettings::Get();
-		Settings.BotDifficulty = Argument.IsEmpty() ? (Settings.BotDifficulty + 1) % HCJBalance::NumBotDifficulties : FMath::Clamp(FCString::Atoi(*Argument), 0, HCJBalance::NumBotDifficulties - 1);
-		UE_LOG(LogHCJ, Log, TEXT("Menu: difficulty %d (%s) - %s"), Settings.BotDifficulty, HCJBalance::GetDifficultyName(Settings.BotDifficulty), HCJBalance::GetDifficultyDescription(Settings.BotDifficulty));
+		// (No number: the next one in the menu's order, from Ace round to Super Easy.)
+		const int32 Current = Settings.GetBotDifficulty();
+		Settings.SetBotDifficulty(Argument.IsEmpty()
+			? (HCJBalance::GetMenuOrder(Current) == HCJBalance::NumBotDifficulties - 1 ? HCJBalance::SuperEasyDifficulty : HCJBalance::StepDifficulty(Current, 1))
+			: FCString::Atoi(*Argument));
+		const int32 Level = Settings.GetBotDifficulty();
+		UE_LOG(LogHCJ, Log, TEXT("Menu: difficulty %d (%s) - %s"), Level, HCJBalance::GetDifficultyName(Level), HCJBalance::GetDifficultyDescription(Level));
 	}
 	else if (Action == TEXT("matchdifficulty"))
 	{
@@ -1876,7 +1881,7 @@ void AHCJPlayerController::HCJMenuCmd(const FString& Action, const FString& Argu
 			const FString Before = Menu->GetNavLabel();
 			Menu->Navigate(Nav);
 			UE_LOG(LogHCJ, Log, TEXT("Menu: nav %s: page %d, focus %d of %d '%s' (was '%s'), menu %s; difficulty %d, controller %d, start menu %d"), *Argument, static_cast<int32>(Menu->GetPage()), Menu->GetNavIndex(),
-				Menu->GetNumNavItems(), *Menu->GetNavLabel(), *Before, MenuWidget.IsValid() ? TEXT("open") : TEXT("closed"), UHCJUserSettings::Get().BotDifficulty, UHCJUserSettings::Get().bController ? 1 : 0, bInStartMenu ? 1 : 0);
+				Menu->GetNumNavItems(), *Menu->GetNavLabel(), *Before, MenuWidget.IsValid() ? TEXT("open") : TEXT("closed"), UHCJUserSettings::Get().GetBotDifficulty(), UHCJUserSettings::Get().bController ? 1 : 0, bInStartMenu ? 1 : 0);
 		}
 		else
 		{

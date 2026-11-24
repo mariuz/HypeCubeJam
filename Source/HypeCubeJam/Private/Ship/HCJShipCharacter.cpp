@@ -1,4 +1,6 @@
 #include "Ship/HCJShipCharacter.h"
+#include "World/HCJPickup.h"
+#include "World/HCJStations.h"
 
 #include "Camera/CameraComponent.h"
 #include "Components/AudioComponent.h"
@@ -305,6 +307,7 @@ void AHCJShipCharacter::Tick(float DeltaSeconds)
 	ServerTickWeapon();
 	ServerTickBounds(DeltaSeconds);
 	ServerTickHullRegen(DeltaSeconds);
+	ServerTickPickupReach();
 	if (FairBeamLogs.Num() > 0)
 	{
 		FlushFairBeamLogs(false);
@@ -459,7 +462,11 @@ void AHCJShipCharacter::ServerTickPhaser(float DeltaSeconds)
 			Ships.Add(Other);
 			Locations.Add(Other->GetActorLocation());
 		}
-		const int32 Pick = HCJPhaser::PickAssistTarget(Start, Aim, Locations, LockedIndex, Range, Gameplay.PhaserAssistDegrees, Gameplay.PhaserLockAssistDegrees);
+		// (Easy, a person's beam - item 40: it bends as far as a person's bolts do, 3 degrees - the lock's value for everybody.)
+		const AHCJGameMode* AssistGameMode = Cast<APlayerController>(GetController()) != nullptr ? World->GetAuthGameMode<AHCJGameMode>() : nullptr;
+		const float HumanAssist = AssistGameMode != nullptr ? AssistGameMode->GetHumanAimAssistDeg() : 0.0f;
+		const int32 Pick = HCJPhaser::PickAssistTarget(Start, Aim, Locations, LockedIndex, Range, FMath::Max(Gameplay.PhaserAssistDegrees, HumanAssist),
+			FMath::Max(Gameplay.PhaserLockAssistDegrees, HumanAssist));
 		if (Pick != INDEX_NONE)
 		{
 			FHitResult AssistHit;
@@ -647,7 +654,12 @@ void AHCJShipCharacter::ServerFireTorpedo_Implementation()
 		Torpedo->FinishSpawning(SpawnTransform);
 		if (AHCJGameMode* GameMode = World->GetAuthGameMode<AHCJGameMode>())
 		{
-			GameMode->NotifyTorpedoFired(Cast<AHCJShipCharacter>(Torpedo->GetHomingTarget()) != nullptr);
+			const AHCJShipCharacter* TorpedoTarget = Cast<AHCJShipCharacter>(Torpedo->GetHomingTarget());
+			GameMode->NotifyTorpedoFired(TorpedoTarget != nullptr);
+			if (Torpedo->IsFiredByHuman())
+			{
+				GameMode->NotifyHumanTorpedoFired(TorpedoTarget != nullptr, TorpedoTarget != nullptr && TorpedoTarget != LockTarget.Get());
+			}
 		}
 	}
 	ForceNetUpdate();
@@ -1095,6 +1107,12 @@ float AHCJShipCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Dama
 	{
 		FairGameMode->NotifyHumanDamageToBot(Applied, Applied - Applied / FMath::Max(DamageScale, 1.0f));
 	}
+	if (const AHCJProjectile* Bolt = Cast<AHCJProjectile>(DamageCauser); Bolt != nullptr && FairGameMode != nullptr && !Bolt->IsTorpedo() && Bolt->IsFiredByHuman()
+		&& EventInstigator != GetController())
+	{
+		// (Item 40 telemetry: a person's bolt that hit a ship, and whether the aim assist had turned it.)
+		FairGameMode->NotifyHumanBoltHit(Bolt->IsAimAssisted());
+	}
 
 	if (bHumanVictim)
 	{
@@ -1427,7 +1445,78 @@ void AHCJShipCharacter::PossessedBy(AController* NewController)
 		bSpawnShield = true;
 		SectorArrivalTime = static_cast<float>(World->GetTimeSeconds());
 	}
+	ServerGiveHumanStartWeapon();
 	UpdateShipColor();
+}
+
+void AHCJShipCharacter::ServerGiveHumanStartWeapon()
+{
+	// More help for a beginner (item 40, Easy only): a person's new ship starts with a full load of a pickup weapon, so
+	// that the first fight is not fought with the phaser alone. Bots and the other levels: the phaser, as before.
+	UWorld* World = GetWorld();
+	if (!HasAuthority() || bIsDead || World == nullptr || Cast<APlayerController>(GetController()) == nullptr || GetWeapon() != GetBaseWeapon())
+	{
+		return;
+	}
+	AHCJGameMode* GameMode = World->GetAuthGameMode<AHCJGameMode>();
+	const EHCJWeapon StartWeapon = GameMode != nullptr ? GameMode->GetHumanSpawnWeapon() : EHCJWeapon::Count;
+	if (StartWeapon != EHCJWeapon::Scatter && StartWeapon != EHCJWeapon::Rail && StartWeapon != EHCJWeapon::Missile && StartWeapon != EHCJWeapon::Pulse)
+	{
+		return;
+	}
+	FHCJWeaponState State;
+	State.Weapon = GetWeapon();
+	State.Ammo = Ammo;
+	State.BaseWeapon = GetBaseWeapon();
+	State.Give(StartWeapon, UHCJGameplaySettings::Get().GetWeapon(StartWeapon));
+	WeaponType = static_cast<uint8>(State.Weapon);
+	Ammo = State.Ammo;
+	ForceNetUpdate();
+	GameMode->NotifyHumanArmedSpawn();
+}
+
+void AHCJShipCharacter::ServerTickPickupReach()
+{
+	// More help for a beginner (item 40, Easy only): a filled pad near a person's ship gives up its item without the
+	// ship having to touch it. The server decides, as for a touch (AHCJPickup::ServerTryCollect): the pad's replicated
+	// state and the ship's weapon / health travel as they always do, nothing new goes over the network.
+	UWorld* World = GetWorld();
+	if (World == nullptr || Cast<APlayerController>(GetController()) == nullptr)
+	{
+		return;
+	}
+	const float Now = static_cast<float>(World->GetTimeSeconds());
+	if (Now < NextPickupReachTime)
+	{
+		return;
+	}
+	NextPickupReachTime = Now + 0.2f;
+	AHCJGameMode* GameMode = World->GetAuthGameMode<AHCJGameMode>();
+	const float Reach = GameMode != nullptr ? GameMode->GetHumanPickupReach() : 0.0f;
+	if (Reach <= 0.0f)
+	{
+		return;
+	}
+	const FVector Location = GetActorLocation();
+	// (Beyond this the pad's own trigger would not have seen the ship: a "reach" pickup for the telemetry.)
+	const double TouchSq = FMath::Square(static_cast<double>(UHCJGameplaySettings::Get().CollectRadius + HCJ::ShipCollisionRadius));
+	for (const TWeakObjectPtr<AHCJPickup>& Entry : AHCJPickup::GetAll())
+	{
+		AHCJPickup* Pickup = Entry.Get();
+		if (Pickup == nullptr || Pickup->GetWorld() != World || !Pickup->IsActive() || !HCJBalance::IsInPickupReach(Location, Pickup->GetActorLocation(), Reach))
+		{
+			continue;
+		}
+		const bool bBeyondTouch = FVector::DistSquared(Location, Pickup->GetActorLocation()) > TouchSq;
+		if (Pickup->ServerTryCollect(this) && bBeyondTouch)
+		{
+			GameMode->NotifyHumanReachPickup();
+		}
+		if (bIsDead)
+		{
+			return;
+		}
+	}
 }
 
 void AHCJShipCharacter::OnRep_PlayerState()
@@ -1792,8 +1881,40 @@ void AHCJShipCharacter::ServerFireProjectile()
 	const FHCJWeaponDef& Def = Gameplay.GetWeapon(Weapon);
 	const bool bQuad = HasPowerup(EHCJPowerup::Quad);
 	const FVector Muzzle = GetMuzzleLocation();
-	const FVector AimDirection = GetAimRotation().Vector();
+	FVector AimDirection = GetAimRotation().Vector();
 	const float SpreadRadians = FMath::DegreesToRadians(Def.SpreadDegrees);
+
+	// More help for a beginner (item 40, Easy only, a person's shots): the shot leaves towards the lead point of the
+	// locked ship, else of the ship nearest the crosshair, when that point is within a few degrees of the aim. The
+	// server turns it, so every machine sees the bolt where it goes; a bot's aim is never touched.
+	AHCJGameMode* AssistGameMode = Cast<APlayerController>(GetController()) != nullptr ? World->GetAuthGameMode<AHCJGameMode>() : nullptr;
+	const float AssistDeg = AssistGameMode != nullptr ? AssistGameMode->GetHumanAimAssistDeg() : 0.0f;
+	bool bAssisted = false;
+	if (AssistDeg > 0.0f)
+	{
+		const float Range = Def.ProjectileSpeed * Def.Lifetime;
+		TArray<FVector, TInlineAllocator<16>> Points;
+		int32 LockedIndex = INDEX_NONE;
+		for (TActorIterator<AHCJShipCharacter> It(World); It; ++It)
+		{
+			const AHCJShipCharacter* Other = *It;
+			if (Other == this || Other->IsDead() || Other->IsCloakHidden()
+				|| FVector::DistSquared(Other->GetActorLocation(), Muzzle) > FMath::Square(static_cast<double>(Range) + 200.0))
+			{
+				continue;
+			}
+			FVector Point;
+			HCJ::ComputeLeadAim(Muzzle, Other->GetActorLocation(), Other->GetVelocity(), Def.ProjectileSpeed, Point);
+			LockedIndex = Other == LockTarget.Get() ? Points.Num() : LockedIndex;
+			Points.Add(Point);
+		}
+		const int32 Pick = HCJBalance::PickAimAssist(Muzzle, AimDirection, Points, LockedIndex, Range, AssistDeg);
+		if (Pick != INDEX_NONE)
+		{
+			AimDirection = HCJBalance::AssistedAimDirection(Muzzle, AimDirection, Points, Pick);
+			bAssisted = true;
+		}
+	}
 
 	bool bFired = false;
 	for (int32 Pellet = 0; Pellet < FMath::Max(Def.Pellets, 1); ++Pellet)
@@ -1805,8 +1926,16 @@ void AHCJShipCharacter::ServerFireProjectile()
 		if (Projectile != nullptr)
 		{
 			Projectile->InitWeapon(Weapon, bQuad, (bQuad ? Gameplay.QuadDamageMultiplier : 1.0f) * GetTypeDef().BoltDamageScale);
+			if (bAssisted)
+			{
+				Projectile->MarkAimAssisted();
+			}
 			Projectile->FinishSpawning(SpawnTransform);
 			bFired = true;
+			if (AssistGameMode != nullptr)
+			{
+				AssistGameMode->NotifyHumanBolt(bAssisted);
+			}
 		}
 	}
 

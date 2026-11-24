@@ -17,6 +17,12 @@ Reads the server's "Fair: event=..." lines. One row per log; logs named <group>_
   help      the beginner's help of item 38 (Easy; 0 elsewhere, with -HCJNoFair and with -HCJClassicEasy, and in logs of
             older builds): damage people did to bots and the part of it the scale added, hull points mended out of
             combat, repair pads people took and what they restored. "K/D" is own kills over deaths (at least 1).
+  arms      item 40 (Easy, except the torpedoes; 0 in logs of older builds): pads people took (all of them, and of them
+            the ones taken from beyond the pad's own trigger - the Easy reach), new ships that started with a weapon,
+            people's bolts (one per pellet) and how many the aim assist turned, their bolts that hit a ship (hit rate)
+            and of those the assisted ones (hit rate of the assisted ones).
+  torp      people's photon torpedoes (every level): fired, homing at launch (of them found without a lock in the
+            cone), lost their target, damaged a ship (share of fired).
 """
 import glob
 import io
@@ -76,18 +82,29 @@ def row(r):
         'held_respite': int(f('held_respite')), 'held_hunters': int(f('held_hunters')), 'kills': int((r['human'] or {}).get('kills', 0)), 'all_kills': int((r['stats'] or {}).get('kills', 0)),
         'errors': r['errors'], 'bad': r['bad'], 'other': other,
         'human_dmg': f('human_dmg'), 'human_bonus': f('human_dmg_bonus'), 'hull_regen': f('hull_regen'), 'repairs': int(f('repairs')), 'repair_points': f('repair_points'),
+        'pickups': int(f('human_pickups')), 'reach_pickups': int(f('reach_pickups')), 'armed_spawns': int(f('armed_spawns')), 'bolts': int(f('human_bolts')),
+        'assisted_bolts': int(f('assisted_bolts')), 'bolt_hits': int(f('human_bolt_hits')), 'assisted_hits': int(f('assisted_hits')),
+        'torp_fired': int(f('torp_fired')), 'torp_homing': int(f('torp_homing')), 'torp_acquired': int(f('torp_acquired')), 'torp_lost': int(f('torp_lost')), 'torp_hit': int(f('torp_hit')),
     }
+
+
+LEVELS = {'0': 'easy', '1': 'normal', '2': 'hard', '3': 'ace', '4': 'super_easy'}
 
 
 def show(x):
     pct = lambda part, whole: 100.0 * part / whole if whole > 0 else 0.0
     return ('%-20s level %s nofair %s  %5.1f min | bot damage %6.0f (%6.0f before the scale), rear %4.1f%% (lines %4.1f%%), aft facing %4.1f%% | deaths %3d = %4.2f/min, '
             'by bots %3d, rear %2d (%2.0f%%), <12s %2d | peak %s | held cap/rear/grace/respite/hunters %d/%d/%d/%d/%d | own kills %d = %4.2f/min, K/D %4.2f, all kills %d | '
-            'help: own damage %.0f (%.0f of it the bonus), hull mended %.0f, repair pads %d (%.0f points) | error lines %d, stuck etc. %d%s') % (
-        x['name'], x['difficulty'], x['nofair'], x['minutes'], x['dmg'], x['unscaled'], pct(x['rear'], x['dmg']), pct(x['line_rear'], x['line_dmg']), pct(x['aft'], x['dmg']),
+            'help: own damage %.0f (%.0f of it the bonus), hull mended %.0f, repair pads %d (%.0f points) | '
+            'arms: pads %d (%d by reach), armed spawns %d, bolts %d (%d assisted), hits %d = %.1f%% (assisted %d = %.1f%%) | '
+            'torp: fired %d, homing %d (%d without a lock), lost %d, hit a ship %d = %.0f%% | error lines %d, stuck etc. %d%s') % (
+        x['name'], '%s (%s)' % (x['difficulty'], LEVELS.get(x['difficulty'], '?')), x['nofair'], x['minutes'], x['dmg'], x['unscaled'], pct(x['rear'], x['dmg']), pct(x['line_rear'], x['line_dmg']), pct(x['aft'], x['dmg']),
         x['deaths'], x['deaths'] / x['minutes'], x['bot_deaths'], x['rear_deaths'], pct(x['rear_deaths'], x['deaths']), x['quick'], x['peak'],
         x['held_cap'], x['held_rear'], x['held_grace'], x['held_respite'], x['held_hunters'], x['kills'], x['kills'] / x['minutes'], x['kills'] / max(x['deaths'], 1), x['all_kills'],
-        x['human_dmg'], x['human_bonus'], x['hull_regen'], x['repairs'], x['repair_points'], x['errors'], x['bad'],
+        x['human_dmg'], x['human_bonus'], x['hull_regen'], x['repairs'], x['repair_points'],
+        x['pickups'], x['reach_pickups'], x['armed_spawns'], x['bolts'], x['assisted_bolts'], x['bolt_hits'], pct(x['bolt_hits'], x['bolts']), x['assisted_hits'],
+        pct(x['assisted_hits'], x['assisted_bolts']), x['torp_fired'], x['torp_homing'], x['torp_acquired'], x['torp_lost'], x['torp_hit'], pct(x['torp_hit'], x['torp_fired']),
+        x['errors'], x['bad'],
         ' | other deaths: %s' % x['other'] if x['other'] else '')
 
 
@@ -108,7 +125,9 @@ def main():
             continue
         total = {'name': '%s x%d' % (name, len(xs)), 'difficulty': xs[0]['difficulty'], 'nofair': xs[0]['nofair'], 'other': {}, 'peak': '/'.join(x['peak'] for x in xs)}
         for key in ('minutes', 'dmg', 'rear', 'aft', 'unscaled', 'line_dmg', 'line_rear', 'deaths', 'bot_deaths', 'rear_deaths', 'quick', 'held_cap', 'held_rear', 'held_grace',
-                    'held_respite', 'held_hunters', 'kills', 'all_kills', 'errors', 'bad', 'human_dmg', 'human_bonus', 'hull_regen', 'repairs', 'repair_points'):
+                    'held_respite', 'held_hunters', 'kills', 'all_kills', 'errors', 'bad', 'human_dmg', 'human_bonus', 'hull_regen', 'repairs', 'repair_points',
+                    'pickups', 'reach_pickups', 'armed_spawns', 'bolts', 'assisted_bolts', 'bolt_hits', 'assisted_hits', 'torp_fired', 'torp_homing', 'torp_acquired',
+                    'torp_lost', 'torp_hit'):
             total[key] = sum(x[key] for x in xs)
         for x in xs:
             for cause, count in x['other'].items():

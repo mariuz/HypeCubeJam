@@ -246,6 +246,25 @@ Pillow -> `SourceAssets/Cinematic/*.png`) and `docs/tools/make_cinematic_materia
   `AHCJShipCharacter::TakeDamage` (a person's hit on a bot's ship), `GetHumanHullRegenRate` in
   `ServerTickHullRegen` (`HCJBalance::StepHullRegen`; "hit" = any loss of hull or shield since the last tick),
   `GetHumanRepairScale` in `ServerGiveItem`. Counters on the `Fair: event=status` line.
+- More help for a beginner (devlog item 40; Easy only, server only, no replicated property or RPC added): four more
+  fields of `FHCJBotSkill` (`HumanPickupReach`, `HumanSpawnWeapon`, `HumanAimAssistDeg`, `bHumanWeaponPointer`), cleared
+  by `ClearBeginnerHelp` = `-HCJClassicEasy` (Easy of 0.21.0); `ClearAllBeginnerHelp` = `-HCJClassicEasy20` also clears
+  item 38's. `AHCJShipCharacter::ServerTickPickupReach` (a person's ship, 5 Hz: `AHCJPickup::ServerTryCollect` for
+  every filled pad within the reach), `ServerGiveHumanStartWeapon` (from `PossessedBy`), `ServerFireProjectile` (the
+  shot's direction from `HCJBalance::PickAimAssist` over the lead points `HCJ::ComputeLeadAim` of the ships in range;
+  the bolt is marked `MarkAimAssisted` for the telemetry), `ServerTickPhaser` (the beam's assist cone widened). HUD:
+  `HCJUi::GuidePadRank` picks the pad `DrawPickupMarkers` points at; whether the level asks for the weapon pointer is
+  read from the authority game mode, so a remote client never shows it.
+- Super Easy (devlog item 40): difficulty index 4, first in the menu (`HCJBalance::StepDifficulty` / `GetMenuOrder`;
+  `NormalizeDifficulty` keeps other numbers clamped to 0..3). `FHCJBotSkill::Get(4)` is Easy's row with stronger help
+  (`SuperEasy*` constants); `IsEasyLevel` / `GetSkillLevel` let it use Easy's tables. Saved as `BotDifficulty=0` +
+  `bSuperEasy` in `UHCJUserSettings` (`Get/SetBotDifficulty`), sent as 4 in the lobby attribute `HCJDIFF`.
+- A person's photon torpedo (devlog item 40, every level): `AHCJProjectile` works out `bHumanFirer` on every machine
+  (server: the instigator's controller; client: the instigator's player state is not a bot's) and from it
+  `TorpedoHoming` (`HCJTorpedo::GetHoming`): turn rate, lock / acquisition / keep cones, lead. The server picks the
+  target at launch (`FindTorpedoTarget` -> `HCJTorpedo::PickTarget`) and drops it (`TorpedoKeepsTarget`); every machine
+  steers its copy for `HCJTorpedo::SteerPoint` at that rate, the replicated movement corrects the rest. A bot's torpedo
+  homes as before; `-HCJClassicTorpedo` gives a person the bot's.
 - Fairness towards people (devlog item 29; server only, nothing replicated; numbers per difficulty in the fairness
   fields of `FHCJBotSkill`, all "off" on Ace = level 3 and with `-HCJNoFair`, which calls `FHCJBotSkill::ClearFairness`
   on the row every `Think`). The rules apply only when the other ship's controller is an `APlayerController`

@@ -81,6 +81,9 @@ public:
 	 */
 	static const TArray<TWeakObjectPtr<AHCJPickup>>& GetAll();
 
+	/** SERVER: gives the item to Ship when the pad is active and the ship takes it (a touch, or the Easy reach of item 40). Returns whether it was taken. */
+	bool ServerTryCollect(AHCJShipCharacter* Ship);
+
 protected:
 	UFUNCTION()
 	void OnTriggerBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp,
@@ -89,8 +92,7 @@ protected:
 	UFUNCTION()
 	void OnRep_State();
 
-	/** SERVER: gives the item to Ship when the pad is active and the ship takes it. */
-	void ServerTryCollect(AHCJShipCharacter* Ship);
+
 	/** Every machine but a dedicated server: shape, colour and visibility from Item / bActive. */
 	void RefreshVisuals();
 	/** Every machine but a dedicated server, every frame: column and halo sized and turned for the local view; hidden on an empty pad and from another sector. */

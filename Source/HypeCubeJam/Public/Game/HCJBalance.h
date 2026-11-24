@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Ship/HCJWeapons.h"
 
 /**
  * How well a bot fights at one difficulty level. Plain numbers (tested on their own); AHCJBotController reads the
@@ -89,12 +90,31 @@ struct HYPECUBEJAM_API FHCJBotSkill
 	/** A repair pad restores this many times the usual amount on a person's ship. */
 	float HumanRepairScale = 1.0f;
 
+	// ---- more help for a beginner (docs/DEVLOG_NOTES.md, item 40) ----
+	// Easy only, "off" by default like the fields above. ClearBeginnerHelp (-HCJClassicEasy) clears these alone: Easy as
+	// build 0.21.0 had it; ClearAllBeginnerHelp (-HCJClassicEasy20) also the help of item 38: Easy as build 0.20.0 had it.
+
+	/** The item of a filled pad goes to a person's ship within this distance of the pad (uu; 0 = only by touching it, CollectRadius). */
+	float HumanPickupReach = 0.0f;
+	/** A person's new ship holds this pickup weapon with a full load instead of only its base weapon (Count = none). */
+	EHCJWeapon HumanSpawnWeapon = EHCJWeapon::Count;
+	/**
+	 * Aim assist for a person's shots, degrees (0 = none beyond the game's own): a bolt leaves towards the lead point of
+	 * the locked ship, else of the ship nearest the crosshair, when that point lies within this angle of the aim; the
+	 * phaser beam bends to a ship within this angle (the game's own phaser assist is 1.6 / 3 degrees for everybody).
+	 */
+	float HumanAimAssistDeg = 0.0f;
+	/** The HUD's pad pointer (item 38's, for a low hull) also shows the way to the nearest weapon pad while the ship has only its base weapon. */
+	bool bHumanWeaponPointer = false;
+
 	/** Sets the fairness fields and the beginner's help back to the defaults above ("off"). */
 	void ClearFairness();
-	/** Sets only the beginner's help back to "off" and the damage scale of Easy to what it was before item 38. */
+	/** Sets the beginner's help of item 40 back to "off" and Easy's damage scales to 1.5 / 0.4: Easy as build 0.21.0 had it (the rest of item 38's help stays). */
 	void ClearBeginnerHelp();
+	/** Sets all of the beginner's help back to "off" and the damage scale of Easy to what it was before item 38: Easy of build 0.20.0. */
+	void ClearAllBeginnerHelp();
 
-	/** The row for Difficulty (0 easy, 1 normal, 2 hard, 3 ace; clamped). */
+	/** The row for Difficulty (0 easy, 1 normal, 2 hard, 3 ace, 4 super easy = Easy with Super Easy's help; NormalizeDifficulty). */
 	static FHCJBotSkill Get(int32 Difficulty);
 };
 
@@ -131,8 +151,26 @@ enum class EHCJBotTactic : uint8
 
 namespace HCJBalance
 {
-	/** Bot difficulty levels: 0 easy, 1 normal, 2 hard, 3 ace (hard without the fairness rules). */
-	inline constexpr int32 NumBotDifficulties = 4;
+	/**
+	 * Bot difficulty levels: 0 easy, 1 normal, 2 hard, 3 ace (hard without the fairness rules), 4 super easy (item 40:
+	 * Easy with the strong help of the first 0.22.0). Super Easy got the NEXT index so that 0..3 keep their meaning in the
+	 * URL (?Difficulty=), the saved settings (UHCJUserSettings keeps 0 plus bSuperEasy), the lobby attribute and the logs;
+	 * in the menu it comes first (StepDifficulty).
+	 */
+	inline constexpr int32 NumBotDifficulties = 5;
+	inline constexpr int32 SuperEasyDifficulty = 4;
+	/** A level as the game uses it: 0..4; anything else is clamped to 0..3 (so an unknown high number is Ace, as before). */
+	HYPECUBEJAM_API int32 NormalizeDifficulty(int32 Difficulty);
+	/** The level Step places further in the menu's order Super Easy, Easy, Normal, Hard, Ace (held at both ends). */
+	HYPECUBEJAM_API int32 StepDifficulty(int32 Difficulty, int32 Step);
+	/** Position of a level in that order (0 = Super Easy, first). */
+	HYPECUBEJAM_API int32 GetMenuOrder(int32 Difficulty);
+	/** Easy or Super Easy: the levels whose bots fly Easy's row (torpedo skill and the rest). */
+	HYPECUBEJAM_API bool IsEasyLevel(int32 Difficulty);
+	/** The level whose bot skill tables (torpedoes) a level uses: Super Easy -> Easy (0). */
+	HYPECUBEJAM_API int32 GetSkillLevel(int32 Difficulty);
+	/** Key for log lines: "super_easy", "easy", ... */
+	HYPECUBEJAM_API FString GetDifficultyKey(int32 Difficulty);
 	/**
 	 * "Behind": the direction to the other ship makes more than about 107 degrees with the nose (dot product below
 	 * this). Used for the rear arc of a human ship (bots), of the view (HUD) and for the "Fair:" log lines.
@@ -145,10 +183,29 @@ namespace HCJBalance
 	/** Beginner's help: a person's hull starts to mend this long after the last damage (seconds), and mends up to this share of the full hull - the rest is what repair pads are for. */
 	inline constexpr float HullRegenDelay = 5.0f;
 	inline constexpr float HullRegenCeiling = 0.75f;
-	/** DamageToHumanScale of Easy before item 38 (-HCJClassicEasy). */
+	/** DamageToHumanScale of Easy before item 38 (-HCJClassicEasy20). */
 	inline constexpr float ClassicEasyDamageToHumanScale = 0.5f;
+	/** The damage scales of Easy in build 0.21.0 (-HCJClassicEasy; item 40 changed them to 1.35 / 0.45). */
+	inline constexpr float Classic021DamageFromHumanScale = 1.5f;
+	inline constexpr float Classic021DamageToHumanScale = 0.4f;
+	/** Super Easy (item 40): the help of the first 0.22.0 - a person's hits 1.5 x, a bot's 0.4, the aim assist 5 degrees. */
+	inline constexpr float SuperEasyDamageFromHumanScale = 1.5f;
+	inline constexpr float SuperEasyDamageToHumanScale = 0.4f;
+	inline constexpr float SuperEasyAimAssistDeg = 5.0f;
 
-	/** "Easy", "Normal", "Hard", "Ace" (clamped). */
+	/**
+	 * Aim assist of a person's bolt (item 40, Easy): which of AimPoints (the lead points of the ships that may be shot
+	 * at, LockedIndex the locked one or INDEX_NONE) the shot from Origin along Aim goes to - the locked ship when its
+	 * point is within ConeDeg of the aim, else the point nearest the aim inside that cone and within Range; INDEX_NONE
+	 * for none. Pure.
+	 */
+	HYPECUBEJAM_API int32 PickAimAssist(const FVector& Origin, const FVector& Aim, TConstArrayView<FVector> AimPoints, int32 LockedIndex, float Range, float ConeDeg);
+	/** The direction a bolt leaves in: towards AimPoints[Pick] (PickAimAssist), or Aim unchanged for INDEX_NONE. Pure. */
+	HYPECUBEJAM_API FVector AssistedAimDirection(const FVector& Origin, const FVector& Aim, TConstArrayView<FVector> AimPoints, int32 Pick);
+	/** Whether a pad at PadLocation is in the reach of a ship at ShipLocation (Reach uu; nothing for Reach <= 0). Pure. */
+	HYPECUBEJAM_API bool IsInPickupReach(const FVector& ShipLocation, const FVector& PadLocation, float Reach);
+
+	/** "Easy", "Normal", "Hard", "Ace", "Super Easy" (NormalizeDifficulty). */
 	HYPECUBEJAM_API const TCHAR* GetDifficultyName(int32 Difficulty);
 	/** One line for the menu: what the level does to the player (under 74 characters). */
 	HYPECUBEJAM_API const TCHAR* GetDifficultyDescription(int32 Difficulty);

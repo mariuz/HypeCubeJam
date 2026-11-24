@@ -7,6 +7,12 @@
 namespace
 {
 	constexpr EAutomationTestFlags HCJBalanceTestFlags = EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter;
+
+	/** Every field of two skill rows is equal. */
+	bool SameSkill(const FHCJBotSkill& A, const FHCJBotSkill& B)
+	{
+		return A.AimErrorDeg == B.AimErrorDeg && A.ReactionDelay == B.ReactionDelay && A.TurnRateDeg == B.TurnRateDeg && A.BurstSeconds == B.BurstSeconds && A.BurstPause == B.BurstPause && A.EngageRangeFactor == B.EngageRangeFactor && A.RetreatHullFraction == B.RetreatHullFraction && A.StrafeStrength == B.StrafeStrength && A.PhaserConeDeg == B.PhaserConeDeg && A.PhaserReserve == B.PhaserReserve && A.WarpTravelChance == B.WarpTravelChance && A.WarpFleeChance == B.WarpFleeChance && A.CloakChance == B.CloakChance && A.TractorChance == B.TractorChance && A.BreakFreeChance == B.BreakFreeChance && A.Tactics == B.Tactics && A.ComboChance == B.ComboChance && A.MaxAttackersOnHuman == B.MaxAttackersOnHuman && A.MaxHuntersPerHuman == B.MaxHuntersPerHuman && A.RearFireDelay == B.RearFireDelay && A.RearAimErrorScale == B.RearAimErrorScale && A.FrontBias == B.FrontBias && A.HumanTailScore == B.HumanTailScore && A.bFlankHumans == B.bFlankHumans && A.ArrivalGrace == B.ArrivalGrace && A.RespiteSeconds == B.RespiteSeconds && A.DamageToHumanScale == B.DamageToHumanScale && A.TorpedoOnHumanChance == B.TorpedoOnHumanChance && A.DamageFromHumanScale == B.DamageFromHumanScale && A.HumanHullRegenRate == B.HumanHullRegenRate && A.HumanRepairScale == B.HumanRepairScale && A.HumanPickupReach == B.HumanPickupReach && A.HumanSpawnWeapon == B.HumanSpawnWeapon && A.HumanAimAssistDeg == B.HumanAimAssistDeg && A.bHumanWeaponPointer == B.bHumanWeaponPointer;
+	}
 }
 
 /** Bot difficulty rows: every step up is strictly harder in every number, values stay in sane ranges, input is clamped. */
@@ -43,7 +49,7 @@ bool FHCJBotSkillTest::RunTest(const FString& Parameters)
 	{
 		const FHCJBotSkill Hard = FHCJBotSkill::Get(2);
 		const FHCJBotSkill Ace = FHCJBotSkill::Get(3);
-		TestEqual(TEXT("four levels"), HCJBalance::NumBotDifficulties, 4);
+		TestEqual(TEXT("five levels (Super Easy is the fifth index)"), HCJBalance::NumBotDifficulties, 5);
 		TestTrue(TEXT("ace has hard's seven numbers"), Ace.AimErrorDeg == Hard.AimErrorDeg && Ace.ReactionDelay == Hard.ReactionDelay && Ace.TurnRateDeg == Hard.TurnRateDeg
 			&& Ace.BurstSeconds == Hard.BurstSeconds && Ace.BurstPause == Hard.BurstPause && Ace.EngageRangeFactor == Hard.EngageRangeFactor
 			&& Ace.RetreatHullFraction == Hard.RetreatHullFraction && Ace.StrafeStrength == Hard.StrafeStrength);
@@ -70,7 +76,8 @@ bool FHCJBotSkillTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("no flanking of people on easy and normal"), FHCJBotSkill::Get(0).bFlankHumans || FHCJBotSkill::Get(1).bFlankHumans);
 	TestTrue(TEXT("flanking on hard"), FHCJBotSkill::Get(2).bFlankHumans);
 	TestEqual(TEXT("easy: one attacker"), FHCJBotSkill::Get(0).MaxAttackersOnHuman, 1);
-	TestEqual(TEXT("easy: bots do two fifths of their damage to a person"), FHCJBotSkill::Get(0).DamageToHumanScale, 0.4f);
+	TestEqual(TEXT("easy: bots do 45 % of their damage to a person"), FHCJBotSkill::Get(0).DamageToHumanScale, 0.45f);
+	TestEqual(TEXT("super easy: two fifths"), FHCJBotSkill::Get(HCJBalance::SuperEasyDifficulty).DamageToHumanScale, 0.4f);
 	TestEqual(TEXT("normal: a little more than half"), FHCJBotSkill::Get(1).DamageToHumanScale, 0.55f);
 	TestEqual(TEXT("hard: full damage"), FHCJBotSkill::Get(2).DamageToHumanScale, 1.0f);
 	{
@@ -89,6 +96,8 @@ bool FHCJBotSkillTest::RunTest(const FString& Parameters)
 				&& Cleared.FrontBias == 0.0f && Cleared.HumanTailScore == 1.5f && Cleared.bFlankHumans && Cleared.ArrivalGrace == 0.0f && Cleared.RespiteSeconds == 0.0f
 				&& Cleared.DamageToHumanScale == 1.0f && Cleared.TorpedoOnHumanChance == 1.0f);
 			TestTrue(TEXT("cleared: no beginner's help"), Cleared.DamageFromHumanScale == 1.0f && Cleared.HumanHullRegenRate == 0.0f && Cleared.HumanRepairScale == 1.0f);
+			TestTrue(TEXT("cleared: none of item 40's help"), Cleared.HumanPickupReach == 0.0f && Cleared.HumanSpawnWeapon == EHCJWeapon::Count && Cleared.HumanAimAssistDeg == 0.0f
+				&& !Cleared.bHumanWeaponPointer);
 			TestTrue(TEXT("cleared: the skill numbers stay"), Cleared.AimErrorDeg == Row.AimErrorDeg && Cleared.ReactionDelay == Row.ReactionDelay && Cleared.Tactics == Row.Tactics);
 			// What the menu says about the level: a name and one line that fits the page (the 13 pt line of the web build is 74 characters).
 			const FString Name = HCJBalance::GetDifficultyName(Level);
@@ -99,6 +108,22 @@ bool FHCJBotSkillTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("names"), FString(HCJBalance::GetDifficultyName(0)), FString(TEXT("Easy")));
 		TestEqual(TEXT("names"), FString(HCJBalance::GetDifficultyName(3)), FString(TEXT("Ace")));
 		TestEqual(TEXT("names are clamped"), FString(HCJBalance::GetDifficultyName(12)), FString(TEXT("Ace")));
+		TestEqual(TEXT("names"), FString(HCJBalance::GetDifficultyName(HCJBalance::SuperEasyDifficulty)), FString(TEXT("Super Easy")));
+		TestEqual(TEXT("a key for the logs"), HCJBalance::GetDifficultyKey(HCJBalance::SuperEasyDifficulty), FString(TEXT("super_easy")));
+		// The menu's order: Super Easy, Easy, Normal, Hard, Ace - held at both ends; the indices 0..3 keep their meaning.
+		TestEqual(TEXT("super easy is first in the menu"), HCJBalance::GetMenuOrder(HCJBalance::SuperEasyDifficulty), 0);
+		TestEqual(TEXT("easy second"), HCJBalance::GetMenuOrder(0), 1);
+		TestEqual(TEXT("ace last"), HCJBalance::GetMenuOrder(3), 4);
+		TestEqual(TEXT("down from easy: super easy"), HCJBalance::StepDifficulty(0, -1), HCJBalance::SuperEasyDifficulty);
+		TestEqual(TEXT("up from super easy: easy"), HCJBalance::StepDifficulty(HCJBalance::SuperEasyDifficulty, 1), 0);
+		TestEqual(TEXT("held at the bottom"), HCJBalance::StepDifficulty(HCJBalance::SuperEasyDifficulty, -1), HCJBalance::SuperEasyDifficulty);
+		TestEqual(TEXT("held at the top"), HCJBalance::StepDifficulty(3, 1), 3);
+		TestEqual(TEXT("normal up: hard"), HCJBalance::StepDifficulty(1, 1), 2);
+		TestEqual(TEXT("a walk through all five"), HCJBalance::StepDifficulty(HCJBalance::SuperEasyDifficulty, 4), 3);
+		TestTrue(TEXT("easy levels"), HCJBalance::IsEasyLevel(0) && HCJBalance::IsEasyLevel(HCJBalance::SuperEasyDifficulty) && !HCJBalance::IsEasyLevel(1));
+		TestEqual(TEXT("super easy's bots use easy's tables"), HCJBalance::GetSkillLevel(HCJBalance::SuperEasyDifficulty), 0);
+		TestEqual(TEXT("an unknown number is clamped as before"), HCJBalance::NormalizeDifficulty(7), 3);
+		TestEqual(TEXT("... and a negative one"), HCJBalance::NormalizeDifficulty(-1), 0);
 	}
 
 	// Bearings: 0 dead ahead, 180 dead astern, and the rear arc begins a little behind the beam (about 107 degrees).
@@ -221,20 +246,20 @@ bool FHCJBeginnerHelpTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("easy: a person's guns do more to a bot, but not double"), Easy.DamageFromHumanScale > 1.0f && Easy.DamageFromHumanScale <= 2.0f);
 	TestTrue(TEXT("easy: the hull mends, slowly (a full hull is 100)"), Easy.HumanHullRegenRate > 0.0f && Easy.HumanHullRegenRate <= 10.0f);
 	TestTrue(TEXT("easy: a repair pad restores more"), Easy.HumanRepairScale > 1.0f && Easy.HumanRepairScale <= 2.0f);
-	TestTrue(TEXT("easy: bots still hurt"), Easy.DamageToHumanScale >= 0.25f && Easy.DamageToHumanScale < ClassicEasyDamageToHumanScale);
-	for (int32 Level = 1; Level < NumBotDifficulties; ++Level)
+	TestTrue(TEXT("easy: bots still hurt"), Easy.DamageToHumanScale >= 0.25f && Easy.DamageToHumanScale <=ClassicEasyDamageToHumanScale);
+	for (int32 Level = 1; Level <= 3; ++Level)
 	{
 		const FHCJBotSkill Row = FHCJBotSkill::Get(Level);
 		TestTrue(TEXT("no help above easy"), Row.DamageFromHumanScale == 1.0f && Row.HumanHullRegenRate == 0.0f && Row.HumanRepairScale == 1.0f);
 		FHCJBotSkill Classic = Row;
-		Classic.ClearBeginnerHelp();
+		Classic.ClearAllBeginnerHelp();
 		TestTrue(TEXT("the classic switch changes nothing above easy"), Classic.DamageToHumanScale == Row.DamageToHumanScale && Classic.MaxAttackersOnHuman == Row.MaxAttackersOnHuman
 			&& Classic.ArrivalGrace == Row.ArrivalGrace && Classic.RespiteSeconds == Row.RespiteSeconds && Classic.TorpedoOnHumanChance == Row.TorpedoOnHumanChance);
 	}
 	TestEqual(TEXT("normal's damage scale is what it was"), FHCJBotSkill::Get(1).DamageToHumanScale, 0.55f);
 	{
 		FHCJBotSkill Classic = Easy;
-		Classic.ClearBeginnerHelp();
+		Classic.ClearAllBeginnerHelp();
 		TestTrue(TEXT("classic easy: no help"), Classic.DamageFromHumanScale == 1.0f && Classic.HumanHullRegenRate == 0.0f && Classic.HumanRepairScale == 1.0f);
 		TestEqual(TEXT("classic easy: bots at half damage"), Classic.DamageToHumanScale, 0.5f);
 		TestTrue(TEXT("classic easy: the fairness rules stay"), Classic.MaxAttackersOnHuman == 1 && Classic.ArrivalGrace == Easy.ArrivalGrace && Classic.RespiteSeconds == Easy.RespiteSeconds
@@ -263,6 +288,92 @@ bool FHCJBeginnerHelpTest::RunTest(const FString& Parameters)
 		Hull = StepHullRegen(Hull, Max, Time, 1.0f / 60.0f, Rate, false);
 	}
 	TestEqual(TEXT("time from 10 to the ceiling"), Time, HullRegenDelay + (Ceiling - 10.0f) / Rate, 0.05f);
+	return true;
+}
+
+/**
+ * More help for a beginner (item 40): Easy alone takes pads from a distance, starts armed, has an aim assist and the
+ * weapon pointer; -HCJClassicEasy (ClearBeginnerHelp) gives back exactly Easy of 0.21.0 and touches no other level;
+ * the aim assist picks the locked ship first, else the one nearest the aim, only inside its cone and range.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHCJBeginnerHelp40Test, "HypeCubeJam.Balance.BeginnerArmsAndAim", HCJBalanceTestFlags)
+
+bool FHCJBeginnerHelp40Test::RunTest(const FString& Parameters)
+{
+	using namespace HCJBalance;
+	const FHCJBotSkill Easy = FHCJBotSkill::Get(0);
+	TestTrue(TEXT("easy: pads are taken from a distance, more than a touch and less than half a sector's middle"), Easy.HumanPickupReach >= 1500.0f && Easy.HumanPickupReach <= 4000.0f);
+	TestTrue(TEXT("easy: a new ship holds a pickup weapon"), Easy.HumanSpawnWeapon == EHCJWeapon::Scatter || Easy.HumanSpawnWeapon == EHCJWeapon::Pulse);
+	TestTrue(TEXT("easy: a light aim assist (a few degrees)"), Easy.HumanAimAssistDeg >= 3.0f && Easy.HumanAimAssistDeg <= 8.0f);
+	TestTrue(TEXT("easy: the weapon pointer"), Easy.bHumanWeaponPointer);
+	for (int32 Level = 1; Level <= 3; ++Level)
+	{
+		const FHCJBotSkill Row = FHCJBotSkill::Get(Level);
+		TestTrue(TEXT("none of it above easy"), Row.HumanPickupReach == 0.0f && Row.HumanSpawnWeapon == EHCJWeapon::Count && Row.HumanAimAssistDeg == 0.0f && !Row.bHumanWeaponPointer);
+		FHCJBotSkill Classic = Row;
+		Classic.ClearBeginnerHelp();
+		TestTrue(TEXT("the 0.21.0 switch changes nothing above easy"), SameSkill(Classic, Row));
+	}
+	{
+		// -HCJClassicEasy: Easy of 0.21.0 - item 38's help stays, item 40's is gone, nothing else moves.
+		FHCJBotSkill Classic = Easy;
+		Classic.ClearBeginnerHelp();
+		TestTrue(TEXT("0.21.0 easy: item 40's help is gone"), Classic.HumanPickupReach == 0.0f && Classic.HumanSpawnWeapon == EHCJWeapon::Count && Classic.HumanAimAssistDeg == 0.0f
+			&& !Classic.bHumanWeaponPointer);
+		TestTrue(TEXT("0.21.0 easy: item 38's help stays"), Classic.HumanHullRegenRate == Easy.HumanHullRegenRate && Classic.HumanRepairScale == Easy.HumanRepairScale);
+		TestTrue(TEXT("0.21.0 easy: its damage scales, 1.5 and 0.4"), Classic.DamageFromHumanScale == 1.5f && Classic.DamageToHumanScale == 0.4f);
+		FHCJBotSkill Restored = Classic;
+		Restored.DamageFromHumanScale = Easy.DamageFromHumanScale;
+		Restored.DamageToHumanScale = Easy.DamageToHumanScale;
+		Restored.HumanPickupReach = Easy.HumanPickupReach;
+		Restored.HumanSpawnWeapon = Easy.HumanSpawnWeapon;
+		Restored.HumanAimAssistDeg = Easy.HumanAimAssistDeg;
+		Restored.bHumanWeaponPointer = Easy.bHumanWeaponPointer;
+		TestTrue(TEXT("0.21.0 easy: nothing else changed"), SameSkill(Restored, Easy));
+		FHCJBotSkill Old = Easy;
+		Old.ClearAllBeginnerHelp();
+		TestTrue(TEXT("0.20.0 easy: no help at all"), Old.HumanPickupReach == 0.0f && Old.HumanAimAssistDeg == 0.0f && Old.DamageFromHumanScale == 1.0f && Old.HumanHullRegenRate == 0.0f);
+		TestEqual(TEXT("0.20.0 easy: bots at half damage"), Old.DamageToHumanScale, ClassicEasyDamageToHumanScale);
+	}
+
+	// Super Easy: Easy's bots and help, with the strong numbers of the first 0.22.0; its 0.21.0 switch gives 0.21.0's Easy.
+	{
+		const FHCJBotSkill Super = FHCJBotSkill::Get(SuperEasyDifficulty);
+		TestTrue(TEXT("super easy: stronger help than easy"), Super.DamageFromHumanScale > Easy.DamageFromHumanScale && Super.DamageToHumanScale < Easy.DamageToHumanScale
+			&& Super.HumanAimAssistDeg > Easy.HumanAimAssistDeg);
+		TestTrue(TEXT("super easy: 1.5, 0.4, 5 degrees"), Super.DamageFromHumanScale == 1.5f && Super.DamageToHumanScale == 0.4f && Super.HumanAimAssistDeg == 5.0f);
+		FHCJBotSkill Same = Super;
+		Same.DamageFromHumanScale = Easy.DamageFromHumanScale;
+		Same.DamageToHumanScale = Easy.DamageToHumanScale;
+		Same.HumanAimAssistDeg = Easy.HumanAimAssistDeg;
+		TestTrue(TEXT("super easy: otherwise easy's row"), SameSkill(Same, Easy));
+		FHCJBotSkill Classic = Super;
+		Classic.ClearBeginnerHelp();
+		FHCJBotSkill ClassicEasy = Easy;
+		ClassicEasy.ClearBeginnerHelp();
+		TestTrue(TEXT("super easy with the 0.21.0 switch is 0.21.0's easy"), SameSkill(Classic, ClassicEasy));
+	}
+
+	// Pickup reach.
+	TestTrue(TEXT("a pad 24 m away is in a reach of 25 m"), IsInPickupReach(FVector(0, 0, 0), FVector(2400, 0, 0), 2500.0f));
+	TestFalse(TEXT("one 26 m away is not"), IsInPickupReach(FVector(0, 0, 0), FVector(0, 2600, 0), 2500.0f));
+	TestFalse(TEXT("no reach: nothing"), IsInPickupReach(FVector(0, 0, 0), FVector(10, 0, 0), 0.0f));
+
+	// Aim assist: 10 000 uu ahead, ships at 3 and 8 degrees off the aim and the locked one at 4.5.
+	const FVector Origin(0, 0, 0);
+	const FVector Aim(1, 0, 0);
+	const auto At = [](float Degrees, float Distance) { return FVector(FMath::Cos(FMath::DegreesToRadians(Degrees)), FMath::Sin(FMath::DegreesToRadians(Degrees)), 0.0f) * Distance; };
+	const TArray<FVector> Points = { At(3.0f, 10000.0f), At(8.0f, 10000.0f), At(4.5f, 10000.0f) };
+	TestEqual(TEXT("the nearest to the aim inside the cone"), PickAimAssist(Origin, Aim, Points, INDEX_NONE, 20000.0f, 5.0f), 0);
+	TestEqual(TEXT("the locked ship first, when inside the cone"), PickAimAssist(Origin, Aim, Points, 2, 20000.0f, 5.0f), 2);
+	TestEqual(TEXT("a locked ship outside the cone is not taken"), PickAimAssist(Origin, Aim, Points, 1, 20000.0f, 5.0f), 0);
+	TestEqual(TEXT("nothing out of range"), PickAimAssist(Origin, Aim, Points, INDEX_NONE, 5000.0f, 5.0f), INDEX_NONE);
+	TestEqual(TEXT("no cone, no assist"), PickAimAssist(Origin, Aim, Points, 2, 20000.0f, 0.0f), INDEX_NONE);
+	TestEqual(TEXT("nothing within a narrow cone"), PickAimAssist(Origin, Aim, Points, INDEX_NONE, 20000.0f, 2.0f), INDEX_NONE);
+	const FVector Bent = AssistedAimDirection(Origin, Aim, Points, 0);
+	TestTrue(TEXT("the shot leaves towards the picked point"), Bent.Equals(Points[0].GetSafeNormal(), 1.0e-4f));
+	TestTrue(TEXT("no pick: the aim is unchanged"), AssistedAimDirection(Origin, Aim, Points, INDEX_NONE).Equals(Aim));
+	TestTrue(TEXT("a bot's aim is never bent: the bots' rows carry no assist"), FHCJBotSkill().HumanAimAssistDeg == 0.0f);
 	return true;
 }
 

@@ -98,6 +98,45 @@ namespace HCJTorpedo
 	 */
 	HYPECUBEJAM_API bool KeepsLock(const FVector& Forward, const FVector& ToTarget, float ConeDegrees, float MaxDistance);
 
+	/**
+	 * How a torpedo homes (item 40). A bot's torpedo flies as before: the weapon row's turn rate, only for the ship its
+	 * firer had locked, inside the row's cone at launch and for as long as it stays inside it. A torpedo fired from a
+	 * ship flown by a PERSON (every difficulty) also takes the nearest ship in a narrower cone ahead when there is no
+	 * lock, keeps its target inside a wider cone, turns faster and leads it a little - so it closes instead of flying
+	 * past, and a hard turn under boost still shakes it off.
+	 */
+	struct FHoming
+	{
+		/** Degrees per second. */
+		float TurnRateDeg = 40.0f;
+		/** Half angle in which the firer's lock is taken at launch. */
+		float LockConeDeg = 60.0f;
+		/** Half angle in which the nearest ship is taken when there is no lock (0 = never). */
+		float AcquireConeDeg = 0.0f;
+		/** Half angle the target must stay inside, or it is lost for good. */
+		float KeepConeDeg = 60.0f;
+		/** It steers for where the target will be in min(time to it, this) seconds (0 = where it is). */
+		float MaxLeadSeconds = 0.0f;
+	};
+	/** A person's torpedo: turn rate, acquisition and keep cones, lead. */
+	inline constexpr float HumanTurnRateDeg = 180.0f;
+	inline constexpr float HumanAcquireConeDeg = 40.0f;
+	inline constexpr float HumanKeepConeDeg = 80.0f;
+	inline constexpr float HumanMaxLeadSeconds = 0.5f;
+	/** The homing of a torpedo of the weapon row (RowTurnRate, RowCone) fired by a person or not. Pure. */
+	HYPECUBEJAM_API FHoming GetHoming(bool bHumanFirer, float RowTurnRate, float RowConeDeg);
+	/**
+	 * The target of a torpedo at launch: ToCandidates are the positions of the ships it may home on relative to the
+	 * torpedo (alive, not cloaked, not the firer), LockedIndex the firer's lock or INDEX_NONE. The lock when it is
+	 * within LockConeDeg and MaxDistance; else, with an acquisition cone, the nearest candidate inside it and within
+	 * MaxDistance; else INDEX_NONE (it flies straight). Pure.
+	 */
+	HYPECUBEJAM_API int32 PickTarget(const FVector& Forward, TConstArrayView<FVector> ToCandidates, int32 LockedIndex, const FHoming& Homing, float MaxDistance);
+	/** The point a torpedo at TorpedoLocation flying at Speed steers for: the target, led by its velocity for min(distance / Speed, MaxLeadSeconds). Pure. */
+	HYPECUBEJAM_API FVector SteerPoint(const FVector& TorpedoLocation, const FVector& TargetLocation, const FVector& TargetVelocity, float Speed, float MaxLeadSeconds);
+	/** -HCJClassicTorpedo (development builds): every torpedo homes as a bot's does - the torpedo of build 0.21.0. */
+	HYPECUBEJAM_API bool IsClassicHoming();
+
 	/** The row for Difficulty (0 easy, 1 normal, 2 hard; clamped). */
 	HYPECUBEJAM_API FHCJTorpedoBotSkill GetBotSkill(int32 Difficulty);
 

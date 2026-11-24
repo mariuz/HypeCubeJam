@@ -1831,7 +1831,7 @@ void AHCJBotController::ThinkTorpedo(AHCJShipCharacter& Ship, AHCJShipCharacter&
 		return;
 	}
 
-	const FHCJTorpedoBotSkill TorpedoSkill = HCJTorpedo::GetBotSkill(GameMode->GetBotDifficulty());
+	const FHCJTorpedoBotSkill TorpedoSkill = HCJTorpedo::GetBotSkill(HCJBalance::GetSkillLevel(GameMode->GetBotDifficulty()));
 	FHCJTorpedoBotInput Input;
 	Input.bReady = Ship.IsTorpedoReady() && !bRetreating && !bRearHold && Now - LastTorpedoTime > TorpedoSkill.MinSecondsBetween
 		&& Now - FMath::Max(TargetAcquiredTime, ResightTime) >= Skill.ReactionDelay;
@@ -1917,7 +1917,7 @@ void AHCJBotController::ThinkTorpedoEvasion(const AHCJShipCharacter& Ship)
 	// One decision per torpedo, more or less: the next one a second and a half later.
 	NextEvadeDecisionTime = Now + 1.5f;
 	const AHCJGameMode* GameMode = World->GetAuthGameMode<AHCJGameMode>();
-	if (GameMode == nullptr || BotRandom.FRand() >= HCJTorpedo::GetBotSkill(GameMode->GetBotDifficulty()).EvadeChance)
+	if (GameMode == nullptr || BotRandom.FRand() >= HCJTorpedo::GetBotSkill(HCJBalance::GetSkillLevel(GameMode->GetBotDifficulty())).EvadeChance)
 	{
 		return;
 	}

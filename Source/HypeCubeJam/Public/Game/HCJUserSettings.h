@@ -50,8 +50,16 @@ public:
 	UPROPERTY(Config)
 	int32 Seed = 0;
 
+	/** 0 easy .. 3 ace; Super Easy is stored as 0 with bSuperEasy (item 40), so that an older build reads it as Easy. Use Get/SetBotDifficulty. */
 	UPROPERTY(Config)
 	int32 BotDifficulty = 0;
+
+	UPROPERTY(Config)
+	bool bSuperEasy = false;
+
+	/** The level of the menu: 0..3, or HCJBalance::SuperEasyDifficulty. */
+	int32 GetBotDifficulty() const;
+	void SetBotDifficulty(int32 Difficulty);
 
 	UPROPERTY(Config)
 	FString LastJoinAddress = TEXT("127.0.0.1");

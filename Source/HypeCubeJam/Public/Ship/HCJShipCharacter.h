@@ -467,6 +467,10 @@ protected:
 	void ServerTickBounds(float DeltaSeconds);
 	/** Server tick, ships flown by a person, Easy only: the hull mends out of combat (HCJBalance::StepHullRegen). */
 	void ServerTickHullRegen(float DeltaSeconds);
+	/** Server tick, ships flown by a person, Easy only (item 40): the item of a filled pad within GetHumanPickupReach is taken without touching the pad. */
+	void ServerTickPickupReach();
+	/** Server, from PossessedBy: a new ship flown by a person gets the Easy start weapon (item 40). */
+	void ServerGiveHumanStartWeapon();
 	/** Server: one shot of the current weapon: Pellets projectiles from GetMuzzleLocation() along GetAimRotation() within the spread cone, Owner = Instigator = this. */
 	void ServerFireProjectile();
 	/** Every machine: hides the meshes, disables collision and movement once bIsDead is set. */
@@ -852,6 +856,8 @@ protected:
 	/** Balance statistics: first and latest hit of the current engagement. */
 	float EngagementStartTime = -1.0f;
 	float LastHitTime = -1000.0f;
+	/** Server: time of the next look for pads in reach (ServerTickPickupReach, five a second). */
+	float NextPickupReachTime = 0.0f;
 	/** Beginner's help (ServerTickHullRegen): hull + shield as last seen, and the server time at which they last went down, from any cause. */
 	float RegenSeenVitals = 0.0f;
 	float LastHullDamageTime = -1000.0f;

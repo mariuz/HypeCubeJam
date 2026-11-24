@@ -436,4 +436,82 @@ bool FHCJTorpedoHudTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/**
+ * Homing of a person's torpedo (item 40) against a bot's: a person's takes the nearest ship in its acquisition cone
+ * without a lock, prefers the lock, keeps its target in a wider cone, turns faster and leads; a bot's is as before.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHCJTorpedoHumanHomingTest, "HypeCubeJam.Torpedo.HumanHoming", HCJTorpedoTestFlags)
+
+bool FHCJTorpedoHumanHomingTest::RunTest(const FString& Parameters)
+{
+	using namespace HCJTorpedo;
+	const FHCJWeaponDef& Def = UHCJGameplaySettings::Get().GetWeapon(EHCJWeapon::Torpedo);
+	const FHoming Bot = GetHoming(false, Def.HomingTurnRate, Def.HomingConeDegrees);
+	const FHoming Human = GetHoming(true, Def.HomingTurnRate, Def.HomingConeDegrees);
+	TestEqual(TEXT("a bot's torpedo turns at the row's rate"), Bot.TurnRateDeg, Def.HomingTurnRate);
+	TestTrue(TEXT("a bot's torpedo: the row's cone, no acquisition, no lead"), Bot.LockConeDeg == Def.HomingConeDegrees && Bot.KeepConeDeg == Def.HomingConeDegrees
+		&& Bot.AcquireConeDeg == 0.0f && Bot.MaxLeadSeconds == 0.0f);
+	TestTrue(TEXT("a person's turns faster, 150 to 220 degrees a second"), Human.TurnRateDeg > Bot.TurnRateDeg && Human.TurnRateDeg >= 150.0f && Human.TurnRateDeg <= 220.0f);
+	TestTrue(TEXT("a person's acquires in 30 to 50 degrees"), Human.AcquireConeDeg >= 30.0f && Human.AcquireConeDeg <= 50.0f);
+	TestTrue(TEXT("a person's keeps its target in a wider cone, below 90 degrees"), Human.KeepConeDeg > Human.AcquireConeDeg && Human.KeepConeDeg >= Bot.KeepConeDeg && Human.KeepConeDeg < 90.0f);
+	TestTrue(TEXT("a person's leads a little"), Human.MaxLeadSeconds > 0.0f && Human.MaxLeadSeconds <= 1.0f);
+
+	const FVector Forward(1, 0, 0);
+	const float Reach = 18000.0f;
+	const auto At = [](float Degrees, float Distance) { return FVector(FMath::Cos(FMath::DegreesToRadians(Degrees)), FMath::Sin(FMath::DegreesToRadians(Degrees)), 0.0f) * Distance; };
+	// 0: 20 deg / 9000, 1: 10 deg / 6000 (the nearest in the cone), 2: 50 deg / 3000 (outside 40), 3: 5 deg / 25000 (out of reach), 4: 170 deg / 2000 (behind).
+	const TArray<FVector> To = { At(20.0f, 9000.0f), At(10.0f, 6000.0f), At(50.0f, 3000.0f), At(5.0f, 25000.0f), At(170.0f, 2000.0f) };
+	TestEqual(TEXT("no lock, bot: flies straight"), PickTarget(Forward, To, INDEX_NONE, Bot, Reach), INDEX_NONE);
+	TestEqual(TEXT("no lock, person: the nearest inside the acquisition cone and in reach"), PickTarget(Forward, To, INDEX_NONE, Human, Reach), 1);
+	TestEqual(TEXT("a lock inside the lock cone wins, person"), PickTarget(Forward, To, 0, Human, Reach), 0);
+	TestEqual(TEXT("a lock inside the lock cone wins, bot"), PickTarget(Forward, To, 2, Bot, Reach), 2);
+	TestEqual(TEXT("a lock behind: a bot's flies straight"), PickTarget(Forward, To, 4, Bot, Reach), INDEX_NONE);
+	TestEqual(TEXT("a lock behind: a person's takes the nearest ahead"), PickTarget(Forward, To, 4, Human, Reach), 1);
+	TestEqual(TEXT("nothing ahead, nothing taken"), PickTarget(Forward, TArray<FVector>{ At(120.0f, 3000.0f), At(60.0f, 30000.0f) }, INDEX_NONE, Human, Reach), INDEX_NONE);
+
+	// Keep: a target 70 degrees off the nose is kept by a person's torpedo and lost by a bot's; past 80 both lose it.
+	TestTrue(TEXT("a person's keeps a target at 70 degrees"), KeepsLock(Forward, At(70.0f, 4000.0f), Human.KeepConeDeg, Reach));
+	TestFalse(TEXT("a bot's loses it"), KeepsLock(Forward, At(70.0f, 4000.0f), Bot.KeepConeDeg, Reach));
+	TestFalse(TEXT("past the keep cone it is lost (a hard turn shakes it off)"), KeepsLock(Forward, At(Human.KeepConeDeg + 5.0f, 4000.0f), Human.KeepConeDeg, Reach));
+
+	// Lead: half a second at most, less when it is close.
+	const FVector Velocity(0, 3000, 0);
+	TestTrue(TEXT("a bot's steers for the target itself"), SteerPoint(FVector::ZeroVector, FVector(9000, 0, 0), Velocity, 9000.0f, Bot.MaxLeadSeconds).Equals(FVector(9000, 0, 0)));
+	TestTrue(TEXT("far: led by the maximum"), SteerPoint(FVector::ZeroVector, FVector(18000, 0, 0), Velocity, 9000.0f, 0.5f).Equals(FVector(18000, 1500, 0), 0.01f));
+	TestTrue(TEXT("close: led by the time to it"), SteerPoint(FVector::ZeroVector, FVector(2700, 0, 0), Velocity, 9000.0f, 0.5f).Equals(FVector(2700, 900, 0), 0.01f));
+
+	// Closing on a target that crosses at 3000 uu/s 60 m ahead: a person's torpedo ends near it, a bot's flies past.
+	const auto MissDistance = [](const FHoming& Homing)
+	{
+		FVector Torpedo = FVector::ZeroVector;
+		FVector Direction(1, 0, 0);
+		FVector Target(6000, -1500, 0);
+		const FVector TargetVelocity(0, 3000, 0);
+		double Closest = 1.0e9;
+		bool bHoming = true;
+		for (int32 Step = 0; Step < 120; ++Step)
+		{
+			const float Dt = 1.0f / 60.0f;
+			if (bHoming && !KeepsLock(Direction, Target - Torpedo, Homing.KeepConeDeg, 18000.0f))
+			{
+				bHoming = false;
+			}
+			if (bHoming)
+			{
+				Direction = TurnTowards(Direction, SteerPoint(Torpedo, Target, TargetVelocity, 9000.0f, Homing.MaxLeadSeconds) - Torpedo, Homing.TurnRateDeg * Dt);
+			}
+			Torpedo += Direction * 9000.0f * Dt;
+			Target += TargetVelocity * Dt;
+			Closest = FMath::Min(Closest, FVector::Dist(Torpedo, Target));
+		}
+		return Closest;
+	};
+	const double HumanMiss = MissDistance(Human);
+	const double BotMiss = MissDistance(Bot);
+	AddInfo(FString::Printf(TEXT("closest approach to a crossing target: person %.0f uu, bot %.0f uu"), HumanMiss, BotMiss));
+	TestTrue(TEXT("a person's torpedo closes within a blast radius"), HumanMiss < 450.0);
+	TestTrue(TEXT("a bot's torpedo misses by more"), BotMiss > HumanMiss);
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

@@ -148,7 +148,8 @@ void FHCJLobbyInfo::Sanitize()
 	Bots = FMath::Clamp(Bots, 0, 64);
 	Dimension = FMath::Clamp(Dimension, 2, 6);
 	Version = Version.TrimStartAndEnd().Left(32);
-	Difficulty = FMath::Clamp(Difficulty, -1, 3);
+	// (4 = Super Easy, item 40; an older build reads a 4 as "not said" - ReadInt's range - and shows the map alone.)
+	Difficulty = FMath::Clamp(Difficulty, -1, 4);
 	FragLimit = FMath::Clamp(FragLimit, 0, 999);
 	EndsUnix = FMath::Max<int64>(EndsUnix, 0);
 	Pilots = HCJEos::SanitizePilots(Pilots);
@@ -254,7 +255,7 @@ bool FHCJLobbyInfo::FromAttributes(const TArray<FHCJLobbyAttribute>& Attributes,
 		Info.UpdatedUnix = Time->IntValue;
 	}
 	// (Optional as well, and never a reason to refuse the lobby: a wrong type or an impossible value is "not said".)
-	ReadInt(Attributes, KeyDifficulty, 0, 3, Info.Difficulty);
+	ReadInt(Attributes, KeyDifficulty, 0, 4, Info.Difficulty);
 	ReadInt(Attributes, KeyFragLimit, 0, 999, Info.FragLimit);
 	if (const FHCJLobbyAttribute* Ends = FindAttribute(Attributes, KeyEnds); Ends != nullptr && Ends->bIsInt && Ends->IntValue > 0)
 	{
@@ -290,7 +291,7 @@ FString FHCJLobbyInfo::DescribeMap() const
 FString FHCJLobbyInfo::DescribeMapAndDifficulty() const
 {
 	// (The names of HCJBalance::GetDifficultyName; a test keeps the two in step.)
-	static const TCHAR* Names[] = { TEXT("Easy"), TEXT("Normal"), TEXT("Hard"), TEXT("Ace") };
+	static const TCHAR* Names[] = { TEXT("Easy"), TEXT("Normal"), TEXT("Hard"), TEXT("Ace"), TEXT("Super Easy") };
 	return Difficulty >= 0 && Difficulty < static_cast<int32>(UE_ARRAY_COUNT(Names)) && Bots > 0 ? FString::Printf(TEXT("%s  -  %s"), *DescribeMap(), Names[Difficulty]) : DescribeMap();
 }
 

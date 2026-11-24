@@ -352,4 +352,25 @@ bool FHCJPickupMarkerTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+/** The pad the HUD's pointer leads to (items 38 and 40): repair before shield on a low hull, a weapon pad on Easy without a weapon, nothing else. */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHCJGuidePadTest, "HypeCubeJam.UI.GuidePad", HCJUiTestFlags)
+
+bool FHCJGuidePadTest::RunTest(const FString& Parameters)
+{
+	using namespace HCJUi;
+	TestEqual(TEXT("low hull: repair first"), GuidePadRank(EHCJPickupItem::Repair, true, false), 2);
+	TestEqual(TEXT("low hull: then a shield cell"), GuidePadRank(EHCJPickupItem::ShieldCell, true, false), 1);
+	TestEqual(TEXT("low hull: never a weapon, even without one"), GuidePadRank(EHCJPickupItem::Scatter, true, true), 0);
+	TestEqual(TEXT("low hull: no power-up"), GuidePadRank(EHCJPickupItem::Overdrive, true, false), 0);
+	for (const EHCJPickupItem Weapon : { EHCJPickupItem::Scatter, EHCJPickupItem::Rail, EHCJPickupItem::Missile, EHCJPickupItem::Pulse })
+	{
+		TestEqual(TEXT("without a weapon: every weapon pad"), GuidePadRank(Weapon, false, true), 1);
+		TestEqual(TEXT("with a weapon (or not Easy): no pointer"), GuidePadRank(Weapon, false, false), 0);
+	}
+	TestEqual(TEXT("torpedoes are not a weapon to fly to"), GuidePadRank(EHCJPickupItem::Torpedoes, false, true), 0);
+	TestEqual(TEXT("a repair pad on a healthy hull: no pointer"), GuidePadRank(EHCJPickupItem::Repair, false, true), 0);
+	TestEqual(TEXT("nothing else"), GuidePadRank(EHCJPickupItem::Cloak, false, false), 0);
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

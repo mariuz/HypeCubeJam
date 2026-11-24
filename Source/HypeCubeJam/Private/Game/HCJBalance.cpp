@@ -1,9 +1,20 @@
 #include "Game/HCJBalance.h"
 
+#include "Ship/HCJPhaser.h"
+
 FHCJBotSkill FHCJBotSkill::Get(int32 Difficulty)
 {
+	const int32 Level = HCJBalance::NormalizeDifficulty(Difficulty);
+	if (Level == HCJBalance::SuperEasyDifficulty)
+	{
+		// Super Easy (item 40): Easy's bots, with the strong help that 0.22.0 first gave Easy.
+		FHCJBotSkill Skill = Get(0);
+		Skill.DamageFromHumanScale = HCJBalance::SuperEasyDamageFromHumanScale;
+		Skill.DamageToHumanScale = HCJBalance::SuperEasyDamageToHumanScale;
+		Skill.HumanAimAssistDeg = HCJBalance::SuperEasyAimAssistDeg;
+		return Skill;
+	}
 	FHCJBotSkill Skill;
-	const int32 Level = FMath::Clamp(Difficulty, 0, HCJBalance::NumBotDifficulties - 1);
 	switch (Level)
 	{
 	case 0:
@@ -35,12 +46,20 @@ FHCJBotSkill FHCJBotSkill::Get(int32 Difficulty)
 		Skill.bFlankHumans = false;
 		Skill.ArrivalGrace = 4.0f;
 		Skill.RespiteSeconds = 6.0f;
-		Skill.DamageToHumanScale = 0.4f;
+		// (Item 40, after the player's 0.22.0 match - 16 kills, 1 death: "tone it down": 0.4 -> 0.45; 0.5 was a little
+		// too much for the poor-aim autopilots.)
+		Skill.DamageToHumanScale = 0.45f;
 		Skill.TorpedoOnHumanChance = 0.35f;
 		// Help for a beginner (item 38): its guns hit harder, its hull mends between fights, a repair pad makes it whole.
-		Skill.DamageFromHumanScale = 1.5f;
+		Skill.DamageFromHumanScale = 1.35f;
 		Skill.HumanHullRegenRate = 4.0f;
 		Skill.HumanRepairScale = 100.0f / 60.0f;
+		// More help (item 40): pads are taken from 25 m, a new ship starts with a scatter cannon, a person's shots bend
+		// a few degrees towards a ship, and the HUD points at a weapon pad while the ship has only its phaser.
+		Skill.HumanPickupReach = 2500.0f;
+		Skill.HumanSpawnWeapon = EHCJWeapon::Scatter;
+		Skill.HumanAimAssistDeg = 3.0f;
+		Skill.bHumanWeaponPointer = true;
 		break;
 	case 1:
 		Skill.AimErrorDeg = 3.5f;
@@ -130,10 +149,27 @@ void FHCJBotSkill::ClearFairness()
 	DamageFromHumanScale = Off.DamageFromHumanScale;
 	HumanHullRegenRate = Off.HumanHullRegenRate;
 	HumanRepairScale = Off.HumanRepairScale;
+	ClearBeginnerHelp();
 }
 
 void FHCJBotSkill::ClearBeginnerHelp()
 {
+	const FHCJBotSkill Off;
+	HumanPickupReach = Off.HumanPickupReach;
+	HumanSpawnWeapon = Off.HumanSpawnWeapon;
+	HumanAimAssistDeg = Off.HumanAimAssistDeg;
+	bHumanWeaponPointer = Off.bHumanWeaponPointer;
+	if (DamageFromHumanScale != Off.DamageFromHumanScale)
+	{
+		// The row with the help (Easy): its damage scales as build 0.21.0 had them (item 40 brought them towards the middle).
+		DamageFromHumanScale = HCJBalance::Classic021DamageFromHumanScale;
+		DamageToHumanScale = HCJBalance::Classic021DamageToHumanScale;
+	}
+}
+
+void FHCJBotSkill::ClearAllBeginnerHelp()
+{
+	ClearBeginnerHelp();
 	const FHCJBotSkill Off;
 	if (DamageFromHumanScale != Off.DamageFromHumanScale || HumanHullRegenRate != Off.HumanHullRegenRate || HumanRepairScale != Off.HumanRepairScale)
 	{
@@ -145,10 +181,70 @@ void FHCJBotSkill::ClearBeginnerHelp()
 	HumanRepairScale = Off.HumanRepairScale;
 }
 
+int32 HCJBalance::PickAimAssist(const FVector& Origin, const FVector& Aim, TConstArrayView<FVector> AimPoints, int32 LockedIndex, float Range, float ConeDeg)
+{
+	if (ConeDeg <= 0.0f)
+	{
+		return INDEX_NONE;
+	}
+	// (The phaser's rule with one cone for both: the locked ship first, else the one nearest the aim.)
+	return HCJPhaser::PickAssistTarget(Origin, Aim, AimPoints, LockedIndex, Range, ConeDeg, ConeDeg);
+}
+
+FVector HCJBalance::AssistedAimDirection(const FVector& Origin, const FVector& Aim, TConstArrayView<FVector> AimPoints, int32 Pick)
+{
+	if (!AimPoints.IsValidIndex(Pick))
+	{
+		return Aim;
+	}
+	const FVector Direction = (AimPoints[Pick] - Origin).GetSafeNormal();
+	return Direction.IsNearlyZero() ? Aim : Direction;
+}
+
+bool HCJBalance::IsInPickupReach(const FVector& ShipLocation, const FVector& PadLocation, float Reach)
+{
+	return Reach > 0.0f && FVector::DistSquared(ShipLocation, PadLocation) <= FMath::Square(static_cast<double>(Reach));
+}
+
+int32 HCJBalance::NormalizeDifficulty(int32 Difficulty)
+{
+	return Difficulty == SuperEasyDifficulty ? SuperEasyDifficulty : FMath::Clamp(Difficulty, 0, 3);
+}
+
+int32 HCJBalance::GetMenuOrder(int32 Difficulty)
+{
+	const int32 Level = NormalizeDifficulty(Difficulty);
+	return Level == SuperEasyDifficulty ? 0 : Level + 1;
+}
+
+int32 HCJBalance::StepDifficulty(int32 Difficulty, int32 Step)
+{
+	const int32 Order = FMath::Clamp(GetMenuOrder(Difficulty) + Step, 0, NumBotDifficulties - 1);
+	return Order == 0 ? SuperEasyDifficulty : Order - 1;
+}
+
+bool HCJBalance::IsEasyLevel(int32 Difficulty)
+{
+	const int32 Level = NormalizeDifficulty(Difficulty);
+	return Level == 0 || Level == SuperEasyDifficulty;
+}
+
+int32 HCJBalance::GetSkillLevel(int32 Difficulty)
+{
+	const int32 Level = NormalizeDifficulty(Difficulty);
+	return Level == SuperEasyDifficulty ? 0 : Level;
+}
+
+FString HCJBalance::GetDifficultyKey(int32 Difficulty)
+{
+	return FString(GetDifficultyName(Difficulty)).ToLower().Replace(TEXT(" "), TEXT("_"));
+}
+
 const TCHAR* HCJBalance::GetDifficultyName(int32 Difficulty)
 {
-	switch (FMath::Clamp(Difficulty, 0, NumBotDifficulties - 1))
+	switch (NormalizeDifficulty(Difficulty))
 	{
+	case SuperEasyDifficulty: return TEXT("Super Easy");
 	case 0: return TEXT("Easy");
 	case 1: return TEXT("Normal");
 	case 2: return TEXT("Hard");
@@ -158,9 +254,10 @@ const TCHAR* HCJBalance::GetDifficultyName(int32 Difficulty)
 
 const TCHAR* HCJBalance::GetDifficultyDescription(int32 Difficulty)
 {
-	switch (FMath::Clamp(Difficulty, 0, NumBotDifficulties - 1))
+	switch (NormalizeDifficulty(Difficulty))
 	{
-	case 0: return TEXT("One bot at a time, from the front. Your guns hit harder, your hull mends.");
+	case SuperEasyDifficulty: return TEXT("Bots go easy on you, your aim is helped a lot, you start armed.");
+	case 0: return TEXT("One bot at a time, from the front. You start armed, your aim is helped.");
 	case 1: return TEXT("Two on you at most. A moment's warning before any fire from behind.");
 	case 2: return TEXT("Three on you. Sharp aim, torpedo combos, scouts ambush from cloak.");
 	default: return TEXT("No rules: every bot hunts you, from any side, with everything it has.");

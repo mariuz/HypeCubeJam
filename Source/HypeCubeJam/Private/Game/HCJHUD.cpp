@@ -1,4 +1,5 @@
 #include "Game/HCJHUD.h"
+#include "Game/HCJGameMode.h"
 
 #include "Online/HCJEOSSubsystem.h"
 #include "Audio/HCJAudioDirector.h"
@@ -738,12 +739,20 @@ void AHCJHUD::DrawPickupMarkers(const AHCJShipCharacter& Ship)
 	const float Now = World != nullptr ? static_cast<float>(World->GetTimeSeconds()) : 0.0f;
 	const UHCJHealthComponent* Health = Ship.GetHealthComponent();
 	const bool bLowHull = Health != nullptr && Health->GetHealthFraction() < HCJUi::LowHullFraction;
+	// Item 40, Easy: a ship that has only its base weapon (the phaser) is shown the way to the nearest weapon pad. The
+	// level is the server's: a host (and a single player) knows it, a remote client does not and gets no such pointer.
+	bool bWantWeapon = false;
+	if (!bLowHull && Ship.GetWeapon() == Ship.GetBaseWeapon() && GetWorld() != nullptr)
+	{
+		const AHCJGameMode* GameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>();
+		bWantWeapon = GameMode != nullptr && GameMode->ShowsWeaponPadPointer();
+	}
 	const TArray<TWeakObjectPtr<AHCJPickup>>& Pads = AHCJPickup::GetAll();
 	FHCJNearSlot Slots[HCJUi::MaxPickupMarkers];
 	int32 NumSlots = 0;
 	int32 GuideIndex = INDEX_NONE;
 	double GuideSq = 0.0;
-	bool bGuideRepair = false;
+	int32 GuideRank = 0;
 	for (int32 Index = 0; Index < Pads.Num(); ++Index)
 	{
 		const AHCJPickup* Pickup = Pads[Index].Get();
@@ -757,16 +766,13 @@ void AHCJHUD::DrawPickupMarkers(const AHCJShipCharacter& Ship)
 			continue;
 		}
 		NumSlots = HCJUi::InsertNearest(MakeArrayView(Slots), NumSlots, DistSq, Index);
-		if (bLowHull && HCJ::GetItemKind(Pickup->GetItem()) == EHCJItemKind::Health)
+		// Low hull: a repair pad before any shield cell; Easy without a weapon: a weapon pad; then the nearer one.
+		const int32 Rank = HCJUi::GuidePadRank(Pickup->GetItem(), bLowHull, bWantWeapon);
+		if (Rank > 0 && (GuideIndex == INDEX_NONE || Rank > GuideRank || (Rank == GuideRank && DistSq < GuideSq)))
 		{
-			// A repair pad before any shield cell, then the nearer one.
-			const bool bRepair = Pickup->GetItem() == EHCJPickupItem::Repair;
-			if (GuideIndex == INDEX_NONE || (bRepair && !bGuideRepair) || (bRepair == bGuideRepair && DistSq < GuideSq))
-			{
-				GuideIndex = Index;
-				GuideSq = DistSq;
-				bGuideRepair = bRepair;
-			}
+			GuideIndex = Index;
+			GuideSq = DistSq;
+			GuideRank = Rank;
 		}
 	}
 	HealthGuidePad = GuideIndex != INDEX_NONE ? Pads[GuideIndex].Get() : nullptr;
@@ -809,7 +815,8 @@ void AHCJHUD::DrawPickupMarkers(const AHCJShipCharacter& Ship)
 		}
 
 		const float Strength = HCJUi::PickupMarkerStrength(Distance, PickupMarkerNearDistance, PickupMarkerFarDistance, bGuide);
-		const float Pulse = bGuide ? 0.7f + 0.3f * FMath::Sin(Now * 7.0f) : 1.0f;
+		// (The way to a weapon pad does not pulse: it is a suggestion, not an alarm.)
+		const float Pulse = (bGuide && bLowHull) ? 0.7f + 0.3f * FMath::Sin(Now * 7.0f) : 1.0f;
 		const FLinearColor Color = WithAlpha(HCJ::GetItemKindColor(Kind), Strength * Pulse);
 		const FVector ToPad = Location - ViewLocation;
 		const FVector Screen = Canvas->Project(Location, false);

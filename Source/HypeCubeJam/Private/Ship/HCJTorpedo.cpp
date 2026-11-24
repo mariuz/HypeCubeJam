@@ -105,6 +105,66 @@ FVector HCJTorpedo::TurnTowards(const FVector& Current, const FVector& Wanted, f
 	return FQuat(Axis, MaxStep).RotateVector(From).GetSafeNormal();
 }
 
+HCJTorpedo::FHoming HCJTorpedo::GetHoming(bool bHumanFirer, float RowTurnRate, float RowConeDeg)
+{
+	FHoming Homing;
+	Homing.TurnRateDeg = RowTurnRate;
+	Homing.LockConeDeg = RowConeDeg;
+	Homing.KeepConeDeg = RowConeDeg;
+	if (bHumanFirer && !IsClassicHoming())
+	{
+		Homing.TurnRateDeg = FMath::Max(RowTurnRate, HumanTurnRateDeg);
+		Homing.AcquireConeDeg = HumanAcquireConeDeg;
+		Homing.KeepConeDeg = FMath::Max(RowConeDeg, HumanKeepConeDeg);
+		Homing.MaxLeadSeconds = HumanMaxLeadSeconds;
+	}
+	return Homing;
+}
+
+int32 HCJTorpedo::PickTarget(const FVector& Forward, TConstArrayView<FVector> ToCandidates, int32 LockedIndex, const FHoming& Homing, float MaxDistance)
+{
+	if (ToCandidates.IsValidIndex(LockedIndex) && KeepsLock(Forward, ToCandidates[LockedIndex], Homing.LockConeDeg, MaxDistance))
+	{
+		return LockedIndex;
+	}
+	if (Homing.AcquireConeDeg <= 0.0f)
+	{
+		return INDEX_NONE;
+	}
+	int32 Best = INDEX_NONE;
+	double BestSq = 0.0;
+	for (int32 Index = 0; Index < ToCandidates.Num(); ++Index)
+	{
+		const double DistanceSq = ToCandidates[Index].SizeSquared();
+		if (DistanceSq >= 1.0 && KeepsLock(Forward, ToCandidates[Index], Homing.AcquireConeDeg, MaxDistance) && (Best == INDEX_NONE || DistanceSq < BestSq))
+		{
+			Best = Index;
+			BestSq = DistanceSq;
+		}
+	}
+	return Best;
+}
+
+FVector HCJTorpedo::SteerPoint(const FVector& TorpedoLocation, const FVector& TargetLocation, const FVector& TargetVelocity, float Speed, float MaxLeadSeconds)
+{
+	if (MaxLeadSeconds <= 0.0f || Speed <= 0.0f)
+	{
+		return TargetLocation;
+	}
+	const float Lead = FMath::Min(static_cast<float>(FVector::Dist(TorpedoLocation, TargetLocation)) / Speed, MaxLeadSeconds);
+	return TargetLocation + TargetVelocity * Lead;
+}
+
+bool HCJTorpedo::IsClassicHoming()
+{
+#if !UE_BUILD_SHIPPING
+	static const bool bClassic = FParse::Param(FCommandLine::Get(), TEXT("HCJClassicTorpedo"));
+	return bClassic;
+#else
+	return false;
+#endif
+}
+
 bool HCJTorpedo::KeepsLock(const FVector& Forward, const FVector& ToTarget, float ConeDegrees, float MaxDistance)
 {
 	const double DistanceSq = ToTarget.SizeSquared();

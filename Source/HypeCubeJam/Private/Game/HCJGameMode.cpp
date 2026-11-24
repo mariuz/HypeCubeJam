@@ -1,5 +1,7 @@
 #include "Game/HCJGameMode.h"
 
+#include "Ship/HCJTorpedo.h"
+
 #include "AI/HCJBotController.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -107,7 +109,7 @@ void AHCJGameMode::LogPlaythroughMatchStart() const
 
 void AHCJGameMode::SetBotDifficulty(int32 Difficulty)
 {
-	const int32 NewDifficulty = FMath::Clamp(Difficulty, 0, HCJBalance::NumBotDifficulties - 1);
+	const int32 NewDifficulty = HCJBalance::NormalizeDifficulty(Difficulty);
 	if (NewDifficulty == BotDifficulty)
 	{
 		return;
@@ -122,10 +124,18 @@ void AHCJGameMode::LogFairRules() const
 {
 	// The fairness rules in force (bots towards human ships), so that a log says what a match was played with.
 	const FHCJBotSkill Skill = GetFairSkill();
-	UE_LOG(LogHCJ, Log, TEXT("Fair: event=rules match=%d difficulty=%d level=%s nofair=%d max_attackers=%d max_hunters=%d rear_fire_delay=%.1f rear_aim_scale=%.1f front_bias=%.1f tail_score=%.1f flank=%d arrival_grace=%.1f damage_scale=%.2f respite=%.1f torpedo_chance=%.2f classic_easy=%d human_damage_scale=%.2f hull_regen=%.1f repair_scale=%.2f"),
-		CurrentConfig.MatchNumber, BotDifficulty, *FString(HCJBalance::GetDifficultyName(BotDifficulty)).ToLower(), IsNoFair() ? 1 : 0, Skill.MaxAttackersOnHuman, Skill.MaxHuntersPerHuman,
+	UE_LOG(LogHCJ, Log, TEXT("Fair: event=rules match=%d difficulty=%d level=%s nofair=%d max_attackers=%d max_hunters=%d rear_fire_delay=%.1f rear_aim_scale=%.1f front_bias=%.1f tail_score=%.1f flank=%d arrival_grace=%.1f damage_scale=%.2f respite=%.1f torpedo_chance=%.2f classic_easy=%d human_damage_scale=%.2f hull_regen=%.1f repair_scale=%.2f classic_easy20=%d pickup_reach=%.0f spawn_weapon=%s aim_assist=%.1f weapon_pointer=%d classic_torpedo=%d"),
+		CurrentConfig.MatchNumber, BotDifficulty, *HCJBalance::GetDifficultyKey(BotDifficulty), IsNoFair() ? 1 : 0, Skill.MaxAttackersOnHuman, Skill.MaxHuntersPerHuman,
 		Skill.RearFireDelay, Skill.RearAimErrorScale, Skill.FrontBias, Skill.HumanTailScore, Skill.bFlankHumans ? 1 : 0, Skill.ArrivalGrace, Skill.DamageToHumanScale, Skill.RespiteSeconds, Skill.TorpedoOnHumanChance,
-		IsClassicEasy() ? 1 : 0, Skill.DamageFromHumanScale, Skill.HumanHullRegenRate, Skill.HumanRepairScale);
+		IsClassicEasy() ? 1 : 0, Skill.DamageFromHumanScale, Skill.HumanHullRegenRate, Skill.HumanRepairScale,
+		IsClassicEasy20() ? 1 : 0, Skill.HumanPickupReach, *PlaythroughToken(Skill.HumanSpawnWeapon < EHCJWeapon::Count ? UHCJGameplaySettings::Get().GetWeapon(Skill.HumanSpawnWeapon).Name.ToLower() : FString(TEXT("none"))),
+		Skill.HumanAimAssistDeg, Skill.bHumanWeaponPointer ? 1 : 0, HCJTorpedo::IsClassicHoming() ? 1 : 0);
+}
+
+bool AHCJGameMode::IsClassicEasy20()
+{
+	static const bool bClassicEasy20 = FParse::Param(FCommandLine::Get(), TEXT("HCJClassicEasy20"));
+	return bClassicEasy20;
 }
 
 bool AHCJGameMode::IsClassicEasy()
@@ -141,6 +151,29 @@ FHCJBotSkill AHCJGameMode::GetFairSkill() const
 	{
 		Skill.ClearFairness();
 	}
+	else if (IsClassicEasy20())
+	{
+		Skill.ClearAllBeginnerHelp();
+	}
+#if !UE_BUILD_SHIPPING
+	else if (HCJBalance::IsEasyLevel(BotDifficulty) && !IsClassicEasy())
+	{
+		// Development (item 40 tuning): -HCJEasyAssist=<deg> -HCJEasyHumanDamage=<x> -HCJEasyBotDamage=<x> override Easy's numbers.
+		static float AssistOverride = -1.0f;
+		static float HumanDamageOverride = -1.0f;
+		static float BotDamageOverride = -1.0f;
+		static const bool bParsed = [] {
+			FParse::Value(FCommandLine::Get(), TEXT("HCJEasyAssist="), AssistOverride);
+			FParse::Value(FCommandLine::Get(), TEXT("HCJEasyHumanDamage="), HumanDamageOverride);
+			FParse::Value(FCommandLine::Get(), TEXT("HCJEasyBotDamage="), BotDamageOverride);
+			return true;
+		}();
+		(void)bParsed;
+		Skill.HumanAimAssistDeg = AssistOverride >= 0.0f ? AssistOverride : Skill.HumanAimAssistDeg;
+		Skill.DamageFromHumanScale = HumanDamageOverride > 0.0f ? HumanDamageOverride : Skill.DamageFromHumanScale;
+		Skill.DamageToHumanScale = BotDamageOverride > 0.0f ? BotDamageOverride : Skill.DamageToHumanScale;
+	}
+#endif
 	else if (IsClassicEasy())
 	{
 		Skill.ClearBeginnerHelp();
@@ -210,11 +243,13 @@ void AHCJGameMode::LogFairStatus() const
 	{
 		HumanShips += HasLiveShip(It->Get()) ? 1 : 0;
 	}
-	UE_LOG(LogHCJ, Log, TEXT("Fair: event=status t=%.0f match=%d difficulty=%d nofair=%d humans=%d dmg_total=%.0f dmg_rear=%.0f dmg_aft=%.0f deaths=%d rear_deaths=%d peak_attackers=%d held_cap=%d held_rear=%d held_grace=%d bot_deaths=%d dmg_unscaled=%.0f human_ships=%d match_t=%.0f held_respite=%d held_hunters=%d human_kills=%d human_dmg=%.0f human_dmg_bonus=%.0f hull_regen=%.0f repairs=%d repair_points=%.0f"),
+	UE_LOG(LogHCJ, Log, TEXT("Fair: event=status t=%.0f match=%d difficulty=%d nofair=%d humans=%d dmg_total=%.0f dmg_rear=%.0f dmg_aft=%.0f deaths=%d rear_deaths=%d peak_attackers=%d held_cap=%d held_rear=%d held_grace=%d bot_deaths=%d dmg_unscaled=%.0f human_ships=%d match_t=%.0f held_respite=%d held_hunters=%d human_kills=%d human_dmg=%.0f human_dmg_bonus=%.0f hull_regen=%.0f repairs=%d repair_points=%.0f human_pickups=%d reach_pickups=%d armed_spawns=%d human_bolts=%d assisted_bolts=%d human_bolt_hits=%d assisted_hits=%d torp_fired=%d torp_homing=%d torp_acquired=%d torp_lost=%d torp_hit=%d"),
 		World->GetTimeSeconds(), CurrentConfig.MatchNumber, BotDifficulty, IsNoFair() ? 1 : 0, GetNumHumanPlayers(), MatchStats.FairDamage, MatchStats.FairDamageRear, MatchStats.FairDamageAft,
 		MatchStats.FairDeaths, MatchStats.FairRearDeaths, MatchStats.FairPeakAttackers, MatchStats.FairHeldCap, MatchStats.FairHeldRear, MatchStats.FairHeldGrace,
 		MatchStats.FairBotDeaths, MatchStats.FairDamageUnscaled, HumanShips, World->GetTimeSeconds() - MatchStats.StartTime, MatchStats.FairHeldRespite, MatchStats.FairHeldHunters,
-		MatchStats.HelpHumanKills, MatchStats.HelpDamageDealt, MatchStats.HelpDamageBonus, MatchStats.HelpHullRegen, MatchStats.HelpRepairs, MatchStats.HelpRepairPoints);
+		MatchStats.HelpHumanKills, MatchStats.HelpDamageDealt, MatchStats.HelpDamageBonus, MatchStats.HelpHullRegen, MatchStats.HelpRepairs, MatchStats.HelpRepairPoints,
+		MatchStats.HelpPickups, MatchStats.HelpReachPickups, MatchStats.HelpArmedSpawns, MatchStats.HelpBolts, MatchStats.HelpAssistedBolts, MatchStats.HelpBoltHits, MatchStats.HelpAssistedHits,
+		MatchStats.HumanTorpFired, MatchStats.HumanTorpHoming, MatchStats.HumanTorpAcquired, MatchStats.HumanTorpLost, MatchStats.HumanTorpHit);
 }
 
 void AHCJGameMode::LogPlaythroughStats() const
@@ -415,7 +450,7 @@ void AHCJGameMode::InitGame(const FString& MapName, const FString& Options, FStr
 
 	MinCombatants = FMath::Max(0, UGameplayStatics::GetIntOption(Options, TEXT("Bots"), MinCombatants));
 	MinBots = FMath::Max(0, UGameplayStatics::GetIntOption(Options, TEXT("MinBots"), MinBots));
-	BotDifficulty = FMath::Clamp(UGameplayStatics::GetIntOption(Options, TEXT("Difficulty"), BotDifficulty), 0, HCJBalance::NumBotDifficulties - 1);
+	BotDifficulty = HCJBalance::NormalizeDifficulty(UGameplayStatics::GetIntOption(Options, TEXT("Difficulty"), BotDifficulty));
 	MaxBots = FMath::Max(0, MaxBots);
 	FragLimit = FMath::Max(0, UGameplayStatics::GetIntOption(Options, TEXT("FragLimit"), FragLimit));
 	if (UGameplayStatics::HasOption(Options, TEXT("TimeLimit")))
@@ -743,6 +778,10 @@ void AHCJGameMode::NotifyPickupCollected(EHCJPickupItem Item, AController* Colle
 	if (Cast<AHCJBotController>(Collector) != nullptr)
 	{
 		++MatchStats.BotPickups;
+	}
+	else if (Cast<APlayerController>(Collector) != nullptr)
+	{
+		++MatchStats.HelpPickups;
 	}
 	UE_LOG(LogHCJ, Verbose, TEXT("Pickup: %s took %s"), Collector && Collector->PlayerState ? *Collector->PlayerState->GetPlayerName() : TEXT("?"), HCJ::GetItemName(Item));
 	if (AHCJPlayerController* Player = Cast<AHCJPlayerController>(Collector))
@@ -1285,7 +1324,7 @@ void AHCJGameMode::StartMatchFromMenu(AHCJPlayerController* Host, int32 NumBots,
 	MatchDimension = FMath::Clamp(Dimension, FHCJHypercubeGraph::MinDimension, FHCJHypercubeGraph::MaxDimension);
 	bHasSeedOverride = Seed != 0;
 	SeedOverride = Seed;
-	BotDifficulty = FMath::Clamp(Difficulty, 0, HCJBalance::NumBotDifficulties - 1);
+	BotDifficulty = HCJBalance::NormalizeDifficulty(Difficulty);
 	if (Host->PlayerState != nullptr)
 	{
 		Host->PlayerState->SetIsOnlyASpectator(false);

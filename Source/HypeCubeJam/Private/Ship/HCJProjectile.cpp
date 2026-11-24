@@ -8,6 +8,7 @@
 #include "GameFramework/Controller.h"
 #include "GameFramework/DamageType.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerState.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -164,8 +165,23 @@ void AHCJProjectile::BeginPlay()
 
 	const bool bHoming = !bCustom && Def.HomingTurnRate > 0.0f;
 	const bool bTorpedo = IsTorpedo();
+	{
+		// Whose shot: a person's (item 40 - a torpedo homes better, the Easy telemetry counts it). The server knows the
+		// controller; a client goes by the firer's replicated player state (bots have one too, flagged as a bot).
+		const APawn* FirerPawn = GetInstigator();
+		if (HasAuthority())
+		{
+			bHumanFirer = Cast<APlayerController>(GetInstigatorController()) != nullptr;
+		}
+		else
+		{
+			const APlayerState* FirerState = FirerPawn != nullptr ? FirerPawn->GetPlayerState() : nullptr;
+			bHumanFirer = FirerState != nullptr && !FirerState->IsABot();
+		}
+	}
 	if (bTorpedo)
 	{
+		TorpedoHoming = HCJTorpedo::GetHoming(bHumanFirer, Def.HomingTurnRate, Def.HomingConeDegrees);
 		GLiveTorpedoes.AddUnique(this);
 		if (!HasAuthority())
 		{
@@ -282,6 +298,10 @@ void AHCJProjectile::Tick(float DeltaSeconds)
 				if (AHCJGameMode* GameMode = World->GetAuthGameMode<AHCJGameMode>())
 				{
 					GameMode->NotifyTorpedoLostLock();
+					if (bHumanFirer)
+					{
+						GameMode->NotifyHumanTorpedoLost();
+					}
 				}
 				HomingTarget = nullptr;
 			}
@@ -291,10 +311,14 @@ void AHCJProjectile::Tick(float DeltaSeconds)
 		if (IsValid(Target) && (TargetShip == nullptr || !TargetShip->IsDead()))
 		{
 			const FVector Current = Movement->Velocity.GetSafeNormal();
-			const FVector Wanted = Target->GetActorLocation() - GetActorLocation();
+			// A torpedo steers by its own homing (a person's leads its target and turns faster); a missile as before.
+			const FVector Aim = bTorpedo
+				? HCJTorpedo::SteerPoint(GetActorLocation(), Target->GetActorLocation(), Target->GetVelocity(), Speed, TorpedoHoming.MaxLeadSeconds)
+				: Target->GetActorLocation();
+			const FVector Wanted = Aim - GetActorLocation();
 			if (!Current.IsNearlyZero() && !Wanted.IsNearlyZero())
 			{
-				Movement->Velocity = HCJTorpedo::TurnTowards(Current, Wanted, Def.HomingTurnRate * DeltaSeconds) * Speed;
+				Movement->Velocity = HCJTorpedo::TurnTowards(Current, Wanted, (bTorpedo ? TorpedoHoming.TurnRateDeg : Def.HomingTurnRate) * DeltaSeconds) * Speed;
 			}
 		}
 	}
@@ -328,12 +352,34 @@ AActor* AHCJProjectile::FindTorpedoTarget() const
 {
 	const AHCJShipCharacter* Shooter = Cast<AHCJShipCharacter>(GetInstigator());
 	AHCJShipCharacter* Locked = Shooter != nullptr ? Shooter->GetLockTarget() : nullptr;
-	if (!IsValid(Locked) || Locked == Shooter || Locked->IsDead() || Locked->IsCloakHidden())
+	const auto Usable = [Shooter](const AHCJShipCharacter* Ship) { return IsValid(Ship) && Ship != Shooter && !Ship->IsDead() && !Ship->IsCloakHidden(); };
+	const FVector Location = GetActorLocation();
+	const float Reach = Speed * Lifetime;
+	TArray<AHCJShipCharacter*, TInlineAllocator<16>> Ships;
+	TArray<FVector, TInlineAllocator<16>> ToShips;
+	int32 LockedIndex = INDEX_NONE;
+	if (Usable(Locked))
 	{
-		return nullptr;
+		LockedIndex = 0;
+		Ships.Add(Locked);
+		ToShips.Add(Locked->GetActorLocation() - Location);
+	}
+	if (TorpedoHoming.AcquireConeDeg > 0.0f)
+	{
+		// (A person's torpedo without a lock in its cone: every other ship in reach is a candidate.)
+		for (TActorIterator<AHCJShipCharacter> It(GetWorld()); It; ++It)
+		{
+			AHCJShipCharacter* Ship = *It;
+			if (Ship != Locked && Usable(Ship) && FVector::DistSquared(Ship->GetActorLocation(), Location) <= FMath::Square(static_cast<double>(Reach)))
+			{
+				Ships.Add(Ship);
+				ToShips.Add(Ship->GetActorLocation() - Location);
+			}
+		}
 	}
 	const FVector Forward = Movement->Velocity.IsNearlyZero() ? GetActorForwardVector() : Movement->Velocity.GetSafeNormal();
-	return HCJTorpedo::KeepsLock(Forward, Locked->GetActorLocation() - GetActorLocation(), GetWeaponDef().HomingConeDegrees, Speed * Lifetime) ? Locked : nullptr;
+	const int32 Pick = HCJTorpedo::PickTarget(Forward, ToShips, LockedIndex, TorpedoHoming, Reach);
+	return Pick != INDEX_NONE ? Ships[Pick] : nullptr;
 }
 
 bool AHCJProjectile::TorpedoKeepsTarget() const
@@ -344,7 +390,7 @@ bool AHCJProjectile::TorpedoKeepsTarget() const
 		return false;
 	}
 	const FVector Forward = Movement->Velocity.IsNearlyZero() ? GetActorForwardVector() : Movement->Velocity.GetSafeNormal();
-	return HCJTorpedo::KeepsLock(Forward, TargetShip->GetActorLocation() - GetActorLocation(), GetWeaponDef().HomingConeDegrees, Speed * Lifetime);
+	return HCJTorpedo::KeepsLock(Forward, TargetShip->GetActorLocation() - GetActorLocation(), TorpedoHoming.KeepConeDeg, Speed * Lifetime);
 }
 
 void AHCJProjectile::LifeSpanExpired()
@@ -458,6 +504,10 @@ void AHCJProjectile::ServerDetonate(const FVector& Location, AActor* DirectActor
 	if (AHCJGameMode* GameMode = World->GetAuthGameMode<AHCJGameMode>())
 	{
 		GameMode->NotifyTorpedoDetonated(bArmed, NumHit);
+		if (bHumanFirer)
+		{
+			GameMode->NotifyHumanTorpedoDetonated(NumHit > 0);
+		}
 	}
 
 	if (bArmed)

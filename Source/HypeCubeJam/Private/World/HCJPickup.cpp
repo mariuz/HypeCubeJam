@@ -310,16 +310,16 @@ void AHCJPickup::OnTriggerBeginOverlap(UPrimitiveComponent* OverlappedComponent,
 	}
 }
 
-void AHCJPickup::ServerTryCollect(AHCJShipCharacter* Ship)
+bool AHCJPickup::ServerTryCollect(AHCJShipCharacter* Ship)
 {
 	if (!HasAuthority() || !bActive || !IsValid(Ship) || Ship->IsDead())
 	{
-		return;
+		return false;
 	}
 	const EHCJPickupItem Collected = GetItem();
 	if (!Ship->ServerGiveItem(Collected))
 	{
-		return;
+		return false;
 	}
 
 	bActive = false;
@@ -337,6 +337,7 @@ void AHCJPickup::ServerTryCollect(AHCJShipCharacter* Ship)
 		? GameMode->RandomPickupDelay()
 		: 0.5f * (Gameplay.RespawnMinSeconds + Gameplay.RespawnMaxSeconds);
 	World->GetTimerManager().SetTimer(RefillTimer, this, &AHCJPickup::ServerFill, FMath::Max(Delay, 1.0f), false);
+	return true;
 }
 
 void AHCJPickup::OnRep_State()

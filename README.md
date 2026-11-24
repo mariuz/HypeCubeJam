@@ -83,7 +83,7 @@ URL options (append to the map URL of the server):
 | `?EdgeP=<0..1>` | chance that a non-spanning-tree edge is open (default 0.5)   |
 | `?Bots=<n>`   | minimum combatants; bots fill the rest (default 8)             |
 | `?MinBots=<n>` | bots that stay however many humans join (default 0)           |
-| `?Difficulty=<0..3>` | bot difficulty: 0 easy (default), 1 normal, 2 hard, 3 ace (hard without the fairness rules) |
+| `?Difficulty=<0..4>` | bot difficulty: 0 easy (default), 1 normal, 2 hard, 3 ace (hard without the fairness rules), 4 super easy |
 | `?FragLimit=<n>` / `?TimeLimit=<s>` | match end (defaults 25 kills / 600 s; 0 disables) |
 | `?BlackHoles=0|1` / `?BlackHoleP=<0..1>` | black holes on/off, share of sectors with one (default on, 0.25) |
 | `?Pickups=0|1` | pickup pads on/off (default on) |
@@ -192,7 +192,8 @@ Menu sizes follow the engine's DPI scaling of viewport widgets, HUD sizes `HCJUi
 0.67 at 1280x720; text never below 0.8).
 
 - Title menu: the first row is **Difficulty** (Easy / Normal / Hard / Ace) with one line under it that says what the
-  level does to the player ("One bot at a time, from the front. Your guns hit harder, your hull mends." on Easy; see
+  level does to the player ("One bot at a time, from the front. You start armed, your aim is helped." on Easy, "Bots go easy on you, your aim
+  is helped a lot, you start armed." on Super Easy, the first entry; see
   "Bots and people: the fairness rules"). Then QUICK PLAY (first button: joins an open match found through Epic Online Services, hosts one when there is
   none - see "Online"), PLAY (host with bots - one click; Enter), HANGAR (ship type, hull and paint with a turning 3D preview and stat
   bars; see "Ship types, warp drive, cloak, tractor beam"), bots 0-15, hypercube 3D-5D, seed, pilot name, JOIN
@@ -511,7 +512,12 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
   row of `Weapons`), at most 6 (`TorpedoMaxStock`), 2 s between shots (`FireInterval` of the row); a TORPEDOES pad
   gives 3. The torpedo is an `AHCJProjectile`: 9000 uu/s (bolts 20 000, homing missiles 10 000), 2 s of life, turning
   40 degrees per second (missiles 140) towards the ship its firer had locked at launch - it flies straight without a
-  lock and loses its target for good once that is more than 60 degrees off its nose. Armed after 12 m
+  lock and loses its target for good once that is more than 60 degrees off its nose. That is a BOT's torpedo. A torpedo
+  fired by a PERSON (every difficulty; devlog item 40, `HCJTorpedo::GetHoming`, server-chosen target, replicated as
+  before) takes the locked ship when it is within 60 degrees, else the nearest live, uncloaked ship within 40 degrees
+  ahead and in reach (`HCJTorpedo::PickTarget`), turns 180 degrees a second, steers for where the target will be in
+  up to 0.5 s (`SteerPoint`) and keeps it while it stays within 80 degrees of its nose - a hard turn under boost still
+  shakes it off. `-HCJClassicTorpedo` gives a person the bot's torpedo again (the torpedo of build 0.21.0). Armed after 12 m
   (`TorpedoArmingDistance`; a hit before is a dud: 15 % of the damage, no blast); detonates on contact or when its
   time is up, with a blast of 4.5 m around the hit (full damage within 1.2 m of a hull, 25 % at the edge, nothing
   behind a rock). Damage (`HCJTorpedo::SplitDamage`): it strips up to 30 points (`TorpedoShieldDamage`) from the
@@ -536,8 +542,10 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
 - Spawn choice: the best of 12 random spawn points (`HCJBalance::ScoreSpawn`): never within 80 m of an enemy, in
   range of a live turret or in a gravity well when there is an alternative; a slight preference for a sector
   with one to three enemies. A new ship is turned to face the nearest ship of its sector.
-- Bots have four difficulty levels - Easy, Normal, Hard, Ace (`FHCJBotSkill`; the Difficulty row of the menu,
-  `BotDifficulty` in `[/Script/HypeCubeJam.HCJGameMode]`, URL `?Difficulty=0..3`): aim error 7 / 3.5 / 1.5 degrees,
+- Bots have five difficulty levels - Super Easy, Easy, Normal, Hard, Ace in the menu's order (`FHCJBotSkill`; the
+  Difficulty row of the menu, `BotDifficulty` in `[/Script/HypeCubeJam.HCJGameMode]`, URL `?Difficulty=0..4`: 0 easy,
+  1 normal, 2 hard, 3 ace, **4 super easy** - devlog item 40; Super Easy got the next index, not 0, so that the numbers
+  of the older builds keep their meaning; its bots fly Easy's numbers): aim error 7 / 3.5 / 1.5 degrees,
   reaction 1.0 / 0.5 / 0.2 s before the first shot at a new target, turn rate, burst rhythm, opening range, strafe
   strength, and the hull fraction (45 / 30 / 20 %) at which a bot breaks off, stops firing and boosts for a repair
   pad in its sector. Ace flies with Hard's numbers. The default is Easy.
@@ -545,22 +553,26 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
   `FHCJBotSkill`, server only, nothing replicated). They apply only when the other ship is flown by a person; bots
   among themselves fly the same on every level, so bot matches and their kill rates are unchanged.
 
-  | | Easy | Normal | Hard | Ace |
-  |---|---|---|---|---|
-  | bots attacking one player at a time (`MaxAttackersOnHuman`) | 1 | 2 | 3 | no limit |
-  | bots in a player's sector before travelling bots go elsewhere (`MaxHuntersPerHuman`) | 3 | 4 | 6 | no limit |
-  | a bot in the player's rear arc holds its fire for (`RearFireDelay`) | 2.5 s | 1.2 s | 0.5 s | - |
-  | aim error from the rear arc (`RearAimErrorScale`) | x 2 | x 1.5 | x 1 | x 1 |
-  | pull round to the player's front (`FrontBias`) | 1.0 | 0.6 | 0.3 | 0 |
-  | target score of a player's tail (`HumanTailScore`; bots among themselves +1.5) | -2 | -1 | 0 | +1.5 |
-  | scout ambush from cloak, close passes around a player (`bFlankHumans`) | no | no | yes | yes |
-  | left alone after appearing in a sector (`ArrivalGrace`; also under the spawn shield) | 4 s | 3.5 s | 1 s | - |
-  | left alone after the attacker is gone (`RespiteSeconds`) | 6 s | 5 s | - | - |
-  | damage of a bot's hit on a player (`DamageToHumanScale`) | 40 % | 55 % | 100 % | 100 % |
-  | torpedoes a bot would fire at a player that are fired (`TorpedoOnHumanChance`) | 35 % | 45 % | 100 % | 100 % |
-  | **beginner's help** (item 38): damage of a player's hit on a bot (`DamageFromHumanScale`) | 150 % | 100 % | 100 % | 100 % |
-  | the player's hull mends out of combat (`HumanHullRegenRate`) | 4 points a second | - | - | - |
-  | a repair pad restores, on a player's ship (`HumanRepairScale`) | 100 hull | 60 | 60 | 60 |
+  | | Super Easy | Easy | Normal | Hard | Ace |
+  |---|---|---|---|---|---|
+  | bots attacking one player at a time (`MaxAttackersOnHuman`) | 1 | 1 | 2 | 3 | no limit |
+  | bots in a player's sector before travelling bots go elsewhere (`MaxHuntersPerHuman`) | 3 | 3 | 4 | 6 | no limit |
+  | a bot in the player's rear arc holds its fire for (`RearFireDelay`) | 2.5 s | 2.5 s | 1.2 s | 0.5 s | - |
+  | aim error from the rear arc (`RearAimErrorScale`) | x 2 | x 2 | x 1.5 | x 1 | x 1 |
+  | pull round to the player's front (`FrontBias`) | 1.0 | 1.0 | 0.6 | 0.3 | 0 |
+  | target score of a player's tail (`HumanTailScore`; bots among themselves +1.5) | -2 | -2 | -1 | 0 | +1.5 |
+  | scout ambush from cloak, close passes around a player (`bFlankHumans`) | no | no | no | yes | yes |
+  | left alone after appearing in a sector (`ArrivalGrace`; also under the spawn shield) | 4 s | 4 s | 3.5 s | 1 s | - |
+  | left alone after the attacker is gone (`RespiteSeconds`) | 6 s | 6 s | 5 s | - | - |
+  | damage of a bot's hit on a player (`DamageToHumanScale`) | 40 % | 45 % | 55 % | 100 % | 100 % |
+  | torpedoes a bot would fire at a player that are fired (`TorpedoOnHumanChance`) | 35 % | 35 % | 45 % | 100 % | 100 % |
+  | **beginner's help** (item 38): damage of a player's hit on a bot (`DamageFromHumanScale`) | 150 % | 135 % | 100 % | 100 % | 100 % |
+  | the player's hull mends out of combat (`HumanHullRegenRate`) | 4 points a second | 4 points a second | - | - | - |
+  | a repair pad restores, on a player's ship (`HumanRepairScale`) | 100 hull | 100 hull | 60 | 60 | 60 |
+  | **more help** (item 40): a pad's item is taken within (`HumanPickupReach`) | 25 m | 25 m | touch | touch | touch |
+  | a new ship of a player holds (`HumanSpawnWeapon`) | scatter cannon, full | scatter cannon, full | phaser | phaser | phaser |
+  | a player's shots bend towards a ship within (`HumanAimAssistDeg`) | 5 degrees | 3 degrees | - | - | - |
+  | the HUD points to a weapon pad while the ship has only its phaser (`bHumanWeaponPointer`) | yes | yes | no | no | no |
 
   - "Rear arc": more than about 107 degrees off the nose of the player's ship (`HCJBalance::RearArcDot`). The wait
     starts again every time the bot gets there; the HUD's ENEMY BEHIND is the warning for it.
@@ -574,16 +586,40 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
   - Ace (`?Difficulty=3`) is Hard's flying with none of these rules - what Hard was before. `-HCJNoFair` switches
     the rules off on every level (for comparisons with the same binary; the spawn changes - 3 s of spawn shield,
     80 m, facing the nearest ship - and the HUD stay).
-  - **Beginner's help, Easy only** (devlog item 38; server only, nothing replicated; the other levels and the bots
-    among themselves are untouched): every hit of a player on a bot's ship does 1.5 times its damage
+  - **Beginner's help, Easy and Super Easy** (devlog item 38; server only, nothing replicated; the other levels and the bots
+    among themselves are untouched): every hit of a player on a bot's ship does 1.5 times its damage (1.35 on Easy since
+    item 40)
     (`AHCJShipCharacter::TakeDamage`, all weapons); the hull of a player's ship mends by 4 points a second once
     nothing has taken hull or shield from it for 5 s, up to 75 % of the full hull
     (`HCJBalance::StepHullRegen`, `HullRegenDelay`, `HullRegenCeiling` - the last quarter is what repair pads are
-    for); a repair pad makes a player's ship whole (100 instead of 60); and a bot's hit does 40 % instead of 50 %.
-    `-HCJClassicEasy` takes these four away again (`FHCJBotSkill::ClearBeginnerHelp`: Easy as build 0.20.0 had it,
-    for comparisons with the same binary); `-HCJNoFair` takes them away with everything else. The
-    `Fair: event=rules` line has `classic_easy= human_damage_scale= hull_regen= repair_scale=`, the
+    for); a repair pad makes a player's ship whole (100 instead of 60); and a bot's hit does 40 % instead of 50 % (Easy 45 % since item 40; Super Easy 40 %).
+    `-HCJClassicEasy20` takes these four away again with the help of item 40 (`FHCJBotSkill::ClearAllBeginnerHelp`:
+    Easy as build 0.20.0 had it, for comparisons with the same binary); `-HCJNoFair` takes them away with everything
+    else. The `Fair: event=rules` line has `classic_easy= human_damage_scale= hull_regen= repair_scale=`, the
     `Fair: event=status` line `human_kills= human_dmg= human_dmg_bonus= hull_regen= repairs= repair_points=`.
+  - **Super Easy** (devlog item 40, `?Difficulty=4`, first in the menu): Easy's bots and every help of Easy, with
+    the numbers the first 0.22.0 gave Easy - a player's hits 1.5 x, a bot's hits 40 %, the aim assist 5 degrees. After
+    the player's first 0.22.0 match (16 kills, 1 death: "tone it down") Easy itself went back towards the middle:
+    1.35 x, 45 %, 3 degrees. Stored in the settings as `BotDifficulty=0` + `bSuperEasy=True` (an older
+    build reads that as Easy); in the lobby attribute as 4 (an older build shows the row without a level: it reads
+    0..3 only). `-HCJClassicEasy` on Super Easy gives 0.21.0's Easy too. Development: `-HCJEasyAssist=<deg>
+    -HCJEasyHumanDamage=<x> -HCJEasyBotDamage=<x>` override the three numbers on Easy and Super Easy (tuning).
+  - **More help, Easy and Super Easy** (devlog item 40; server only, no replicated property or RPC added; the other levels and
+    the bots' own aim are untouched): the item of a filled pad goes to a player's ship within 25 m of the pad
+    (`AHCJShipCharacter::ServerTickPickupReach`, five times a second, through the pad's own `ServerTryCollect`: a
+    refused item - a repair kit at full hull - stays on the pad); a player's new ship starts with a full scatter
+    cannon instead of the phaser alone (`ServerGiveHumanStartWeapon` - its ten pellets in a 4 degree cone forgive the
+    aim at the 10 to 25 m at which a beginner's duels are fought, two good shots break an Easy bot, and it has no
+    range to waste ammunition beyond 100 m); a player's bolt leaves towards the lead point of the locked ship, else
+    of the ship nearest the crosshair, when that point is within 3 degrees (Super Easy: 5) of the aim (`ServerFireProjectile`,
+    `HCJBalance::PickAimAssist`; the pellets spread around it as before), and the phaser beam bends to a ship within
+    3 (5) degrees instead of 1.6 / 3; while the ship has only its base weapon the HUD's pad pointer of item 38 leads to the
+    nearest weapon pad (ringed, not pulsing; `HCJUi::GuidePadRank`) - on the host and in a single-player match only,
+    because a remote client is not told the level. `-HCJClassicEasy` takes these four away and sets the damage scales back to 1.5 / 0.4
+    (`ClearBeginnerHelp`: Easy as build 0.21.0 had it). The `Fair: event=rules` line has `classic_easy20= pickup_reach= spawn_weapon= aim_assist=
+    weapon_pointer= classic_torpedo=`, the `Fair: event=status` line `human_pickups= reach_pickups= armed_spawns=
+    human_bolts= assisted_bolts= human_bolt_hits= assisted_hits=` and, for people's torpedoes on every level,
+    `torp_fired= torp_homing= torp_acquired= torp_lost= torp_hit=`.
   - The server logs what happened to the people in a match: `Fair: event=rules | spawn | hit | death | status`
     (key=value; see "Fairness telemetry" in docs/DEVLOG_NOTES.md, item 29, for the fields and how to read the rear
     share and the deaths per minute out of a log).
@@ -1015,7 +1051,7 @@ bodies, the nebulae and the black hole look are made up. Settings: "Backdrop" bl
 
 `-HCJCapture=<s>` saves `Saved/Screenshots/HCJCapture/Shot_NN.png` every `<s>` seconds and logs the frame rate of
 each interval. Add `-HCJAutoFly` (the local ship flies and fires by itself; with `-HCJAutoTorpedo` also torpedoes, with
-`-HCJAutoAim` its nose follows the nearest ship in sight - the autopilot of the playthrough tests), `-HCJOrbit` (camera looks at the ship
+`-HCJAutoAim` its nose follows the nearest ship in sight - the autopilot of the playthrough tests; `-HCJAutoAimError=<deg>` makes it a poor shot whose nose wanders up to that many degrees around the target), `-HCJOrbit` (camera looks at the ship
 from another side each picture), `-HCJTour` (listen server: hop to the next sector after each picture),
 `-HCJSkyCam`, `-HCJHoleTest=<f>`, `-HCJCaptureCmds="a;b;c"` (one console command per picture, `_` for a space). See the
 comment in `Private/HypeCubeJam.cpp`. For repeatable pictures: `HCJMenuCmd scene <sector>,<look>[,<spawn point>[,<distance>]]`
@@ -1033,6 +1069,12 @@ as well.
 & "F:\EpicGames\UE_5.9\Engine\Build\BatchFiles\RunUAT.bat" BuildCookRun -project="F:\work\HypeCubeJam\HypeCubeJam.uproject" -noP4 -platform=Win64 -clientconfig=Development -build -cook -stage -pak -archive -archivedirectory="F:\work\HypeCubeJam\Packaged\Temp" -utf8output -unattended -nocompileeditor -skipbuildeditor
 ```
 
+Since the engine update of 22 Nov 2026 (5.9.0 CL 60738873, with a new Fab plugin) the cook logs an engine ensure
+("Registered the path /ToolsetRegistry/ for two different domains", `AssetReferencingDomains.cpp`) and counts its 29
+lines as errors, so the command above ends with BUILD FAILED although every package cooked; append `-IgnoreCookErrors`
+(devlog item 40). Builds of the engine before that update (0.21.0 and older) cannot join builds made after it and the
+other way round: the engine's network changelist is part of the network version.
+
 Double-clicking `HypeCubeJam.exe` opens the title menu; PLAY hosts a listen server with bots (the world behind the
 menu already is one: `LocalMapOptions=?listen` in `DefaultEngine.ini`). `HypeCubeJam.exe -AutoHost` hosts without the
 menu. To join from another instance or machine: JOIN in the menu, or `HypeCubeJam.exe <ip>` (e.g.
@@ -1048,7 +1090,11 @@ hardware.
 & "F:\EpicGames\UE_5.9\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "F:\work\HypeCubeJam\HypeCubeJam.uproject" -ExecCmds="Automation RunTests HypeCubeJam; Quit" -unattended -nullrhi -nosplash -log "-ini:EditorPerProjectUserSettings:[/Script/ModelContextProtocol.ModelContextProtocolSettings]:bAutoStartServer=False"
 ```
 
-84 automation tests (about a minute; three of them new with devlog item 38: `HypeCubeJam.Balance.BeginnerHelp` -
+87 automation tests (about a minute; three of them new with devlog item 40: `HypeCubeJam.Balance.BeginnerArmsAndAim` -
+Easy alone has the reach, the start weapon, the aim assist and the weapon pointer, `-HCJClassicEasy` gives back Easy of
+0.21.0 field by field, the assist's choice of target -, `HypeCubeJam.Torpedo.HumanHoming` - a person's torpedo against a
+bot's: target choice, keep and lose, lead, closing on a crossing target -, `HypeCubeJam.UI.GuidePad` - which pad the
+pointer leads to; three new with devlog item 38: `HypeCubeJam.Balance.BeginnerHelp` -
 Easy alone has the help, the classic switch, the hull mending rule -, `HypeCubeJam.Pickups.Visibility` - item kinds,
 their colours and short names, the size of the light column and the halo by distance -, `HypeCubeJam.UI.PickupMarkers`
 - the nearest-pads list, marker strength, distance text; four of them `HypeCubeJam.Input.*`: the aim stick's dead zone and curve, the
@@ -1096,19 +1142,24 @@ autopilot against seven bots, headless, several processes at a time, and read ou
 ```powershell
 python docs\tools\fair_matches.py Saved\Fair easy_nofair:0:nofair:3 easy_fair:0:fair:3
 python docs\tools\fair_matches.py Saved\Fair blind_nofair:0:nofair:3:blind blind_fair:0:fair:3:blind
-python docs\tools\fair_matches.py Saved\Fair classic:0:classic:3 help:0:fair:3     # Easy of 0.20.0 against Easy now
+python docs\tools\fair_matches.py Saved\Fair classic:0:classic20:3 help:0:fair:3   # Easy of 0.20.0 against Easy now
+python docs\tools\fair_matches.py Saved\Fair before:0:classic:3:poor8 after:0:fair:3:poor8   # 0.21.0 against now, a poor shot
 python docs\tools\fair_stats.py Saved\Fair\*.log
 ```
 
-`<tag>:<difficulty 0..3>:<fair|nofair|classic>[:<count>[:blind]]` - `nofair` adds `-HCJNoFair` (the bots before the
-rules), `classic` adds `-HCJClassicEasy` (Easy without the beginner's help of item 38), `blind` takes the autopilot that only circles and fires straight ahead instead of the one that aims (the aiming one
+`<tag>:<difficulty 0..3>:<fair|nofair|classic|classic20>[:<count>[:blind|:poor<deg>]]` - `nofair` adds `-HCJNoFair` (the bots before the
+rules), `classic` adds `-HCJClassicEasy -HCJClassicTorpedo` (the game of build 0.21.0: Easy without the help of item 40, a
+person's torpedo as a bot's), `classic20` adds `-HCJClassicEasy20 -HCJClassicTorpedo` (Easy of build 0.20.0), `poor8` gives the
+aiming autopilot `-HCJAutoAimError=8` (its nose wanders up to 8 degrees around the target: a poor shot, to show an aim
+assist), `blind` takes the autopilot that only circles and fires straight ahead instead of the one that aims (the aiming one
 faces its attacker, so only the blind one shows how much damage comes from behind). `fair_stats.py` prints per log
 and per group: deaths per minute, the share of bot damage from the player's rear arc, deaths by a bot in the rear
 arc, deaths within 12 s of the spawn, the most bots on the player at once, and how often the cap, the rear rule,
 the arrival grace and the respite held a bot back, the player's own kills per minute and kills over deaths, and what
 the beginner's help did (the player's damage on bots and the part the scale added, hull points mended, repair pads
-taken). It works on any game log - also the one of a real match (`Saved\Logs\HypeCubeJam.log` of the host).
-Numbers: docs/DEVLOG_NOTES.md, items 29, 31 and 38.
+taken), and item 40's numbers (pads people took and how many by the Easy reach, armed spawns, people's bolts, assisted
+bolts, hit rates, people's torpedoes: fired, homing, found without a lock, lost, hit). It works on any game log - also the one of a real match (`Saved\Logs\HypeCubeJam.log` of the host).
+Numbers: docs/DEVLOG_NOTES.md, items 29, 31, 38 and 40.
 
 ## MCP (Unreal MCP server)
 

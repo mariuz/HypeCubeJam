@@ -141,8 +141,31 @@ public:
 	 * binary, for comparisons. Nothing else changes; the other levels have no such help to switch off.
 	 */
 	static bool IsClassicEasy();
-	/** The skill row of the difficulty in force, with what -HCJNoFair and -HCJClassicEasy switch off already cleared. */
+	/**
+	 * -HCJClassicEasy20: Easy without any of the beginner's help (items 38 and 40) - Easy as build 0.20.0 had it.
+	 * Item 40: -HCJClassicEasy now takes only the help of item 40 away (Easy of build 0.21.0); see also
+	 * -HCJClassicTorpedo (HCJTorpedo::IsClassicHoming), the torpedo of 0.21.0 for a person on every level.
+	 */
+	static bool IsClassicEasy20();
+	/** The skill row of the difficulty in force, with what -HCJNoFair, -HCJClassicEasy and -HCJClassicEasy20 switch off already cleared. */
 	FHCJBotSkill GetFairSkill() const;
+	/**
+	 * More help for a beginner (item 40; Easy only, "off" elsewhere and with the switches above): the reach within which
+	 * a person's ship takes a pad's item (uu, 0 = by touch only), the weapon a person's new ship holds (Count = none),
+	 * the aim assist of a person's shots (degrees, 0 = none), and whether the HUD points to a weapon pad.
+	 */
+	float GetHumanPickupReach() const { return FMath::Clamp(GetFairSkill().HumanPickupReach, 0.0f, 6000.0f); }
+	EHCJWeapon GetHumanSpawnWeapon() const { return GetFairSkill().HumanSpawnWeapon; }
+	float GetHumanAimAssistDeg() const { return FMath::Clamp(GetFairSkill().HumanAimAssistDeg, 0.0f, 15.0f); }
+	bool ShowsWeaponPadPointer() const { return GetFairSkill().bHumanWeaponPointer; }
+	/** Telemetry of item 40 (the "Fair: event=status" line): see FMatchStats. */
+	void NotifyHumanReachPickup() { ++MatchStats.HelpReachPickups; }
+	void NotifyHumanArmedSpawn() { ++MatchStats.HelpArmedSpawns; }
+	void NotifyHumanBolt(bool bAssisted) { ++MatchStats.HelpBolts; MatchStats.HelpAssistedBolts += bAssisted ? 1 : 0; }
+	void NotifyHumanBoltHit(bool bAssisted) { ++MatchStats.HelpBoltHits; MatchStats.HelpAssistedHits += bAssisted ? 1 : 0; }
+	void NotifyHumanTorpedoFired(bool bHoming, bool bAcquired) { ++MatchStats.HumanTorpFired; MatchStats.HumanTorpHoming += bHoming ? 1 : 0; MatchStats.HumanTorpAcquired += bAcquired ? 1 : 0; }
+	void NotifyHumanTorpedoLost() { ++MatchStats.HumanTorpLost; }
+	void NotifyHumanTorpedoDetonated(bool bHitShip) { MatchStats.HumanTorpHit += bHitShip ? 1 : 0; }
 	/** What a bot's damage to a human ship is multiplied by at this difficulty (1 with -HCJNoFair). */
 	float GetBotDamageToHumanScale() const;
 	/** Beginner's help (Easy; 1 / 0 / 1 elsewhere and with -HCJNoFair or -HCJClassicEasy): what a person's damage to a bot's ship is multiplied by, the hull points a second a person's ship mends out of combat, and what a repair pad's amount is multiplied by for a person. */
@@ -548,6 +571,25 @@ protected:
 		int32 HelpRepairs = 0;
 		float HelpRepairPoints = 0.0f;
 		int32 HelpHumanKills = 0;
+		/**
+		 * Item 40, summed over all human ships: pads people took (any way) and of them the ones taken from beyond the pad's
+		 * own trigger (the Easy reach), new ships that started with a weapon, the bolts people fired (one per pellet) and
+		 * of them the ones the aim assist turned, their bolts that hit a ship and of those the assisted ones; and people's
+		 * photon torpedoes (every level): fired, homing at launch, of those the ones that found a ship without a lock in
+		 * its cone, lost their target, damaged a ship.
+		 */
+		int32 HelpPickups = 0;
+		int32 HelpReachPickups = 0;
+		int32 HelpArmedSpawns = 0;
+		int32 HelpBolts = 0;
+		int32 HelpAssistedBolts = 0;
+		int32 HelpBoltHits = 0;
+		int32 HelpAssistedHits = 0;
+		int32 HumanTorpFired = 0;
+		int32 HumanTorpHoming = 0;
+		int32 HumanTorpAcquired = 0;
+		int32 HumanTorpLost = 0;
+		int32 HumanTorpHit = 0;
 	};
 	FMatchStats MatchStats;
 	float NextStatusLogTime = 0.0f;

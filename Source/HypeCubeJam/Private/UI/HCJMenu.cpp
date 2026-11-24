@@ -633,14 +633,14 @@ TSharedRef<SWidget> SHCJMenu::BuildMain()
 	// platform switch below: the web build has it too.)
 	Box->AddSlot().AutoHeight().Padding(Row)
 	[
-		MakeStepper(TEXT("Difficulty"), []() { return FString(DifficultyName(UHCJUserSettings::Get().BotDifficulty)); },
-			[](int32 Step) { UHCJUserSettings& S = UHCJUserSettings::Get(); S.BotDifficulty = FMath::Clamp(S.BotDifficulty + Step, 0, HCJBalance::NumBotDifficulties - 1); })
+		MakeStepper(TEXT("Difficulty"), []() { return FString(DifficultyName(UHCJUserSettings::Get().GetBotDifficulty())); },
+			[](int32 Step) { UHCJUserSettings& S = UHCJUserSettings::Get(); S.SetBotDifficulty(HCJBalance::StepDifficulty(S.GetBotDifficulty(), Step)); })
 	];
 	Box->AddSlot().AutoHeight().HAlign(HAlign_Center).Padding(FMargin(0.0f, 0.0f, 0.0f, 8.0f))
 	[
 		// (The page is not rebuilt when the stepper is pressed: the text follows the setting.)
 		SNew(STextBlock)
-		.Text_Lambda([]() { return FText::FromString(HCJBalance::GetDifficultyDescription(UHCJUserSettings::Get().BotDifficulty)); })
+		.Text_Lambda([]() { return FText::FromString(HCJBalance::GetDifficultyDescription(UHCJUserSettings::Get().GetBotDifficulty())); })
 		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 13))
 		.ColorAndOpacity(FSlateColor(MenuDim))
 	];

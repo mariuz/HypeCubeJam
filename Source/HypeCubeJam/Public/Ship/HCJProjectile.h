@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Ship/HCJTorpedo.h"
 #include "Ship/HCJWeapons.h"
 #include "HCJProjectile.generated.h"
 
@@ -97,6 +98,11 @@ public:
 	bool IsSpent() const { return bImpactPlayed; }
 	/** Every machine: the torpedoes alive in any world of this process (check GetWorld()). */
 	static const TArray<TWeakObjectPtr<AHCJProjectile>>& GetLiveTorpedoes();
+	/** Fired by a ship flown by a person (server: its controller; client: its player state is not a bot's). Decides how a torpedo homes (HCJTorpedo::GetHoming). */
+	bool IsFiredByHuman() const { return bHumanFirer; }
+	/** SERVER, before FinishSpawning: the shot was turned by the Easy aim assist of item 40 (telemetry only). */
+	void MarkAimAssisted() { bAimAssisted = true; }
+	bool IsAimAssisted() const { return bAimAssisted; }
 
 protected:
 	/** Bound to CollisionComp->OnComponentHit in the constructor. Applies damage on the server only. */
@@ -127,7 +133,10 @@ protected:
 
 	/** Server: nearest live ship other than the shooter inside the homing cone of the weapon, or null. */
 	AActor* FindHomingTarget() const;
-	/** Server, torpedoes: the firer's locked ship when it is alive, uncloaked, ahead inside the cone and in reach; else null. */
+	/**
+	 * Server, torpedoes: the firer's locked ship when it is alive, uncloaked, ahead inside the lock cone and in reach;
+	 * for a person's torpedo, failing that, the nearest such ship inside the acquisition cone (HCJTorpedo::PickTarget); else null.
+	 */
 	AActor* FindTorpedoTarget() const;
 	/** Server, torpedoes: HomingTarget is still something to steer for (HCJTorpedo::KeepsLock). */
 	bool TorpedoKeepsTarget() const;
@@ -176,6 +185,12 @@ protected:
 
 	/** Local: PlayImpactEffects already ran for this bolt. */
 	bool bImpactPlayed = false;
+
+	/** See IsFiredByHuman / IsAimAssisted (not replicated: each machine works the first out for itself). */
+	bool bHumanFirer = false;
+	bool bAimAssisted = false;
+	/** Torpedoes, every machine: how this one homes (from bHumanFirer and the weapon row, in BeginPlay). */
+	HCJTorpedo::FHoming TorpedoHoming;
 
 	/** Torpedoes, every machine: uu flown (counted in Tick). */
 	float DistanceTravelled = 0.0f;

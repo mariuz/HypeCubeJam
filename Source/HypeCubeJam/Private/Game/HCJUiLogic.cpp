@@ -478,3 +478,12 @@ int32 HCJUi::MarkerMetres(float Distance)
 	const int32 Metres = FMath::Max(FMath::RoundToInt32(Distance / 100.0f), 0);
 	return Metres <= 50 ? Metres : 5 * FMath::RoundToInt32(Metres / 5.0f);
 }
+
+int32 HCJUi::GuidePadRank(EHCJPickupItem Item, bool bLowHull, bool bWantWeapon)
+{
+	if (bLowHull)
+	{
+		return Item == EHCJPickupItem::Repair ? 2 : Item == EHCJPickupItem::ShieldCell ? 1 : 0;
+	}
+	return (bWantWeapon && HCJ::ItemToWeapon(Item) != EHCJWeapon::Count) ? 1 : 0;
+}

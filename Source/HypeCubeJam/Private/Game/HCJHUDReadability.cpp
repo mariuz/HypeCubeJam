@@ -857,7 +857,8 @@ void AHCJHUD::DrawRadar(const AHCJShipCharacter& Ship, const AHCJGameState& Game
 		}
 		const FVector2D P = Place(Pickup->GetActorLocation(), Height);
 		const EHCJItemKind Kind = HCJ::GetItemKind(Pickup->GetItem());
-		const float Pulse = bGuide ? 0.65f + 0.35f * FMath::Sin(static_cast<float>(World->GetTimeSeconds()) * 7.0f) : 0.95f;
+		// (Item 40: the weapon pad an Easy ship without a weapon is pointed to is ringed, but does not pulse.)
+		const float Pulse = (bGuide && Kind == EHCJItemKind::Health) ? 0.65f + 0.35f * FMath::Sin(static_cast<float>(World->GetTimeSeconds()) * 7.0f) : 0.95f;
 		const FLinearColor Color = Faded(HCJ::GetItemKindColor(Kind), Pulse);
 		const float S = Mark * (bGuide ? 1.5f : 1.0f);
 		DrawPickupIcon(Kind, static_cast<float>(P.X), static_cast<float>(P.Y), S, Color, bGuide ? 2.0f : 1.5f);

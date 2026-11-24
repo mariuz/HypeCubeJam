@@ -116,6 +116,8 @@ bool FHCJEosLobbyRowTest::RunTest(const FString& Parameters)
 		FHCJLobbyInfo Named = Lobby;
 		Named.Difficulty = Level;
 		TestTrue(TEXT("the row uses the names of the balance table"), Named.DescribeMapAndDifficulty().EndsWith(HCJBalance::GetDifficultyName(Level)));
+		FHCJLobbyInfo Read;
+		TestTrue(TEXT("every level goes over the wire"), FHCJLobbyInfo::FromAttributes(Named.ToAttributes(), Read) && Read.Difficulty == Level);
 	}
 	FHCJLobbyInfo NoBots = Lobby;
 	NoBots.Bots = 0;

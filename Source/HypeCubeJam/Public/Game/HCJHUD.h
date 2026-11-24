@@ -287,7 +287,7 @@ protected:
 	};
 	static constexpr int32 NumPickupLabels = 6;
 	FPickupLabel PickupLabels[NumPickupLabels];
-	/** Set by DrawPickupMarkers each frame: the health pad the HUD points at while the hull is low (the radar marks it too). */
+	/** Set by DrawPickupMarkers each frame: the pad the HUD points at - a health pad while the hull is low, on Easy a weapon pad while the ship has only its base weapon (item 40) - which the radar marks too. */
 	TWeakObjectPtr<const AHCJPickup> HealthGuidePad;
 
 	/** Map width at 1080p, in pixels: up to 16 sectors, and from 32 sectors on. */

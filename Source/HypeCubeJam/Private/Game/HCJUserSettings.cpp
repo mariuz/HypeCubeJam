@@ -4,6 +4,18 @@
 #include "Game/HCJPadLogic.h"
 #include "Ship/HCJShipTypes.h"
 
+int32 UHCJUserSettings::GetBotDifficulty() const
+{
+	return (bSuperEasy && BotDifficulty == 0) ? HCJBalance::SuperEasyDifficulty : FMath::Clamp(BotDifficulty, 0, 3);
+}
+
+void UHCJUserSettings::SetBotDifficulty(int32 Difficulty)
+{
+	const int32 Level = HCJBalance::NormalizeDifficulty(Difficulty);
+	bSuperEasy = Level == HCJBalance::SuperEasyDifficulty;
+	BotDifficulty = bSuperEasy ? 0 : Level;
+}
+
 void UHCJUserSettings::Sanitize()
 {
 	MouseSensitivity = FMath::Clamp(MouseSensitivity, 0.2f, 3.0f);
@@ -13,7 +25,8 @@ void UHCJUserSettings::Sanitize()
 	UiVolume = FMath::Clamp(UiVolume, 0.0f, 1.0f);
 	BotCount = FMath::Clamp(BotCount, 0, 15);
 	Dimension = FMath::Clamp(Dimension, 3, 5);
-	BotDifficulty = FMath::Clamp(BotDifficulty, 0, HCJBalance::NumBotDifficulties - 1);
+	BotDifficulty = FMath::Clamp(BotDifficulty, 0, 3);
+	bSuperEasy = bSuperEasy && BotDifficulty == 0;
 	MusicSet = FMath::Clamp(MusicSet, 0, 1);
 	ShipType = HCJShipTypes::SanitizeType(ShipType);
 	ShipVariant = (ShipVariant >= 0 && ShipVariant < HCJShipTypes::Get(ShipType).NumHulls) ? ShipVariant : -1;

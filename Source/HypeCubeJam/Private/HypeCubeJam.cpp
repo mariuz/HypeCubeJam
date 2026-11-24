@@ -1,4 +1,5 @@
 #include "HypeCubeJam.h"
+#include "Game/HCJPlayerController.h"
 
 #include "AudioMixerBlueprintLibrary.h"
 
@@ -38,6 +39,9 @@ namespace
  *   -HCJAutoWarp           with -HCJAutoFly: it also holds the warp key for six seconds of every twenty.
 	 *   -HCJAutoAim            with -HCJAutoFly: the nose follows the nearest other ship in sight (and locks it), so that
 	 *                          the autopilot scores - the playthrough tests want a client with kills and deaths.
+	 *   -HCJAutoAimError=<deg> with -HCJAutoAim: a poor shot - the nose wanders around the target by up to <deg> degrees
+	 *                          to each side (yaw; pitch 0.7 of it, two slow sine waves), so that an aim assist has
+	 *                          something to do (item 40).
 	 *   -HCJOrbit              the chase camera looks at the local ship from another side after every picture
 	 *                          (behind, right, front, left, ...), to check the facing of the ship mesh.
 	 *   -HCJCaptureCmd="..."   console command run once, together with the third picture (e.g. "ListTextures").
@@ -74,6 +78,8 @@ namespace
 		bool bAutoTorpedo = false;
 		bool bAutoWarp = false;
 		bool bAutoAim = false;
+		float AutoAimErrorDeg = 0.0f;
+		double AutoAimClock = 0.0;
 		double AutoFlyTime = 0.0;
 		bool bOrbit = false;
 		bool bTour = false;
@@ -200,8 +206,21 @@ namespace
 						}
 						if (Nearest != nullptr)
 						{
-							Aim = FMath::RInterpTo(Controller->GetControlRotation(), (Nearest->GetActorLocation() - Ship->GetActorLocation()).Rotation(), DeltaSeconds, 5.0f);
+							FRotator Wanted = (Nearest->GetActorLocation() - Ship->GetActorLocation()).Rotation();
+							if (AutoAimErrorDeg > 0.0f)
+							{
+								AutoAimClock += DeltaSeconds;
+								Wanted.Yaw += AutoAimErrorDeg * FMath::Sin(AutoAimClock * 0.9);
+								Wanted.Pitch += 0.7 * AutoAimErrorDeg * FMath::Sin(AutoAimClock * 1.3 + 1.0);
+							}
+							Aim = FMath::RInterpTo(Controller->GetControlRotation(), Wanted, DeltaSeconds, 5.0f);
 							Ship->SetLockTarget(Nearest);
+							// (The player controller hands the ship ITS target every frame, and that target is the HUD's
+							// auto target, which a headless run never draws: without this the lock would always be empty.)
+							if (AHCJPlayerController* Player = Cast<AHCJPlayerController>(Controller))
+							{
+								Player->SetAutoTarget(Nearest);
+							}
 						}
 					}
 					Controller->SetControlRotation(Aim);
@@ -340,6 +359,7 @@ public:
 			Capture->bAutoTorpedo = FParse::Param(FCommandLine::Get(), TEXT("HCJAutoTorpedo"));
 			Capture->bAutoWarp = FParse::Param(FCommandLine::Get(), TEXT("HCJAutoWarp"));
 			Capture->bAutoAim = FParse::Param(FCommandLine::Get(), TEXT("HCJAutoAim"));
+			FParse::Value(FCommandLine::Get(), TEXT("HCJAutoAimError="), Capture->AutoAimErrorDeg);
 			Capture->bOrbit = FParse::Param(FCommandLine::Get(), TEXT("HCJOrbit"));
 			Capture->bTour = FParse::Param(FCommandLine::Get(), TEXT("HCJTour"));
 			Capture->bSkyCam = FParse::Param(FCommandLine::Get(), TEXT("HCJSkyCam"));

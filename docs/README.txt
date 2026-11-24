@@ -8,7 +8,7 @@ Start:  HypeCubeJam.exe            plays a 10 s intro (any key, mouse button or 
                                     filling in, and the next player's QUICK PLAY finds it. The screen says
                                     what it is doing; Esc cancels. Without the online service it starts a
                                     local match against bots.
-                                    DIFFICULTY is the first row of the menu: Easy, Normal, Hard or Ace, with a
+                                    DIFFICULTY is the first row of the menu: Super Easy, Easy, Normal, Hard or Ace, with a
                                     line under it that says what the level does (see "Difficulty" below).
                                     PLAY hosts a match with bots (one click).
                                     HANGAR: choose your ship - type, hull and paint (see "Ship types").
@@ -105,11 +105,12 @@ drains the side it lands on (the bubble around the ship flares there); when a si
 that side go straight to the hull, so turn a fresh side to the enemy. A side comes back 4 s after its last hit.
 The target panel on the right shows the same four arcs for your target and which side faces you: aim for a weak one.
 Photon torpedoes: every ship carries a few (TORPEDOES at the bottom right: one pip each, a reload bar). Right mouse
-fires one; it flies slower than a bolt and steers a little for your target. A full shield facing stops most of it
+fires one; it flies slower than a bolt and steers for your target - the locked one, or with no lock the nearest ship
+in front of you - and leads it a little, turning hard to close in. A full shield facing stops most of it
 (the facing is gone, the hull barely scratched); through a facing that is down it nearly finishes a ship - so strip
 a side with the guns first, or put two on the same side. It arms after 12 m and has a small blast. A TORPEDOES pad
-restocks. When one is after you the screen says INCOMING TORPEDO and marks where it is: boost across its path (it
-turns slowly), or take it on a full side.
+restocks. When one is after you the screen says INCOMING TORPEDO and marks where it is: boost across its path (a
+bot's turns slowly), or take it on a full side. A torpedo that loses its target flies on straight.
 Phaser: the weapon every ship starts with. Hold the left mouse button: a beam that hits at once, bends a little
 towards an enemy near the crosshair and is strongest up close. It lands on the shield facing it touches. It drains
 the phaser bank (the bar under WEAPON, bottom right: about 4 s of beam, refilling when you let go); with the bank
@@ -146,11 +147,16 @@ about a second, when you take a hard hit, when rock gets in between or the targe
 one yourself (CAUGHT IN TRACTOR BEAM): hold Shift, or shoot the ship that holds you.
 A fresh ship has a 3 s spawn shield (lights shimmer white) until it fires, and it appears facing the nearest ship of its sector.
 Difficulty (first row of the menu; Easy is the default). The bots treat a human pilot by rules that depend on the level:
+  Super Easy  Easy with even more help: bots' hits on you do 40 % of their damage, yours on them one and a half times,
+          and your shots bend up to 5 degrees towards a ship. Bots go easy on you, your aim is helped a lot.
   Easy    One bot at a time. Slow, wide aim, and they come at you from the front. A bot that gets behind you holds its
           fire for 2.5 s first, bots leave you alone for 4 s after you appear in a sector and for 6 s after your
-          attacker is gone, their hits on you do 40 % of the damage, and they fire few torpedoes at you.
-          Your own hits on bots do one and a half times the damage. Your hull mends by itself, slowly, once nothing
+          attacker is gone, their hits on you do 45 % of the damage, and they fire few torpedoes at you.
+          Your own hits on bots do a third more damage. Your hull mends by itself, slowly, once nothing
           has hit you for 5 s (up to three quarters), and a REPAIR pad makes the ship whole.
+          Every new ship starts with a full SCATTER CANNON. Your shots bend up to 3 degrees towards the ship you have
+          locked, or the one nearest the crosshair (the phaser beam too). You take a pad's item by flying within
+          25 m of it. With only the phaser left, arrows on the screen show the way to the nearest weapon pad.
   Normal  Two on you at most. A moment's warning (1.2 s) before any fire from behind; left alone for 3.5 s after you
           appear in a sector and for 5 s after your attacker is gone; 55 % damage, fewer torpedoes.
   Hard    Three on you. Sharp aim, torpedo combos, scouts ambush from cloak; full damage.
@@ -163,14 +169,16 @@ Space stations (two wheels on an axle, with a mast and panels) have gun turrets 
 turrets can be destroyed.
 Bright ringed spheres are wormholes: shortcuts to far sectors (dashed lines on the map).
 Glowing pads hold pickups: repair, shield cell, overdrive (speed), quad damage, cloak cell, torpedoes, and four
-limited-ammo weapons (scatter cannon, rail shot, homing missiles, rapid pulse). Fly over a pad to take it.
+limited-ammo weapons (scatter cannon, rail shot, homing missiles, rapid pulse). Fly over a pad to take it (on Easy,
+flying within 25 m of it is enough).
 A filled pad has a tall column of light and a halo that can be seen across the sector, and a marker with its name
 and distance. The colour says what it is: GREEN (a cross) is health - repair or shield cell; AMBER (a diamond) is a
 weapon or torpedoes; MAGENTA (a triangle) is a power-up. The radar shows the same icons. When your hull is low the
 nearest REPAIR pad pulses inside a ring, and arrows at the edge of the screen point to it when it is out of view.
+On Easy, when you have only the phaser, the nearest weapon pad gets the ring and the arrows (without the pulse).
 Host options without the menu (append to the exe as one argument):
   "/Engine/Maps/Entry?listen?Seed=1234?Dim=4?Bots=8?Difficulty=0?Pickups=1?Wormholes=4?Stations=1"
-  (Difficulty: 0 easy, 1 normal, 2 hard, 3 ace)
+  (Difficulty: 0 easy, 1 normal, 2 hard, 3 ace, 4 super easy)
 
 Music: three tracks generated with Google Lyria (Gemini) - title menu, exploring, combat. SETTINGS can switch to the
 older layered stems. Sound effects (and those stems) are from Epic's "Lyra Starter Game". Volumes: SETTINGS in the menu.

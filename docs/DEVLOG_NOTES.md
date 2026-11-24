@@ -3077,8 +3077,273 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
       person in the browser, the forward tier, the 10-minute soak, sound by ear, a controller, the site on GitHub
       Pages itself, other browsers. `PackagedWeb\itch` and the itch zip are still the old build (item 28).
 
+## 24 Nov 2026 (twenty-fifth session) - Easy: start armed, take pads in passing, a light aim assist; torpedoes that close
+40. "Pickups easier to take, start each life with a weapon, a light aim assist" (Easy only), and from the player:
+    "photon torpedo should aim to close and follow the target" (a person's torpedo, every level). From commit ab397f9
+    (0.21.0, tree clean); this is **0.22.0**. No replicated property, no RPC, no lobby key changed (`ProjectVersion`
+    stays 0.2.0): the Easy help is the server's, the torpedo's target is chosen by the server and replicated as before,
+    and each machine works out by itself whether a torpedo is a person's (see C). Layout checksum of seed 1234
+    unchanged (7C0CB60C, playthrough suite). Nothing was committed, pushed or uploaded.
+    - **What the player's log says** (`F:\work\HCJ_push\play21\log_2026-11-24_easy_match.log`, build 0.21.0, Easy, 7
+      bots, 4.5 min; `fair_stats.py`): 1 kill / 4 deaths (K/D 0.25), each death from the front by one bot at 12 to 23 m
+      after 31 to 113 s; hull mended 153 points; **no pad taken** (`repairs=0`; the `own ship:` of all 18 status lines
+      is the PHASER; the "PhaserEmpty" and "Pickup" hints twice each) while the bots emptied the pads; damage on bots
+      581, of it 194 the Easy bonus. The pads of item 38 are seen - the player did not fly to them. The beginner
+      rarely hits, so the 1.5 x of item 38 multiplies little. Torpedoes of the whole match (all ships): 65 fired, 22
+      lost their target.
+    - **A. Easy: more help for a beginner** (`FHCJBotSkill`, four new fields after the item 38 ones, "off" on Normal,
+      Hard and Ace; `README.md`, "Bots and people", has the rows). Server only; bots among themselves and their own
+      aim untouched.
+      - *Pads in passing* (`HumanPickupReach` 2500 uu): the item of a filled pad goes to a person's ship within 25 m of
+        the pad (`AHCJShipCharacter::ServerTickPickupReach`, five times a second, through the pad's own
+        `AHCJPickup::ServerTryCollect` - now public and returning whether it was taken - so the rules are those of a
+        touch: a repair kit at full hull stays). The simplest thing that is safe on the network: nothing is pulled,
+        nothing moves, the pad goes dark and the ship's weapon / hull change as for a touch. Pads were 3.2 m of trigger
+        before (`CollectRadius`).
+      - *Start armed* (`HumanSpawnWeapon` = scatter cannon, `ServerGiveHumanStartWeapon` from `PossessedBy`): a
+        person's every new ship holds a full scatter cannon (16 shots of 10 pellets); the phaser comes back when it is
+        empty or dropped, as with a pad. Why the scatter cannon and not the rapid pulse: the player's duels were nose to
+        nose at 12 to 23 m, where ten pellets in a 4 degree cone cover an aim that is 2 to 4 degrees off (a ship's hit
+        sphere is 1.35 m: 4 degrees at 20 m); two shots that land break an Easy bot (with the 1.5 x of item 38); its
+        reach of about 100 m keeps a beginner from spending it on ships at the far end of the sector. The pulse needs
+        every bolt on the target and outlasts no better (11 s of fire against 10).
+      - *Aim assist* (`HumanAimAssistDeg` 5): a person's bolt leaves towards the lead point (`HCJ::ComputeLeadAim`) of
+        the locked ship, else of the ship nearest the crosshair, when that point lies within 5 degrees of the aim
+        (`ServerFireProjectile`, `HCJBalance::PickAimAssist` = the phaser's `PickAssistTarget` with one cone,
+        `AssistedAimDirection`); the scatter's pellets spread around the new direction as before. The server spawns the
+        bolt, so every machine sees it fly where it goes; a client's prediction is not involved (bolts are not
+        predicted). The phaser beam bends to a ship within 5 degrees (1.6 / 3 for everybody else). Bots never.
+      - *The way to a weapon* (`bHumanWeaponPointer`): while the ship has only its base weapon, item 38's pad pointer
+        (ring on the marker, three chevrons at the edge when it is out of view, ring on the radar) leads to the nearest
+        weapon pad - not the torpedoes; ringed but not pulsing, and a low hull still takes precedence with its repair
+        pad (`HCJUi::GuidePadRank`). The level is not replicated, so the HUD asks the authority game mode: **a host
+        and a single player get it, a remote client does not.**
+      - The Difficulty line: "One bot at a time, from the front. You start armed, your aim is helped." (71 characters;
+        the test allows 73). `docs/README.txt` says what Easy does now.
+      - Switches: `-HCJClassicEasy` now takes away the help of this item alone (`FHCJBotSkill::ClearBeginnerHelp`):
+        Easy as build 0.21.0 had it; tested field by field. `-HCJClassicEasy20` (`ClearAllBeginnerHelp`) also takes
+        item 38's away: Easy of 0.20.0. `-HCJNoFair` clears everything, as before.
+    - **B. Torpedoes that close** (a person's, every level; `HCJTorpedo::GetHoming`, `PickTarget`, `SteerPoint`; bots'
+      torpedoes unchanged, so Easy and Normal get no harder). Until now a torpedo homed only on its firer's lock, only
+      if that lay within 60 degrees at launch, turned 40 degrees a second and was lost for good beyond 60 degrees (the
+      coordinator quoted 110 / 40 from `HCJWeapons.cpp`; the `+Weapons=` row of `DefaultGame.ini` overrides them with
+      40 / 60). A person's torpedo now: the lock within 60 degrees, else **the nearest live, uncloaked ship within 40
+      degrees ahead** and 180 m; 180 degrees a second; it steers for where the target will be in up to 0.5 s; it keeps
+      the target within **80** degrees of its nose. A ship that turns hard across its path under boost still gets out
+      of the 80 degrees (unit test: a target at 85 degrees is lost). The server picks and drops the target
+      (`FindTorpedoTarget`, `TorpedoKeepsTarget`); every machine steers its copy with the same numbers, because each
+      works out `bHumanFirer` itself (server: the instigator's controller; client: the instigator's replicated player
+      state is not a bot's) - nothing new on the wire. A 0.21.0 client steers a new host's torpedo with the old rate
+      and gets corrected by the replicated movement. `-HCJClassicTorpedo` gives a person the bot's torpedo again.
+      The HUD warning reads the replicated `HomingTarget` as before.
+    - Found on the way: **in a headless run the player's lock is always empty.** `AHCJPlayerController` hands the ship
+      its own target every frame, and that target is the HUD's auto target, which a headless run never draws - so the
+      autopilot's `SetLockTarget` was overwritten, and the aiming autopilot of items 29 to 38 never fired a homing
+      torpedo or had a locked missile (in batch A below: 40 torpedoes of the "before" pilot, none homing). The
+      autopilot now also sets the controller's auto target (`HypeCubeJam.cpp`); batches B, C and the Normal batch ran
+      with that. A rendered game has the lock from the HUD (the player's log: 65 of 65 homing).
+    - Telemetry: `Fair: event=rules ... classic_easy20= pickup_reach= spawn_weapon= aim_assist= weapon_pointer=
+      classic_torpedo=`; `Fair: event=status ... human_pickups= reach_pickups= armed_spawns= human_bolts=
+      assisted_bolts= human_bolt_hits= assisted_hits= torp_fired= torp_homing= torp_acquired= torp_lost= torp_hit=`
+      (pads people took and of them from beyond a touch, armed spawns, people's bolts - one per pellet - and how many
+      the assist turned, their bolts that hit a ship and of those the assisted ones; people's torpedoes: fired, homing
+      at launch, of them found without the lock, lost their target, damaged a ship). `fair_stats.py` prints them;
+      `fair_matches.py` has `classic` (= `-HCJClassicEasy -HCJClassicTorpedo`, the game of 0.21.0), `classic20` and
+      the pilot `poor<deg>`.
+    - **A poor shot for the measurement** (`-HCJAutoAimError=<deg>`): the aiming autopilot's nose wanders around its
+      target by up to <deg> degrees to each side (yaw; pitch 0.7 of it; two slow sine waves, so it is sometimes on,
+      mostly off). With 8 degrees it still has 1.45 kills a death on 0.21.0 Easy, with 15 degrees 0.50 - the player had
+      0.25.
+    - **Measured** (`fair_matches.py` as in items 29 to 38: one autopilot against seven bots, `?Bots=8`, seed 99, no
+      limits, 245 s a process, six at a time, three "before" and three "after" side by side, headless editor binary;
+      "before" = the same binary with `-HCJClassicEasy -HCJClassicTorpedo`, i.e. 0.21.0; logs `Saved\Fair\item40_a`,
+      `_b`, `_c`, `item40_normal`). Batch A ran before the lock fix above (no lock at all), B and C after it.
+
+      | Easy | matches / min | kills (a minute) | deaths (a minute) | K/D | own damage on bots | pads taken (by reach) | bolts / hit % / assisted (hit %) | people's torpedoes fired / homing (no lock) / lost / hit a ship |
+      |---|---|---|---|---|---|---|---|---|
+      | poor shot 8 deg, before (B) | 3 / 12.2 | 16 (1.31) | 11 (0.90) | 1.45 | 4208 | 1 (0) | 2730 / 6.3 % / - | 53 / 14 (0) / 11 / 3 (6 %) |
+      | **poor shot 8 deg, after (B)** | 3 / 12.2 | **33 (2.69)** | **4 (0.33)** | **8.25** | 6541 | **10 (10)** | 3624 / 6.9 % / 272 (76.5 %) | 28 / 19 (8) / 3 / 15 (54 %) |
+      | poor shot 15 deg, before (C) | 3 / 12.2 | 7 (0.57) | 14 (1.15; 12 by bots, 2 by turrets) | 0.50 | 2654 | 2 (0) | 2630 / 3.8 % / - | 65 / 26 (0) / 21 / 3 (5 %) |
+      | **poor shot 15 deg, after (C)** | 3 / 12.2 | **23 (1.88)** | **7 (0.57)** | **3.29** | 4705 | **6 (6)** | 3830 / 4.5 % / 168 (76.8 %) | 40 / 21 (8) / 3 / 18 (45 %) |
+      | poor shot 8 deg, no lock, before (A) | 3 / 12.2 | 13 (1.06) | 7 (0.57) | 1.86 | 4296 | 0 | 2873 / 6.4 % / - | 40 / 0 / 0 / 0 |
+      | poor shot 8 deg, no lock, after (A) | 3 / 12.2 | 31 (2.54) | 9 (0.74; 2 in a black hole, 1 turret) | 3.44 | 6705 | 12 (12) | 3702 / 6.1 % / 258 (81.0 %) | 48 / 24 (24) / 2 / 19 (40 %) |
+
+      Per match (kills / deaths): B before 7/4, 4/4, 5/3, after 9/1, 13/2, 11/1; C before 1/7, 6/3, 0/4, after
+      10/4, 7/2, 6/1; A before 2/4, 3/2, 8/1, after 8/2, 12/3, 11/4. Every "after" match of B and C has more kills
+      than the best "before" match of its batch but one (C: 6 against 6).
+
+      | Normal, aiming autopilot (torpedo only; the Easy help is off there) | matches / min | kills (a minute) | deaths (a minute) | K/D | people's torpedoes fired / homing (no lock) / lost / hit a ship |
+      |---|---|---|---|---|---|
+      | before (`-HCJClassicTorpedo`) | 3 / 11.8 | 6 (0.51) | 28 (2.37) | 0.21 | 118 / 47 (0) / 35 / 9 (8 %) |
+      | after | 3 / 11.9 | 18 (1.51) | 32 (2.69) | 0.56 | 140 / 92 (30) / 11 / 73 (52 %) |
+
+      - Read. For the pilot nearest to the player (15 degrees, 0.50 kills a death on 0.21.0 Easy) kills a minute
+        rise 3.3 times and deaths a minute halve: K/D 0.50 -> 3.29. For the 8 degree pilot 1.45 -> 8.25: for anybody
+        who can aim a little, Easy is now one-sided. Small numbers: 4 to 14 deaths per group (+- a third).
+      - Where it comes from. The share of bolts that hit hardly moves (6.3 -> 6.9 %, 3.8 -> 4.5 %): only 7 and 4 % of
+        this pilot's bolts were within the 5 degree cone of a ship - most of its fire goes at nothing - but of those
+        three in four hit. The damage it does rises by half (+55 %, +77 %), its kills two to three times: the scatter
+        cannon at the start of each life, the assisted bolts and the torpedoes (a person's torpedo damaged a ship in
+        45 to 54 % of the shots instead of 5 to 6 %; lost 3 instead of 11 to 21). The three were not measured apart.
+      - Pads: the autopilot does not fly to pads (it follows ships); it took 0 to 2 in three matches before and 6 to 12
+        after, every one of them from beyond a touch. Every new ship started armed (`armed_spawns` = spawns).
+      - Normal: the torpedo change alone triples the aiming pilot's kills (6 -> 18; 73 of 140 torpedoes hit against 9
+        of 118) - more than asked ("dodgeable ... not a guaranteed hit": half of them hit a bot). Deaths a minute
+        2.37 and 2.69 are inside each other's noise (item 31 measured 2.69); Normal's rules are untouched (the
+        `Fair: event=rules` line of a Normal match is item 38's plus `classic_easy20=0 pickup_reach=0 spawn_weapon=none
+        aim_assist=0.0 weapon_pointer=0 classic_torpedo=0|1`; `armed_spawns=0`, `assisted_bolts=0`, `reach_pickups=0`
+        in all six).
+      - No error line in the 24 logs; no `stuck` / `out_of_bounds` / `nan` event.
+    - **Tests.** Three new automation tests - `HypeCubeJam.Balance.BeginnerArmsAndAim` (Easy alone has the four, the
+      0.21.0 switch gives back Easy's row field by field and changes no other level, the 0.20.0 switch, the pickup reach,
+      the aim assist's choice: locked ship first, nearest to the aim, cone, range), `HypeCubeJam.Torpedo.HumanHoming`
+      (a person's torpedo against a bot's: rates and cones, the target at launch with and without a lock, keep and lose,
+      the lead, and a crossing target at 60 m: a person's passes it at 25 uu, a bot's at 717 uu),
+      `HypeCubeJam.UI.GuidePad` (which pad the pointer leads to) - and the changed checks of `Balance.BotDifficulty`
+      and `Balance.BeginnerHelp` (the classic switch of item 38 is `ClearAllBeginnerHelp` now). **87 automation tests:
+      87 of 87**, exit code 0, twice (`Saved\Item40\tests1.log`; `tests2.log` on the final binary). The runs log an
+      engine ensure that was not there in item 38 (see Packaged).
+    - **Verification.** `HypeCubeJamEditor` (Win64 Development) built, 0 errors, 0 warnings of the project (twice; the
+      second time for the autopilot's lock).
+      - Playthrough suite, editor binary, headless, `--port 7910`: **8 of 8**, 523 s, exit code 0
+        (`Saved\Playthrough\20261124_113819`): match 1 won with 5 kills after 45 s, layouts 7C0CB60C -> 5671F10D; 61 /
+        77 / 63 kills on easy / normal / hard, 62 / 71 / 67 pickups; 100 kills on four sectors; network scenario client
+        1 kill / 4 deaths (3.3 corrections per 100 s), late joiner 1 / 1, 4 rocks destroyed; the autopilot player 16
+        kills / 0 deaths as a cruiser over four matches (Normal: its torpedoes home now); kills by weapon phaser 152,
+        torpedo 86, pulse 51, blaster 47, missiles 44, rail 42, scatter 31.
+      - **Packaged** (the command of the README). First run (`Saved\Item40\bcr.log`): exit code 25, **BUILD FAILED** -
+        `LogInit: Display: Failure - 29 error(s), 0 warning(s)` after "Packages Cooked: 1081, ... Skipped by Platform:
+        29, Total Packages: 1110". The 29 "errors" are the lines of one engine ensure, verbatim: `Ensure condition failed:
+        !DefaultDomain.IsValid() [File:...\AssetReferenceRestrictions\Private\AssetReferencingDomains.cpp] [Line: 101]`
+        / `Registered the path /ToolsetRegistry/ for two different domains: Plugin:ToolsetRegistry and Never Cooked
+        Content`. Not this item's: **the engine was updated on 22 Nov** (`Engine\Build\Build.version`: CL 60351404 ->
+        60738873; `Plugins\Fab\Fab.uplugin` of the same evening), and the same ensure is in the automation run's log.
+        Second run with `-IgnoreCookErrors` appended (`bcr2.log`): exit code 0, BUILD SUCCESSFUL (99 s; the same cook
+        numbers, 1095 packages in item 38). The README says so now. `docs\tools\make_zip.ps1` (exit code 0):
+        `Packaged\mariuz_HypeCubeJam.zip` **591.8 MB (620,524,820 bytes)**, 902.8 MB unpacked, 48 files; `python -I` /
+        `zipfile.testzip()`: nothing wrong, 48 entries, forward slashes, no `.pdb`; its `README.txt` has the new Easy
+        lines. Against 0.21.0's stage: `HypeCubeJam.exe` 367.5 MB (348.8; the engine update), the `.ucas` +0.3 MB.
+      - Playthrough suite on the packaged build (`--binary packaged --port 7940`, headless): **8 of 8**, 490 s, exit
+        code 0 (`Saved\Playthrough\20261124_115859`): 52 / 59 / 65 kills on easy / normal / hard, 87 on four sectors,
+        client 2 kills / 3 deaths (4.2 corrections per 100 s), late joiner 3 / 3, 5 rocks destroyed, the autopilot
+        player 12 kills / 1 death as a cruiser over four matches; layouts 3976D716 -> C9934379 (the packaged build's
+        checksums, as in item 38's join test).
+      - **0.21.0 and 0.22.0 together.** (1) The packaged builds, as item 38 did it (0.21.0 = a copy of item 38's zip
+        stage; headless, Easy, 6 bots, both on the aiming autopilot; `Saved\Item40\join`): **neither joins the other.**
+        Verbatim, both ways: `LogNet: Error: Server is incompatible with the local version of the game:
+        RemoteNetworkVersion=2073374098 vs LocalNetworkVersion=4290060557` (and the reverse), `FailureType =
+        OutdatedClient`. The logs give the reason: `Net CL: 60351404` (0.21.0) against `Net CL: 60738873` (0.22.0) -
+        the engine update above; the engine's network changelist is part of the network version. So **the published
+        0.21.0 (web build) and 0.20.0 (itch) cannot play with a build made on this engine**, whatever its source. (2) To
+        check this item's own changes: the source of 0.21.0 (commit ab397f9, a temporary git worktree in
+        `F:\work\HCJ_old021`, the asset packs linked in, removed afterwards) built as an editor binary on the current
+        engine, against this build's editor binary (headless, 110 s of host, 70 s of client, Seed=1234, Easy, 6 bots;
+        `Saved\Item40\join_editor`). New host, 0.21.0 client: `Player joined ... (remote) -> 2 humans, 4 bots`, the
+        client has `ship=1`, the host's layout checksum (7C0CB60C), 5 kills / 0 deaths; the host applied the new help
+        to the remote ship (`armed_spawns=3 reach_pickups=2 assisted_bolts=82`, 53 of its 59 bolt hits assisted;
+        `torp_fired=12 torp_homing=7 torp_acquired=4` - the 0.21.0 client steered those torpedoes at its own, old rate
+        between corrections). 0.21.0 host, new client: joined, `ship=1`, same checksum, 1 kill / 0 deaths. Exit code 0
+        of all four processes, no error line. No replicated property, RPC or lobby key was changed.
+    - **Amended: Easy toned down, the first numbers kept as "Super Easy"** (same item, still 0.22.0). The player played
+      the package above on Easy (`F:\work\HCJ_push\play22\log_easy_match.log`, 5.9 min, 7 bots): **16 kills, 1 death**
+      (2.70 kills a minute), 7 pads (all by reach), 641 bolts of which 226 assisted, 67 hits of which **64 assisted**,
+      11 torpedoes / 8 homing / 7 hit, own damage 1815 (605 the bonus), hull mended 212, one repair pad - on 0.21.0 the
+      same player had 1 / 4. "Tone it down"; the coordinator's target: about 2 to 4 kills per death and a death every
+      1.5 to 2 minutes. And: "add as option super easy".
+      - **Easy now**: aim assist **3 degrees** (was 5; the phaser bends 3 degrees too, the lock's value for everybody),
+        a person's hits on a bot **1.35 x** (1.5), a bot's hits on a person **45 %** (40 %). Kept: 25 m reach, the
+        scatter cannon at the start, the weapon pointer, hull mending, the full repair pad, the person's torpedo (all
+        levels). Chosen with the poor-aim pilots (development overrides `-HCJEasyAssist= -HCJEasyHumanDamage=
+        -HCJEasyBotDamage=`, `fair_matches.py --extra`): 3 degrees with 1.25 / 0.5 gave K/D 1.62 (8 degree pilot) and
+        1.44 (15 degree pilot) over six matches each, a death every 1.2 to 1.4 min - too hard; 1.35 / 0.45 below.
+        `-HCJClassicEasy` sets the two damage scales back to 0.21.0's 1.5 / 0.4 as well (tested).
+      - **Super Easy** = Easy with the first numbers of this item: 5 degrees, 1.5 x, 40 % (`FHCJBotSkill::Get(4)`:
+        Easy's row with those three; `HCJBalance::SuperEasy*`). Its line: "Bots go easy on you, your aim is helped a
+        lot, you start armed." (63 characters). **It is index 4, not 0**: 0..3 keep their meaning everywhere they are
+        stored or sent - `?Difficulty=` (4 = Super Easy now; an older build clamps a 4 to Ace, which only a typed URL
+        can do), the saved settings (`BotDifficulty=0` + new `bSuperEasy=True`, so an older build on the same PC reads
+        Easy), the lobby attribute `HCJDIFF` (4; an older build accepts 0..3 only and shows the row without a level - and
+        cannot join anyway, see the engine update), the logs (`difficulty=4 level=super_easy`; `HCJBalance::GetDifficultyKey`).
+        In the menu it comes first: `HCJBalance::StepDifficulty` / `GetMenuOrder` (Super Easy, Easy, Normal, Hard,
+        Ace; held at both ends), used by the title-menu stepper, the in-match stepper and `HCJMenuCmd difficulty`.
+        Its bots use Easy's tables (`GetSkillLevel` for the torpedo skill, `IsEasyLevel`); `NumBotDifficulties` = 5 and
+        `NormalizeDifficulty` keep any other number clamped to 0..3 as before (12 is still Ace).
+      - Tests (still 87; new checks in `Balance.BotDifficulty` - five levels, names, the log key, the menu order and
+        stepping, Easy's 0.45 - in `Balance.BeginnerArmsAndAim` - Super Easy's three numbers, otherwise Easy's row
+        field by field, its 0.21.0 switch = 0.21.0's Easy; 0.21.0's damage scales - and in `Online.LobbyRowExtras` every level
+        0..4 goes over the lobby wire): **87 of 87**, exit code 0, twice (`Saved\Item40\tests3.log` with 1.25 / 0.5,
+        `tests4.log` on the final binary).
+      - **Measured** (as above: one poor-aim autopilot against seven bots, seed 99, 245 s a process, six at a time,
+        headless editor binary; "0.21.0" is batches B and C above; Easy = the final numbers, two batches of three
+        each per pilot, `Saved\Fair\item40_t2` (by the overrides, same numbers) and `item40_easy3` (final binary);
+        Super Easy one batch, `item40_super`).
+
+        | pilot | level | matches / min | kills (a minute) | deaths (a minute; a death every) | K/D | own damage | pads (by reach) | bolts / assisted (hit %) | person's torpedoes fired / hit a ship |
+        |---|---|---|---|---|---|---|---|---|---|
+        | poor 8 deg | Easy of 0.21.0 | 3 / 12.2 | 16 (1.31) | 11 (0.90; 1.1 min) | 1.45 | 4208 | 1 (0) | 2730 / - | 53 / 3 |
+        | poor 8 deg | **Easy now** | 6 / 24.4 | **47 (1.93)** | **15 (0.61; 1.6 min)** | **3.13** | 11020 | 11 (11) | 7689 / 215 (82 %) | 90 / 50 |
+        | poor 8 deg | **Super Easy** | 3 / 12.2 | 49 (4.01) | 1 (0.08) | 49 | 8496 | 5 (5) | 3288 / 359 (86 %) | 22 / 10 |
+        | poor 8 deg | (first 0.22.0 Easy, batch B) | 3 / 12.2 | 33 (2.69) | 4 (0.33) | 8.25 | 6541 | 10 (10) | 3624 / 272 (77 %) | 28 / 15 |
+        | poor 15 deg | Easy of 0.21.0 | 3 / 12.2 | 7 (0.57) | 14 (1.15; 0.9 min) | 0.50 | 2654 | 2 (0) | 2630 / - | 65 / 3 |
+        | poor 15 deg | **Easy now** | 6 / 24.4 | **21 (0.86)** | **16 (0.66; 1.5 min)** | **1.31** | 5794 | 21 (21) | 7678 / 130 (68 %) | 93 / 39 |
+        | poor 15 deg | **Super Easy** | 3 / 12.2 | 20 (1.63) | 4 (0.33) | 5.00 | 5275 | 14 (14) | 3730 / 181 (80 %) | 31 / 16 |
+        | poor 15 deg | (first 0.22.0 Easy, batch C) | 3 / 12.2 | 23 (1.88) | 7 (0.57) | 3.29 | 4705 | 6 (6) | 3830 / 168 (77 %) | 40 / 18 |
+
+        Per match, Easy now (kills / deaths): 8 degrees 7/2, 10/4, 3/2, 13/2, 5/3, 9/2; 15 degrees 2/4, 5/1, 5/2, 4/4,
+        4/3, 1/2. Super Easy: 8 degrees 17/0, 17/0, 15/1; 15 degrees 6/1, 7/1, 7/2.
+      - Read. Easy now lands inside the target for the 8 degree pilot (K/D 3.1, a death every 1.6 min) and below it for
+        the 15 degree pilot (1.3, every 1.5 min) - which still has 2.6 times its K/D of 0.21.0. The player hit 64 of 67
+        with the assist and fought like the better of the two pilots (16 / 1 on the first numbers, where the 8 degree
+        pilot had 33 / 4 and 49 / 1), so the 8 degree row is the nearer guess for them. The assisted bolts: the 3 degree
+        cone turned 215 of the 8 degree pilot's bolts in 24 minutes, 5 degrees 272 and 359 in 12 minutes each - about
+        a third as many a minute - and they still hit 68 to 82 %. Super Easy reproduces the first numbers' direction (one-sided for the 8 degree pilot; 49 / 1 against
+        33 / 4 in batch B - three matches each say little), and gives the 15 degree pilot K/D 5. No error line, no
+        `stuck` / `out_of_bounds` / `nan` in the 24 logs of these runs (with the 1.25 / 0.5 batches).
+      - Built again (editor, 0 errors), packaged again with `-IgnoreCookErrors` (`Saved\Item40\bcr4.log`: exit code 0,
+        BUILD SUCCESSFUL; the same 29 lines of the engine ensure, nothing else). `make_zip.ps1` (exit code 0):
+        `Packaged\mariuz_HypeCubeJam.zip` **591.8 MB (620,526,099 bytes)**, 902.8 MB unpacked, 48 files; `testzip`
+        nothing wrong, forward slashes, no `.pdb`; its `README.txt` has Super Easy and the 45 %; the exe holds both new
+        menu lines. Playthrough suite on this package (`--binary packaged --port 7940`, headless): **8 of 8**, 490 s,
+        exit code 0 (`Saved\Playthrough\20261124_132537`): 64 / 69 / 78 kills on easy / normal / hard, 90 on four
+        sectors, client 2 / 1 (7.9 corrections per 100 s), late joiner 3 / 2, the autopilot player 8 kills / 1 death
+        over three matches as a cruiser. The editor-binary suite and the cross-join were not run again after the
+        amendment (no replicated property, RPC or lobby key changed by it; the lobby attribute HCJDIFF now carries 4
+        for Super Easy - see above).
+    - Development aids added: `-HCJClassicEasy` (new meaning: 0.21.0's Easy), `-HCJClassicEasy20`,
+      `-HCJClassicTorpedo`, `-HCJAutoAimError=<deg>`, `-HCJEasyAssist= -HCJEasyHumanDamage= -HCJEasyBotDamage=`
+      (Easy and Super Easy, development builds), `fair_matches.py` `classic` / `classic20` / `poor<deg>` / `--extra`,
+      difficulty 4, the item 40 columns and the level names of `fair_stats.py`.
+    - Pictures: none. Every picture of this game needs a rendered window, and the PC was in use; everything above ran
+      headless.
+    - **Not verified.**
+      - Nobody has played the amended build. The player played the first one (16 / 1 on Easy: far too easy); Easy was
+        then tuned with an autopilot that aims badly by a sine wave, and a person misses differently (late, behind a
+        turning ship, at the wrong ship). Easy is now 3.1 kills per death for the 8 degree pilot and 1.3 for the 15
+        degree one (six matches each, 15 and 16 deaths: +- a quarter); where the player lands is a guess.
+      - Super Easy was measured in one batch of three matches per pilot. The menu row with five entries, its new first
+        entry and its line were not seen on a screen (the stepper's order is unit-tested).
+      - The weapon pointer, the reach and the start weapon were not seen on a screen (no pictures, no rendered run):
+        whether the ring and chevrons on a weapon pad are noticed, or annoying, is open. They are drawn by the code of
+        item 38's low-hull pointer, which was seen in pictures then. A remote client on Easy gets no weapon pointer (the
+        level is not replicated); the reach, the start weapon and the aim assist work for it (server).
+      - Pads taken from 25 m vanish without a sign on the ship's side other than the usual pickup sound at the pad and
+        the HUD's pickup line; a pad's item is not seen flying to the ship.
+      - The aim assist was measured by its counters, not seen: from a person's view a bolt that leaves 5 degrees off the
+        crosshair may look odd (3 degrees on Easy now, 5 on Super Easy). Its lead uses the target's velocity at the moment of the shot.
+      - The torpedo change makes a person's torpedo hit bots in half the shots on Easy and Normal; against people in a
+        network match (every level) it is equally strong, and it was not tried whether a person can dodge it (the unit
+        test only says a target beyond 80 degrees is lost). Hard and Ace: by the code and the unit tests only.
+      - The three parts of the Easy help (start weapon, assist, torpedo) were not measured one at a time.
+      - The old autopilot numbers of items 29 to 38 were measured without a lock (see above): their missiles and
+        torpedoes did not home. Comparisons with them are off by that.
+      - The web (Wasm) build was not compiled (no Windows-only code was added).
+      - The engine update of 22 Nov: 0.22.0 cannot join or host 0.21.0 / 0.20.0 builds (network version). Not tried:
+        whether FIND GAMES / QUICK PLAY list such hosts as joinable (the lobby compares the project version, which is
+        still 0.2.0) - a player of the old build would then see a failed join. The ensure in the cook was not looked
+        into beyond reading it (engine / Fab plugin code).
+
 ## Measurements
-- Automation tests: 9 at the start, 84 now (item 38: 84 of 84; item 36: 81 of 81; items 33 and 34: 77 of 77), all passing (added: the beginner's help of Easy, the kinds / light columns of the pads and the pad markers of the HUD; the game controller - aim stick, switch, menu focus, prompt names -; the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
+- Automation tests: 9 at the start, 87 now (item 40: 87 of 87; item 38: 84 of 84; item 36: 81 of 81; items 33 and 34: 77 of 77), all passing (added: the start weapon, pickup reach and aim assist of Easy, a person's torpedo homing, the pad pointer; the beginner's help of Easy, the kinds / light columns of the pads and the pad markers of the HUD; the game controller - aim stick, switch, menu focus, prompt names -; the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station
   placement, lead aim).
 - Frame rate (editor binary, -game, 8 s averages): 101-128 fps with basic shapes (`-HCJNoAssets`), 98-129 fps
@@ -3089,6 +3354,15 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
   also with basic shapes only.
 
 ## Not done / open
+- Item 40 (Easy: start armed, pads from 25 m, a 3 degree aim assist, the pointer to a weapon pad; the new level Super
+  Easy with the first, stronger numbers; a person's torpedo that acquires and closes, every level; packaged as
+  `Packaged\mariuz_HypeCubeJam.zip`): the player played the first version (16 kills / 1 death on Easy: "tone it down");
+  **nobody has played the amended one**, and nothing of it was seen on a screen (no pictures). Measured with an
+  autopilot made to aim badly: K/D on Easy 1.45 -> 3.13 (8 degree wander) and 0.50 -> 1.31 (15 degrees), a death every
+  1.6 / 1.5 min; Super Easy 49 and 5.0. A person's torpedo hits in about half the shots instead of one in twenty, also
+  on Normal (aiming pilot: kills 6 -> 18 in three matches). Whether Easy is now right for the player is open. The weapon pointer is not shown on a remote client. **0.22.0 cannot play with 0.21.0 / 0.20.0 builds** (the
+  engine was updated on 22 Nov; network version), and the README's packaging command needs `-IgnoreCookErrors` since
+  that update.
 - Item 38 (Easy for a beginner, pads that can be seen; packaged as `Packaged\mariuz_HypeCubeJam.zip`): **nobody has
   played it.** Easy was measured with the aiming autopilot only (kills over deaths 1.33 -> 4.14, deaths a minute 0.99
   -> 0.58, twelve matches of four minutes), which aims far better than the player it was made for; whether Easy is

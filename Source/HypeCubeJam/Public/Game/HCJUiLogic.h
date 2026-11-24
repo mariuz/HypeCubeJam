@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Ship/HCJWeapons.h"
 
 /** Kill-streak callouts of the local player. */
 enum class EHCJStreak : uint8
@@ -133,6 +134,12 @@ namespace HCJUi
 	inline constexpr float LowHullFraction = 0.35f;
 	/** Pads of the sector that get a marker at most (the nearest ones). */
 	inline constexpr int32 MaxPickupMarkers = 6;
+	/**
+	 * Which pad the HUD's pointer leads to (items 38 and 40): the rank of a filled pad holding Item, 0 = never. On a low
+	 * hull a REPAIR pad (2) before a SHIELD cell (1); otherwise, when bWantWeapon (Easy, the ship has only its base
+	 * weapon), a pad with a pickup weapon (1; not the torpedoes). Among equal ranks the nearest wins. Pure.
+	 */
+	HYPECUBEJAM_API int32 GuidePadRank(EHCJPickupItem Item, bool bLowHull, bool bWantWeapon);
 	/** Strength of the marker of a pad at the far end of the sector (still readable). */
 	inline constexpr float PickupMarkerFarStrength = 0.7f;
 
