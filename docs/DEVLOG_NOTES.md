@@ -3342,6 +3342,59 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
         still 0.2.0) - a player of the old build would then see a failed join. The ensure in the cook was not looked
         into beyond reading it (engine / Fab plugin code).
 
+## 24 Nov 2026 (twenty-sixth session) - web build of 0.22.0 rebuilt
+41. The web (Wasm) build made again from commit 895d185 (0.22.0, Super Easy, a gentler Easy, torpedoes that follow;
+    tree clean) by item 28's procedure, as in items 35, 37 and 39 - the first web build on the engine of 22 Nov.
+    Nothing was committed, pushed or uploaded.
+    - Package: `PackagedWeb\Ship` deleted, then the Shipping BuildCookRun of item 28. **First run failed in the
+      cook** (log kept as `PackagedWeb\logs\bcr_ship7_cookfail.log`): compile, link and wasm-opt 867 s (exit code 0;
+      the game module and the engine's web libraries were linked again after the engine update), then the cook ran to
+      "Cooked packages 1110 Packages Remain 0" and still ended `ExitCode=1`, "Cook failed.", UAT exit code 25
+      (`Error_UnknownCookFailure`), 30 min 29 s. Its only error lines are the engine ensure seen in the Windows
+      packaging of item 40: `Ensure condition failed: !DefaultDomain.IsValid()` (`AssetReferencingDomains.cpp`,
+      line 101), "Registered the path /ToolsetRegistry/ for two different domains: Plugin:ToolsetRegistry and Never
+      Cooked Content". **Second run with `-IgnoreCookErrors` added** (otherwise the same command; log
+      `PackagedWeb\logs\bcr_ship7.log`): exit code 0, BUILD SUCCESSFUL, 7 min 50 s (the build was up to date, 2 s;
+      the cook 47 s - its summary "Failure - 29 error(s), 0 warning(s)", all 29 lines the same ensure and its stack;
+      the rest staging, pak / iostore and Brotli). Cook: 1110 packages, 1047 cooked, 63 skipped for the platform
+      (1095 / 1032 / 63 before: the updated engine brings 15 more packages). One warning in the logs, the linker's
+      known `-pthread + ALLOW_MEMORY_GROWTH` line. Wall time of both runs together about 38 min. **Until the ensure is
+      fixed in the engine, the web BuildCookRun needs `-IgnoreCookErrors`, as the Windows one does.**
+    - Stage `PackagedWeb\Ship\Wasm`: 55 files, 298 586 461 bytes with the `.br` copies; 33 files, 266 366 548 bytes
+      without them (56 / 300 794 564 and 33 / 261 676 413 in item 39: one `.br` copy fewer). Wasm **146 955 416
+      bytes** (27.4 MB as Brotli; +4 460 834 bytes against item 39, mostly the updated engine), container `.ucas`
+      **99 548 096 bytes** (+55 776; **451 904 bytes under 100 000 000**), pak 9 287 513.
+    - `check_stage.py`: all passed, release scan 0 findings (1 warning, the stock engine font path).
+      `web_secret_scan.py` with UnrealPak: 55 staged files and 1145 extracted files (93 ini; 1077 / 84 before), 0
+      hits, RESULT clean.
+    - Browser (harness, off-screen Chrome, deferred tier, `hcj_click_play`, fixture unchanged):
+      `PackagedWeb\runs\ship7_deferred` (engine server, port 8090): PASS, READY after 8.5 s, 0 WebGPU errors, no
+      error line in the console log (3 warnings, Chrome's `powerPreference` note, as before; one log line "the browser
+      refused pointer lock (WrongDocumentError)", new on this engine, not an error); `title.png` shows Difficulty
+      **Easy** (the default) with its line "One bot at a time, from the front. You start armed, your aim is helped.";
+      `match_a..c.png` show a 4-D match with bots, the player's Fighter holding the SCATTER CANNON from the start (16
+      shots), torpedoes READY, a SHIELD pad column, the hypercube map and the kill feed, the player's ship killed once.
+      `PackagedWeb\runs\pages7_noheaders` (the GitHubPages folder from `web_plain_server.py`, port 8091): "PAGE
+      ISOLATION reload under the service worker", READY after 7.9 s, PASS, 0 error lines; the match runs (scatter
+      cannon at the start, a planet, portals, the player's ship killed three times). **Its first attempt failed**
+      (kept as `PackagedWeb\runs\pages7_noheaders_devicelost`): WebGPU device lost 9.2 s after the load, "D3D12
+      create command allocator failed with DXGI_ERROR_DEVICE_REMOVED", before READY - the GTX 950 (2 GB) had 1.6 GB
+      in use by other programs on the PC at the time; the retry, unchanged, passed. A third run with a scratch fixture
+      (not in `docs/tools`; the start click, two clicks on the Difficulty row's "<" at 939,328, then PLAY):
+      `PackagedWeb\runs\ship7_supereasy` (engine server): PASS, READY after 6.9 s, 0 error lines; after one "<" the
+      row shows **Super Easy** with "Bots go easy on you, your aim is helped a lot, you start armed."; after the
+      second "<" it stays on Super Easy (first entry, held at the end); its match starts armed (SCATTER CANNON, an
+      incoming torpedo warning). Both servers stopped.
+    - `PackagedWeb\GitHubPages` (deleted, then `web_split_for_pages.py`): **36 files, 266 366 957 bytes**, the wasm
+      in three parts (50 000 000 + 50 000 000 + 46 955 416), the container 99 548 096 as it is (largest file), no
+      `.br`, `.nojekyll` there; no file of 100 000 000 bytes or more.
+    - Not verified: the ensure itself (engine code; whether `-IgnoreCookErrors` could hide another cook error later -
+      the 29 lines here are all the ensure), Super Easy and Easy played by a person in the browser (the harness only
+      clicks and holds W), the in-match difficulty row, the weapon pointer and the reach of Easy in a picture, the
+      forward tier, the 10-minute soak, sound by ear, a controller, the site on GitHub Pages itself, other browsers,
+      whether the device loss comes back on a PC with a free GPU. `PackagedWeb\itch` and the itch zip are still the
+      old build (item 28).
+
 ## Measurements
 - Automation tests: 9 at the start, 87 now (item 40: 87 of 87; item 38: 84 of 84; item 36: 81 of 81; items 33 and 34: 77 of 77), all passing (added: the start weapon, pickup reach and aim assist of Easy, a person's torpedo homing, the pad pointer; the beginner's help of Easy, the kinds / light columns of the pads and the pad markers of the HUD; the game controller - aim stick, switch, menu focus, prompt names -; the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station
