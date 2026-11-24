@@ -158,6 +158,8 @@ public:
 	EHCJWeapon GetHumanSpawnWeapon() const { return GetFairSkill().HumanSpawnWeapon; }
 	float GetHumanAimAssistDeg() const { return FMath::Clamp(GetFairSkill().HumanAimAssistDeg, 0.0f, 15.0f); }
 	bool ShowsWeaponPadPointer() const { return GetFairSkill().bHumanWeaponPointer; }
+	/** Item 42: copies ShowsWeaponPadPointer to the replicated AHCJGameState (match start, change of the level). */
+	void PublishWeaponPadPointer();
 	/** Telemetry of item 40 (the "Fair: event=status" line): see FMatchStats. */
 	void NotifyHumanReachPickup() { ++MatchStats.HelpReachPickups; }
 	void NotifyHumanArmedSpawn() { ++MatchStats.HelpArmedSpawns; }

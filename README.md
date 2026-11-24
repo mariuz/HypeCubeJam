@@ -550,7 +550,7 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
   strength, and the hull fraction (45 / 30 / 20 %) at which a bot breaks off, stops firing and boosts for a repair
   pad in its sector. Ace flies with Hard's numbers. The default is Easy.
 - **Bots and people: the fairness rules** (devlog item 29; `AHCJBotController`, the fairness fields of
-  `FHCJBotSkill`, server only, nothing replicated). They apply only when the other ship is flown by a person; bots
+  `FHCJBotSkill`, server only, nothing replicated but the weapon pointer's flag, item 42). They apply only when the other ship is flown by a person; bots
   among themselves fly the same on every level, so bot matches and their kill rates are unchanged.
 
   | | Super Easy | Easy | Normal | Hard | Ace |
@@ -614,8 +614,9 @@ the SDK is plain C++ in `Public/Online/HCJEosLogic.h` and has tests.
     of the ship nearest the crosshair, when that point is within 3 degrees (Super Easy: 5) of the aim (`ServerFireProjectile`,
     `HCJBalance::PickAimAssist`; the pellets spread around it as before), and the phaser beam bends to a ship within
     3 (5) degrees instead of 1.6 / 3; while the ship has only its base weapon the HUD's pad pointer of item 38 leads to the
-    nearest weapon pad (ringed, not pulsing; `HCJUi::GuidePadRank`) - on the host and in a single-player match only,
-    because a remote client is not told the level. `-HCJClassicEasy` takes these four away and sets the damage scales back to 1.5 / 0.4
+    nearest weapon pad (ringed, not pulsing; `HCJUi::GuidePadRank`) - on the host, in a single-player match and on a
+    remote client alike: the server puts the level's choice into the replicated `AHCJGameState::bWeaponPadPointer`
+    (devlog item 42; the level itself is still not replicated). `-HCJClassicEasy` takes these four away and sets the damage scales back to 1.5 / 0.4
     (`ClearBeginnerHelp`: Easy as build 0.21.0 had it). The `Fair: event=rules` line has `classic_easy20= pickup_reach= spawn_weapon= aim_assist=
     weapon_pointer= classic_torpedo=`, the `Fair: event=status` line `human_pickups= reach_pickups= armed_spawns=
     human_bolts= assisted_bolts= human_bolt_hits= assisted_hits=` and, for people's torpedoes on every level,
@@ -1069,10 +1070,26 @@ as well.
 & "F:\EpicGames\UE_5.9\Engine\Build\BatchFiles\RunUAT.bat" BuildCookRun -project="F:\work\HypeCubeJam\HypeCubeJam.uproject" -noP4 -platform=Win64 -clientconfig=Development -build -cook -stage -pak -archive -archivedirectory="F:\work\HypeCubeJam\Packaged\Temp" -utf8output -unattended -nocompileeditor -skipbuildeditor
 ```
 
-Since the engine update of 22 Nov 2026 (5.9.0 CL 60738873, with a new Fab plugin) the cook logs an engine ensure
-("Registered the path /ToolsetRegistry/ for two different domains", `AssetReferencingDomains.cpp`) and counts its 29
-lines as errors, so the command above ends with BUILD FAILED although every package cooked; append `-IgnoreCookErrors`
-(devlog item 40). Builds of the engine before that update (0.21.0 and older) cannot join builds made after it and the
+Since the engine update of 22 Nov 2026 (5.9.0 CL 60738873, with a new Fab plugin) the cook logged an engine ensure
+("Registered the path /ToolsetRegistry/ for two different domains", `AssetReferencingDomains.cpp`) and counted its 29
+lines as errors, so the command above ended with BUILD FAILED although every package cooked (devlog item 40). The
+cause is the engine's new `AllToolsets` plugin (enabled by default), which pulls in `GameFeatures` and with it the
+editor plugin `AssetReferenceRestrictions`; `"AllToolsets": false` in the `.uproject` removes it and the command above
+needs no `-IgnoreCookErrors` (devlog item 43). If `-IgnoreCookErrors` is ever needed again, never use it bare: log the
+run and let `docs\tools\cook_error_guard.py` fail the build on any cook error that is not that one known ensure:
+
+```powershell
+$Log = "F:\work\HypeCubeJam\Saved\Logs\bcr_win.log"
+& "F:\EpicGames\UE_5.9\Engine\Build\BatchFiles\RunUAT.bat" BuildCookRun -project="F:\work\HypeCubeJam\HypeCubeJam.uproject" -noP4 -platform=Win64 -clientconfig=Development -build -cook -stage -pak -archive -archivedirectory="F:\work\HypeCubeJam\Packaged\Temp" -utf8output -unattended -nocompileeditor -skipbuildeditor -IgnoreCookErrors | Tee-Object -FilePath $Log
+$Uat = $LASTEXITCODE
+python -I F:\work\HypeCubeJam\docs\tools\cook_error_guard.py $Log
+if ($Uat -ne 0 -or $LASTEXITCODE -ne 0) { throw "BUILD FAILED (UAT exit code $Uat, cook guard exit code $LASTEXITCODE)" }
+```
+
+The guard (exit code 0 / 1) accepts only that ensure's block - its two message lines plus its stack lines between
+`begin: stack for UAT` and `end: stack for UAT` - and a cook summary count of exactly that block's lines; any other
+`Error:` / compiler / ensure line, a larger "N error(s)" or a missing summary fails. It can also be run on a log
+without the flag. Builds of the engine before that update (0.21.0 and older) cannot join builds made after it and the
 other way round: the engine's network changelist is part of the network version.
 
 Double-clicking `HypeCubeJam.exe` opens the title menu; PLAY hosts a listen server with bots (the world behind the
@@ -1090,7 +1107,8 @@ hardware.
 & "F:\EpicGames\UE_5.9\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "F:\work\HypeCubeJam\HypeCubeJam.uproject" -ExecCmds="Automation RunTests HypeCubeJam; Quit" -unattended -nullrhi -nosplash -log "-ini:EditorPerProjectUserSettings:[/Script/ModelContextProtocol.ModelContextProtocolSettings]:bAutoStartServer=False"
 ```
 
-87 automation tests (about a minute; three of them new with devlog item 40: `HypeCubeJam.Balance.BeginnerArmsAndAim` -
+88 automation tests (about a minute; one new with devlog item 42: `HypeCubeJam.UI.WeaponPointerReplicated` - the
+HUD's weapon-pointer decision and the replicated flag on the game state -; three new with devlog item 40: `HypeCubeJam.Balance.BeginnerArmsAndAim` -
 Easy alone has the reach, the start weapon, the aim assist and the weapon pointer, `-HCJClassicEasy` gives back Easy of
 0.21.0 field by field, the assist's choice of target -, `HypeCubeJam.Torpedo.HumanHoming` - a person's torpedo against a
 bot's: target choice, keep and lose, lead, closing on a crossing target -, `HypeCubeJam.UI.GuidePad` - which pad the
@@ -1165,7 +1183,9 @@ Numbers: docs/DEVLOG_NOTES.md, items 29, 31, 38 and 40.
 
 The project enables the engine's `ModelContextProtocol` plugin ("Unreal MCP") plus a default set of editor
 toolsets (Editor, Console, ConfigSettings, AutomationTest, LiveCoding, Input, Perf, SceneCapture), all
-editor-only.
+editor-only. The engine's `AllToolsets` aggregator (every toolset plugin, enabled by default since the engine update
+of 22 Nov) is switched off in the `.uproject`: it broke the cook (see "Packaged build"); enable single toolset plugins
+instead when one is needed.
 
 - The server starts with the editor (`bAutoStartServer=True` in `Config/DefaultEditorPerProjectUserSettings.ini`)
   and listens on `http://127.0.0.1:8000/mcp`. It does not start in commandlets; pass

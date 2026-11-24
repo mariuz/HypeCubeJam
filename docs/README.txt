@@ -175,7 +175,8 @@ A filled pad has a tall column of light and a halo that can be seen across the s
 and distance. The colour says what it is: GREEN (a cross) is health - repair or shield cell; AMBER (a diamond) is a
 weapon or torpedoes; MAGENTA (a triangle) is a power-up. The radar shows the same icons. When your hull is low the
 nearest REPAIR pad pulses inside a ring, and arrows at the edge of the screen point to it when it is out of view.
-On Easy, when you have only the phaser, the nearest weapon pad gets the ring and the arrows (without the pulse).
+On Easy, when you have only the phaser, the nearest weapon pad gets the ring and the arrows (without the pulse) -
+also when you joined another player's game.
 Host options without the menu (append to the exe as one argument):
   "/Engine/Maps/Entry?listen?Seed=1234?Dim=4?Bots=8?Difficulty=0?Pickups=1?Wormholes=4?Stations=1"
   (Difficulty: 0 easy, 1 normal, 2 hard, 3 ace, 4 super easy)

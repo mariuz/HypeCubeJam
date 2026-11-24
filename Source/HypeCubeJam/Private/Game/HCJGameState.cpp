@@ -34,6 +34,7 @@ void AHCJGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
 	DOREPLIFETIME(AHCJGameState, MatchPhase);
 	DOREPLIFETIME(AHCJGameState, PhaseEndServerTime);
 	DOREPLIFETIME(AHCJGameState, FragLimit);
+	DOREPLIFETIME(AHCJGameState, bWeaponPadPointer);
 	DOREPLIFETIME(AHCJGameState, MatchWinner);
 	DOREPLIFETIME(AHCJGameState, DestroyedAsteroids);
 	DOREPLIFETIME(AHCJGameState, DestroyedAsteroidsMatch);
@@ -101,6 +102,15 @@ void AHCJGameState::SetFragLimit(int32 NewFragLimit)
 	if (HasAuthority())
 	{
 		FragLimit = FMath::Max(0, NewFragLimit);
+	}
+}
+
+void AHCJGameState::SetWeaponPadPointer(bool bOn)
+{
+	if (HasAuthority() && bWeaponPadPointer != bOn)
+	{
+		bWeaponPadPointer = bOn;
+		ForceNetUpdate();
 	}
 }
 

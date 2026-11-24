@@ -739,14 +739,11 @@ void AHCJHUD::DrawPickupMarkers(const AHCJShipCharacter& Ship)
 	const float Now = World != nullptr ? static_cast<float>(World->GetTimeSeconds()) : 0.0f;
 	const UHCJHealthComponent* Health = Ship.GetHealthComponent();
 	const bool bLowHull = Health != nullptr && Health->GetHealthFraction() < HCJUi::LowHullFraction;
-	// Item 40, Easy: a ship that has only its base weapon (the phaser) is shown the way to the nearest weapon pad. The
-	// level is the server's: a host (and a single player) knows it, a remote client does not and gets no such pointer.
-	bool bWantWeapon = false;
-	if (!bLowHull && Ship.GetWeapon() == Ship.GetBaseWeapon() && GetWorld() != nullptr)
-	{
-		const AHCJGameMode* GameMode = GetWorld()->GetAuthGameMode<AHCJGameMode>();
-		bWantWeapon = GameMode != nullptr && GameMode->ShowsWeaponPadPointer();
-	}
+	// Item 40, Easy: a ship that has only its base weapon (the phaser) is shown the way to the nearest weapon pad. Item
+	// 42: whether the level has it is read from the replicated game state, so a remote client gets it as a host does.
+	const AHCJGameState* PointerState = AHCJGameState::Get(this);
+	const bool bWantWeapon = HCJUi::WantsWeaponPad(PointerState != nullptr && PointerState->ShowsWeaponPadPointer(), bLowHull,
+		Ship.GetWeapon() == Ship.GetBaseWeapon());
 	const TArray<TWeakObjectPtr<AHCJPickup>>& Pads = AHCJPickup::GetAll();
 	FHCJNearSlot Slots[HCJUi::MaxPickupMarkers];
 	int32 NumSlots = 0;
@@ -776,6 +773,15 @@ void AHCJHUD::DrawPickupMarkers(const AHCJShipCharacter& Ship)
 		}
 	}
 	HealthGuidePad = GuideIndex != INDEX_NONE ? Pads[GuideIndex].Get() : nullptr;
+	const bool bWeaponPointer = bWantWeapon && GuideIndex != INDEX_NONE;
+	if (bWeaponPointer != bWeaponPointerShown)
+	{
+		// One line per change (item 42), so a log shows the pointer on a host and on a remote client alike.
+		bWeaponPointerShown = bWeaponPointer;
+		UE_LOG(LogHCJ, Log, TEXT("HUD: weapon_pointer=%d net=%s pad=%s"), bWeaponPointer ? 1 : 0,
+			World == nullptr ? TEXT("none") : World->GetNetMode() == NM_Client ? TEXT("client") : World->GetNetMode() == NM_Standalone ? TEXT("standalone") : TEXT("host"),
+			bWeaponPointer ? HCJ::GetItemName(Pads[GuideIndex]->GetItem()) : TEXT("-"));
+	}
 	if (GuideIndex != INDEX_NONE && NumSlots > 0)
 	{
 		// The pad to fly to is always among the markers.

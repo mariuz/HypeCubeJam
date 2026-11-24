@@ -479,6 +479,11 @@ int32 HCJUi::MarkerMetres(float Distance)
 	return Metres <= 50 ? Metres : 5 * FMath::RoundToInt32(Metres / 5.0f);
 }
 
+bool HCJUi::WantsWeaponPad(bool bPointerOn, bool bLowHull, bool bOnlyBaseWeapon)
+{
+	return bPointerOn && !bLowHull && bOnlyBaseWeapon;
+}
+
 int32 HCJUi::GuidePadRank(EHCJPickupItem Item, bool bLowHull, bool bWantWeapon)
 {
 	if (bLowHull)

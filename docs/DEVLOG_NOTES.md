@@ -1650,7 +1650,8 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
         -archivedirectory=F:\work\HypeCubeJam\PackagedWeb\Ship -unattended -utf8output -nocompileeditor
         -AdditionalCookerOptions="-unattended -nopause -nosplash -nullrhi"` (`-clientconfig=Development` and
         `PackagedWeb\Dev` for the test stage: its page takes `?args=` and console commands). Delete the archive folder
-        first: files of an earlier stage stay in it otherwise.
+        first: files of an earlier stage stay in it otherwise. (Item 43: no `-IgnoreCookErrors` needed with
+        `AllToolsets` off; if it is used, run `docs\tools\cook_error_guard.py` on the log right after - see there.)
       - Check: `python Engine\Platforms\Wasm\Build\Tools\deploy\check_stage.py PackagedWeb\Ship\Wasm` (all passed;
         release scan 0 findings), `python docs\tools\web_secret_scan.py PackagedWeb\Ship\Wasm
         Engine\Binaries\Win64\UnrealPak.exe <scratch folder>`.
@@ -3394,6 +3395,97 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
       forward tier, the 10-minute soak, sound by ear, a controller, the site on GitHub Pages itself, other browsers,
       whether the device loss comes back on a PC with a free GPU. `PackagedWeb\itch` and the itch zip are still the
       old build (item 28).
+
+## 24 Nov 2026 - the weapon pointer of Easy on a remote client
+42. Item 40's open point "a remote client on Easy gets no weapon pointer": the HUD asked the authority game mode for
+    the level, which a client does not have. Now it reads a replicated flag. Gameplay numbers unchanged.
+    - **The flag**: `AHCJGameState::bWeaponPadPointer` (`UPROPERTY(Replicated)`, `DOREPLIFETIME`; one bool, false by
+      default), set only by the server through `SetWeaponPadPointer` (changes it and `ForceNetUpdate`). The game mode
+      copies its own answer to it (`AHCJGameMode::PublishWeaponPadPointer` = `ShowsWeaponPadPointer` =
+      `GetFairSkill().bHumanWeaponPointer`, so `-HCJClassicEasy`, `-HCJClassicEasy20` and `-HCJNoFair` on the server
+      still switch it off) in `InitGameState`, in `BeginMatch` (every new match, also PLAY from the menu) and in
+      `SetBotDifficulty` (the Esc menu's level change). A bool rather than the level: the client needs nothing else,
+      and the server's switches are already applied. The level itself is still not replicated.
+    - **The HUD** (`AHCJHUD`, pad markers) no longer looks at the game mode: `HCJUi::WantsWeaponPad(flag, low hull,
+      only the base weapon)` (pure) feeds `GuidePadRank` as before. A host and a single player read the same game
+      state the server writes, so their behaviour is unchanged; a client gets the flag with the game state (false
+      until it has replicated - no pointer for the first moments of a join at most).
+    - **Log**: one line per change, `HUD: weapon_pointer=0|1 net=host|client|standalone pad=<item>` (LogHCJ, Log), so
+      a run shows when a HUD pointed to a weapon pad.
+    - **Test** (88 now, all passed, exit code 0): `HypeCubeJam.UI.WeaponPointerReplicated` - `WantsWeaponPad` for the
+      four cases (on; flag off; low hull; holding a pickup weapon), its result fed to `GuidePadRank`, the game state's
+      default is off and the property is marked replicated (`CPF_Net`). A first version also called
+      `GetLifetimeReplicatedProps` on the class default object; that asserts in the engine (`bIsPushBased ==
+      Other.bIsPushBased`, CoreNet.h) and was taken out - the registration is shown by the two-process run below.
+    - **Two processes on this PC** (editor binary, `-game`, `-HCJNoEOS -HCJNoStats`): listen server
+      `"/Engine/Maps/Entry?listen?Difficulty=0?Bots=3"` (640x360, `-HCJQuitAfter=260`), then a client `127.0.0.1`
+      with `-HCJAutoFly -HCJCapture=12 -HCJQuitAfter=220` (1280x720). Server: `Fair: event=rules ... level=easy ...
+      weapon_pointer=1`, `armed_spawns=6` (the client's new ships started with the scatter cannon, as on Easy). The
+      client's autopilot fires the scatter cannon empty within about 25 s of each ship, which leaves the phaser - no
+      switch was needed. Client log: `HUD: weapon_pointer=1 net=client pad=SCATTER CANNON` (15:23:38), `=0` (15:24:07),
+      `=1 ... pad=RAIL SHOT` (15:24:39), `=0` (15:25:12), `=1 ... pad=RAIL SHOT` (15:25:37). Picture `Shot_02`
+      (15:23:52; kept outside the project, the project's `Saved\Screenshots\HCJCapture` holds its old pictures again):
+      weapon panel PHASER, the SCATTER pad at 120 m with the ring, its ring on the radar. The run "before" was not
+      repeated (the old code gave a client no way to know the level: `GetAuthGameMode` is null there). The host also
+      logged `weapon_pointer=1 net=host pad=RAPID PULSE` on its first frame and `=0` 23 s later (its ship idle; the
+      reason was not looked into - item 40's behaviour, not changed here).
+    - **Compatibility**: a new replicated property changes the game state's replication layout, so a build with this
+      change and 0.22.0 must not play together (an old client would misread the game state). 0.22.0 already cannot
+      play with 0.21.0 and older (engine network version, item 40); between 0.22.0 and the next build the project
+      version (lobby `FHCJLobbyInfo`, still compared as before) should be raised so that FIND GAMES / QUICK PLAY keep
+      them apart. The EOS lobby keys and `HCJEosTests` are untouched (the flag is not a lobby attribute; all
+      Online tests passed).
+    - Not verified: Super Easy over the network (same flag, same code path; only Easy was run), the Esc menu's level
+      change reaching a client while it is connected (the setter is called there, not exercised), a dedicated server,
+      a packaged build, the web build. Nothing was committed, packaged or uploaded.
+
+## 24 Nov 2026 - the cook ensure of the 22 Nov engine, a guard for -IgnoreCookErrors
+43. Why the cook of items 40 and 41 needed `-IgnoreCookErrors`, a fix in the project, and a guard for the flag.
+    - **Cause.** `Engine\Plugins\Editor\AssetReferenceRestrictions\...\Private\AssetReferencingDomains.cpp`:
+      `FDomainDatabase::RebuildFromScratch` makes one domain per content plugin (`ToolsetRegistry.uplugin` has
+      `CanContainContent: true`, root `/ToolsetRegistry/`) and, when `DirectoriesToNeverCook` is not empty, a "Never
+      Cooked Content" domain with those folders (lines 269-282); our `Config\DefaultGame.ini` has
+      `+DirectoriesToNeverCook=(Path="/ToolsetRegistry")` (item 7). Both roots go into one path tree and
+      `FDomainPathNode::AddDomain` ensures (`ensureMsgf(!DefaultDomain.IsValid(), ...)`, line 101) on the second one.
+      The plugin was not loaded before the update: the 22 Nov engine brought `Plugins\Experimental\Toolsets\AllToolsets`
+      (`"EnabledByDefault": true`, an aggregator of every toolset plugin; file of 22 Nov 20:39), whose
+      `GameFeaturesToolset` enables `GameFeatures`, which enables `AssetReferenceRestrictions`. The cook logs show it:
+      62 toolsets registered in `bcr_ship6.log` (before), 100 in `bcr_ship7.log`, among them `GameFeaturesToolset`.
+      Engine code and the project's config line each are fine; together, with `AllToolsets` on, they ensure. Nothing
+      in the engine was changed.
+    - **Fix (project side)**: `{ "Name": "AllToolsets", "Enabled": false }` in `HypeCubeJam.uproject` (the project
+      enables its eight toolsets itself; the `DirectoriesToNeverCook` line stays). Test: a Windows cook only
+      (`BuildCookRun -platform=Win64 -clientconfig=Development -cook -utf8output -unattended -nocompileeditor
+      -skipbuildeditor`, **without** `-IgnoreCookErrors`, log `Saved\CookGuard\cook_B.log`): exit code 0, BUILD
+      SUCCESSFUL, "Success - 0 error(s), 0 warning(s)", 51 s; 1095 packages, 1066 cooked, 29 skipped by platform -
+      the totals of item 38, before the update (the 15 extra packages of items 40 / 41 were the aggregator's); 62
+      toolsets registered, as before. Not done with the fix: a full Windows package, a Wasm build, the editor opened
+      by a person (an MCP client now sees the pre-update toolset set).
+    - **Guard**: `docs\tools\cook_error_guard.py <log> [...]` (`python -I`), exit code 0 / 1 (2: unreadable). It
+      accepts the ensure only as a whole block between `LogOutputDevice: Error: begin: stack for UAT` and
+      `... end: stack for UAT` that holds both of its message lines (`Ensure condition failed: !DefaultDomain.IsValid()
+      [File:...AssetReferencingDomains.cpp]` and `Registered the path /ToolsetRegistry/ ... Plugin:ToolsetRegistry and
+      Never Cooked Content`) and nothing but frame lines (`=== Handled ensure: ===`, `Stack:`, `[Callstack] ...`,
+      empty); the copy in the cook summary (`LogInit: Display: ` prefix) likewise. Every other `<Category>: Error:` /
+      `Fatal:` line, compiler / clang / UAT error, ensure or assert is printed with its line number; the summary's
+      "N error(s)" must equal the lines of the accepted blocks before it (29), and a log without a cook summary fails.
+      Reads UTF-8 and UTF-16 (PowerShell 5.1 `Tee-Object` writes UTF-16).
+      - Results: `PackagedWeb\logs\bcr_ship7.log`, `Saved\Item40\bcr2.log` (Windows 0.22.0), `bcr.log`,
+        `bcr_ship7_cookfail.log` (their cook errors were only the ensure; the failed runs' exit codes are the build's
+        business, not the guard's), `bcr_ship1/5/6.log`, `bcr_dev1.log` and `cook_B.log`: OK, exit code 0.
+        Synthetic copies of `bcr_ship7.log` (scratch folder, not kept): one extra `LogCook: Error:` line in the body
+        and the summary with the count 30 - FAILED, the two lines and the count shown; the extra line alone - FAILED;
+        a third message line inside the ensure block - FAILED, the whole block shown; the same ensure for `/Fab/` -
+        FAILED; the count alone 31 - FAILED; an MSVC `error C2065` line - FAILED; no summary - FAILED; a UTF-16 copy
+        of the clean log - OK.
+    - **Procedure** (README "Packaged build" and item 28's web BuildCookRun): with the fix the flag is not needed.
+      When `-IgnoreCookErrors` is used, the output goes to a log and the guard runs on it right after; the build
+      counts as failed when UAT or the guard exits non-zero. Web (PowerShell, `$env:WASM_EMSDK_ROOT` set as in item
+      28): `& <RunUAT.bat> BuildCookRun <item 28's Shipping arguments> -IgnoreCookErrors | Tee-Object -FilePath
+      PackagedWeb\logs\bcr_shipN.log; $Uat = $LASTEXITCODE; python -I docs\tools\cook_error_guard.py
+      PackagedWeb\logs\bcr_shipN.log; if ($Uat -ne 0 -or $LASTEXITCODE -ne 0) { throw "BUILD FAILED" }`. No script
+      in `docs\tools` runs BuildCookRun (`make_zip.ps1` only zips a stage), so there was no wrapper to hook.
+      Nothing committed.
 
 ## Measurements
 - Automation tests: 9 at the start, 87 now (item 40: 87 of 87; item 38: 84 of 84; item 36: 81 of 81; items 33 and 34: 77 of 77), all passing (added: the start weapon, pickup reach and aim assist of Easy, a person's torpedo homing, the pad pointer; the beginner's help of Easy, the kinds / light columns of the pads and the pad markers of the HUD; the game controller - aim stick, switch, menu focus, prompt names -; the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole

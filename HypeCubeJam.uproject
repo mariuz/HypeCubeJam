@@ -27,6 +27,7 @@
 		{ "Name": "LiveCodingToolset", "Enabled": true, "TargetAllowList": [ "Editor" ] },
 		{ "Name": "InputToolset", "Enabled": true, "TargetAllowList": [ "Editor" ] },
 		{ "Name": "PerfToolset", "Enabled": true, "TargetAllowList": [ "Editor" ] },
-		{ "Name": "SceneCaptureToolset", "Enabled": true, "TargetAllowList": [ "Editor" ] }
+		{ "Name": "SceneCaptureToolset", "Enabled": true, "TargetAllowList": [ "Editor" ] },
+		{ "Name": "AllToolsets", "Enabled": false }
 	]
 }

@@ -140,6 +140,12 @@ namespace HCJUi
 	 * weapon), a pad with a pickup weapon (1; not the torpedoes). Among equal ranks the nearest wins. Pure.
 	 */
 	HYPECUBEJAM_API int32 GuidePadRank(EHCJPickupItem Item, bool bLowHull, bool bWantWeapon);
+	/**
+	 * The bWantWeapon of GuidePadRank (items 40 and 42): the pointer to a weapon pad is on (bPointerOn, the replicated
+	 * AHCJGameState::ShowsWeaponPadPointer - the same on a host, a single player and a remote client), the hull is not
+	 * low (then the repair pad comes first) and the ship holds only its base weapon. Pure.
+	 */
+	HYPECUBEJAM_API bool WantsWeaponPad(bool bPointerOn, bool bLowHull, bool bOnlyBaseWeapon);
 	/** Strength of the marker of a pad at the far end of the sector (still readable). */
 	inline constexpr float PickupMarkerFarStrength = 0.7f;
 

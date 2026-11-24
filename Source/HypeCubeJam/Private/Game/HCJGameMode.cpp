@@ -117,7 +117,16 @@ void AHCJGameMode::SetBotDifficulty(int32 Difficulty)
 	UE_LOG(LogHCJ, Log, TEXT("Menu: bot difficulty %d (%s) -> %d (%s) in the running match"), BotDifficulty, HCJBalance::GetDifficultyName(BotDifficulty), NewDifficulty,
 		HCJBalance::GetDifficultyName(NewDifficulty));
 	BotDifficulty = NewDifficulty;
+	PublishWeaponPadPointer();
 	LogFairRules();
+}
+
+void AHCJGameMode::PublishWeaponPadPointer()
+{
+	if (AHCJGameState* HCJGameState = GetHCJGameState())
+	{
+		HCJGameState->SetWeaponPadPointer(ShowsWeaponPadPointer());
+	}
 }
 
 void AHCJGameMode::LogFairRules() const
@@ -475,6 +484,7 @@ void AHCJGameMode::InitGameState()
 		HCJGameState->SetMatchConfig(CurrentConfig);
 		HCJGameState->SetFragLimit(FragLimit);
 		HCJGameState->SetMatchPhase(EHCJMatchPhase::Playing, TimeLimitSeconds, nullptr);
+		PublishWeaponPadPointer();
 		RebuildPickups();
 		RebuildStations();
 		LogPlaythroughMatchStart();
@@ -1303,6 +1313,7 @@ void AHCJGameMode::BeginMatch(int32 InMatchNumber)
 
 	HCJGameState->SetFragLimit(FragLimit);
 	HCJGameState->SetMatchPhase(EHCJMatchPhase::Playing, TimeLimitSeconds, nullptr);
+	PublishWeaponPadPointer();
 	LogPlaythroughMatchStart();
 
 	ForEachCombatant([this](AController* Controller)

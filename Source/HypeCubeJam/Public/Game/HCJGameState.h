@@ -116,6 +116,16 @@ public:
 	void SetFragLimit(int32 NewFragLimit);
 	int32 GetFragLimit() const { return FragLimit; }
 
+	/**
+	 * SERVER ONLY (item 42). Whether the HUD of a person's ship points to a weapon pad while the ship has only its base
+	 * weapon: FHCJBotSkill::bHumanWeaponPointer of the level in force (Easy and Super Easy, not with -HCJClassicEasy /
+	 * -HCJClassicEasy20 / -HCJNoFair on the server). AHCJGameMode sets it at the start of every match and when the level
+	 * changes; it is replicated so that a remote client's HUD knows it too (the level itself is not replicated).
+	 */
+	void SetWeaponPadPointer(bool bOn);
+	/** Every machine: the replicated flag above (false on a client until the game state has replicated). */
+	bool ShowsWeaponPadPointer() const { return bWeaponPadPointer; }
+
 	// ---- scoreboard / feed ----
 
 	/** All AHCJPlayerStates (humans and bots) sorted by kills descending, then deaths ascending, then name. */
@@ -182,6 +192,10 @@ protected:
 
 	UPROPERTY(Replicated)
 	int32 FragLimit = 0;
+
+	/** See SetWeaponPadPointer. */
+	UPROPERTY(Replicated)
+	bool bWeaponPadPointer = false;
 
 	UPROPERTY(Replicated)
 	TObjectPtr<AHCJPlayerState> MatchWinner;

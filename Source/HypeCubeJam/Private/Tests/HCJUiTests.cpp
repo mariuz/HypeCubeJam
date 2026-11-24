@@ -1,5 +1,6 @@
 #include "Tests/HCJTestHelpers.h"
 
+#include "Game/HCJGameState.h"
 #include "Game/HCJUiLogic.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -370,6 +371,34 @@ bool FHCJGuidePadTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("torpedoes are not a weapon to fly to"), GuidePadRank(EHCJPickupItem::Torpedoes, false, true), 0);
 	TestEqual(TEXT("a repair pad on a healthy hull: no pointer"), GuidePadRank(EHCJPickupItem::Repair, false, true), 0);
 	TestEqual(TEXT("nothing else"), GuidePadRank(EHCJPickupItem::Cloak, false, false), 0);
+	return true;
+}
+
+/**
+ * Item 42: the HUD wants a weapon pad only when the replicated flag is on, the hull is not low and the ship holds only its
+ * base weapon; and the flag is a replicated property of the game state, so a remote client's HUD reads the server's value.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FHCJWeaponPointerReplicatedTest, "HypeCubeJam.UI.WeaponPointerReplicated", HCJUiTestFlags)
+
+bool FHCJWeaponPointerReplicatedTest::RunTest(const FString& Parameters)
+{
+	using namespace HCJUi;
+	TestTrue(TEXT("on, healthy, phaser only: the pointer"), WantsWeaponPad(true, false, true));
+	TestFalse(TEXT("flag off (Normal and up, a client before replication): none"), WantsWeaponPad(false, false, true));
+	TestFalse(TEXT("low hull: the repair pad instead"), WantsWeaponPad(true, true, true));
+	TestFalse(TEXT("holding a pickup weapon: none"), WantsWeaponPad(true, false, false));
+	TestEqual(TEXT("the decision feeds the pad rank"), GuidePadRank(EHCJPickupItem::Rail, false, WantsWeaponPad(true, false, true)), 1);
+
+	const AHCJGameState* Defaults = GetDefault<AHCJGameState>();
+	TestFalse(TEXT("off until the server says otherwise"), Defaults->ShowsWeaponPadPointer());
+	const FProperty* Flag = FindFProperty<FProperty>(AHCJGameState::StaticClass(), TEXT("bWeaponPadPointer"));
+	if (!TestNotNull(TEXT("the flag is a property"), Flag))
+	{
+		return false;
+	}
+	// UHT sets CPF_Net for UPROPERTY(Replicated); DOREPLIFETIME in AHCJGameState::GetLifetimeReplicatedProps is checked by
+	// the engine itself (a replicated property without it is reported when the class is first replicated).
+	TestTrue(TEXT("marked replicated"), Flag->HasAnyPropertyFlags(CPF_Net));
 	return true;
 }
 

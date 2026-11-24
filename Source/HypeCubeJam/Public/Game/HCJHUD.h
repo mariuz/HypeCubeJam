@@ -289,6 +289,8 @@ protected:
 	FPickupLabel PickupLabels[NumPickupLabels];
 	/** Set by DrawPickupMarkers each frame: the pad the HUD points at - a health pad while the hull is low, on Easy a weapon pad while the ship has only its base weapon (item 40) - which the radar marks too. */
 	TWeakObjectPtr<const AHCJPickup> HealthGuidePad;
+	/** Item 42: whether the last frame pointed to a weapon pad; a change writes one "HUD: weapon_pointer" log line. */
+	bool bWeaponPointerShown = false;
 
 	/** Map width at 1080p, in pixels: up to 16 sectors, and from 32 sectors on. */
 	UPROPERTY(EditDefaultsOnly, Category = "HCJ|HUD")
