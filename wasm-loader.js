@@ -94,7 +94,7 @@ function linkArgs(args) {
   if (kept.length !== args.length) console.log('PAGE ARGS dropped ' + (args.length - kept.length) + ' of ' + args.length + ' link arguments (ue-query-args ' + mode + ')');
   return kept;
 }
-// A15 (EngineTest): arguments split as a shell splits them: whitespace outside double quotes separates, and the quotes are
+// EngineTest: arguments split as a shell splits them: whitespace outside double quotes separates, and the quotes are
 // removed (`"-ExecCmds=a b"` and `-ExecCmds="a b"` both give the one argument -ExecCmds=a b). The engine's main
 // (LaunchWasm.cpp) quotes an argument's value again when it holds a space, so UE's parser reads the whole value; a token
 // that kept its quotes reached UE as `"-ExecCmds=a` and ran only the first command
@@ -112,6 +112,64 @@ function splitArgs(text) {
   if (started) out.push(current);
   return out;
 }
+// UE-411539: a game code file (the script or the module) whose bytes differ from wasm-cache.json (size or sha1) is not run. The
+// data cache (sw.js) fetches it once more with cache: 'reload'; one that still differs it refuses (HTTP 502, X-UE-Mismatch: what
+// it found) and it tells the page ('mismatch'); the page checks the game script itself too (WebCrypto, the same once more), so a
+// load without the data cache (?sw=0) runs no differing script either (the module is checked only by the data cache: hashing its
+// 100+ MB here would hold another copy of it). The stop is the error card (failKind 'mismatch': UE_RUN ERROR). A data file that
+// differs is a warning, once (the line under the bar, the toast), one PAGE MISMATCH line per file and the error report's
+// 'mismatches'; the game loads on
+const mismatchOf = (response) => {
+  try { const h = response && response.status === 502 && response.headers.get('X-UE-Mismatch'); return h ? JSON.parse(h) : null; } catch (e) { return null; }
+};
+// {size, sha1} of the bytes when they differ from the listed file; null when they match or cannot be checked (no WebCrypto, no sha1)
+async function bodyDiffers(bytes, listed) {
+  if (!listed || !/^[0-9a-f]{40}$/i.test(listed.sha1 || '') || !(window.crypto && crypto.subtle)) return null;
+  const sha1 = [...new Uint8Array(await crypto.subtle.digest('SHA-1', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return sha1 === listed.sha1.toLowerCase() && (!listed.size || bytes.byteLength === listed.size) ? null : { size: bytes.byteLength, sha1 };
+}
+const mismatchText = (m) => {
+  let file = String(m.url);
+  try { file = new URL(m.url, location.href).pathname; } catch (e) { /* as given */ }
+  const got = m.got || {};
+  return `${file} is ${got.size ?? '?'} bytes, sha1 ${got.sha1 || '?'}; wasm-cache.json lists ${m.size} bytes, sha1 ${m.sha1}`;
+};
+const mismatchSeen = new Set();
+let codeStopped = false;   // a game code file differed: the game script is not appended, or not started once loaded
+function onMismatch(m) {
+  if (!m || !m.url || mismatchSeen.has(m.url)) return;
+  mismatchSeen.add(m.url);
+  (window.ueMismatches = window.ueMismatches || []).push({ kind: m.kind, url: m.url, size: m.size, sha1: m.sha1, got: m.got });   // the error report
+  if (m.kind === 'code') { codeStopped = true; failKind('mismatch', mismatchText(m)); return; }
+  console.log('PAGE MISMATCH data ' + mismatchText(m) + '; loading on (read from the network, not kept)');
+  if (window.ueMismatches.filter((x) => x.kind !== 'code').length > 1) return;
+  const text = T('Some game files on this site do not match their list, so parts of the game may be missing or wrong. Reload the page later; if this repeats, tell the site.');
+  notice(text);
+  toast(text);
+}
+// A stop card that means the game cannot run here (fail() with a stop: the browser, GPU, device or site; its 'ue-error' carries
+// the stop) ends this page's downloads (UE-411931: after the unsupported-GPU card the data cache went on loading and storing
+// the whole game). The page's own early module request is aborted (with or without the data cache), the page posts no
+// prefetch, tier or late release and starts no early module compile from then on, and the data cache is told ('stop': a load
+// it already runs for the page goes on, as before); a page whose
+// GPU check fails shows the card at once (it waited for the display rate, the command line and the shell while the prefetch
+// ran: Lyra cold, 0.8 s, now 0.16-0.4 s)
+let loadsStopped = false;
+const pageLoads = typeof AbortController === 'function' ? new AbortController() : null;
+function stopLoads(why) {
+  if (loadsStopped) return;
+  loadsStopped = true;
+  if (pageLoads) pageLoads.abort();
+  const controller = navigator.serviceWorker && navigator.serviceWorker.controller;
+  console.log('PAGE LOADS_STOPPED ' + why);
+  if (controller) controller.postMessage({ type: 'stop', why });
+  // a page the data cache does not control yet (a first visit before its claim) counts as running there: it is told too, once
+  // the worker is active
+  else if (navigator.serviceWorker && navigator.serviceWorker.ready) {
+    navigator.serviceWorker.ready.then((r) => { if (r && r.active) r.active.postMessage({ type: 'stop', why }); }).catch(() => {});
+  }
+}
+window.addEventListener('ue-error', (event) => { const d = event.detail || {}; if (d.kind === 'page' && d.stop) stopLoads(d.stop); });
 // The host's kill switch for the data cache: wasm-cache.json is {"sw": "off"}
 async function swKilled() {
   try { const list = await (await fetch('wasm-cache.json', { cache: 'no-cache' })).json(); return !!(list && !Array.isArray(list) && list.sw === 'off'); } catch (e) { return false; }
@@ -119,6 +177,16 @@ async function swKilled() {
 
 (async () => {
   mark('page');
+  // A page opened from disk (file://) stops here, before the isolation fallback and any fetch: the compat check's first test
+  // says to serve it, and the card is its own (wasm-play.js stop 'file'; UE-411308)
+  if (window.ueCompat && window.ueCompat.fromDisk && window.ueCompat.fromDisk()) {
+    ueSteps.set('browser', 'warn', 'opened from disk');
+    fail(window.ueCompat.check(), 'file');
+    return;
+  }
+  // Nothing starts (the service worker, the GPU device, the manifest, the download, the engine) before the start gate opens:
+  // on an iPhone or iPad a link preview runs the page without a visit (wasm-gate.js, <meta name="ue-start-gate">)
+  if (window.ueStartGate) await window.ueStartGate;
   // A host without header control (ue-sw-isolation 1): the service worker adds the isolation headers, then the
   // page reloads once under it. A second load that is still not isolated goes on to the compat check's message
   if (pageMeta('ue-sw-isolation') === '1' && !window.crossOriginIsolated && 'serviceWorker' in navigator && query.get('sw') !== '0') {
@@ -165,7 +233,11 @@ async function swKilled() {
   gpuProbe.then((gpu) => {
     const a = gpu.adapter;
     const name = a ? [a.vendor, a.architecture, a.device || a.description].filter(Boolean).join(' ') : '';
-    ueSteps.set('gpu', gpu.message ? 'warn' : 'done', gpu.message ? 'none usable' : (name || 'the browser does not name it') + (a && a.integrated ? ', integrated' : ''));
+    // (a site stop, such as the phone build on a desktop GPU, is no fault of this GPU)
+    const unusable = gpu.message && gpu.kind !== 'site';
+    ueSteps.set('gpu', unusable ? 'warn' : 'done', unusable ? 'none usable' : (name || 'the browser does not name it') + (a && a.integrated ? ', integrated' : ''));
+    // the card now, not after the command line (stopLoads); a bench page's own message is no GPU stop and waits as before
+    if (gpu.message && !window.ueBench) fail(gpu.message, gpu.kind || 'gpu');
   });
   // The start arguments the compat check picks (the renderer tier when the stage has two, and with the GPU check on, the
   // starting resolution); the check runs while the files download
@@ -191,8 +263,11 @@ async function swKilled() {
   // The later pak chunks' containers (sw.js isLate) load whole once the game is ready; sw.js releases them itself 20 s after
   // the boot containers are in when the page has not
   let latePosted = false;
+  // The tier the game runs, named in the late release so the worker needs no memory of it (a worker restarted since the pick has
+  // none): the RHI's ('ue-webgpu-tier', below) once it has decided, else the page's pick
+  let tierByRhi = null, tierByPick = null;
   const postLate = () => {
-    if (latePosted || !navigator.serviceWorker || !cached) return;   // an uncached load reads the late chunks directly
+    if (latePosted || loadsStopped || !navigator.serviceWorker || !cached) return;   // an uncached load reads the late chunks directly
     // a page the worker does not control yet posts once it does
     if (!navigator.serviceWorker.controller) {
       console.log('LOADTIME late_waiting ' + Math.round(performance.now()));
@@ -201,7 +276,8 @@ async function swKilled() {
     }
     latePosted = true;
     console.log('LOADTIME late_posted ' + Math.round(performance.now()));
-    navigator.serviceWorker.controller.postMessage({ type: 'prefetch-late' });
+    const tier = tierByRhi || tierByPick;
+    navigator.serviceWorker.controller.postMessage(tier ? { type: 'prefetch-late', tier: tier === 'forward' ? 'mobile' : tier } : { type: 'prefetch-late' });
   };
   // The engine's ready event (wasm-play.js lists the names); a Shipping log prints no ready line
   for (const name of ['ue-ready', 'ue-site-ready', 'ue-interactive']) {
@@ -228,7 +304,8 @@ async function swKilled() {
   // PthreadPoolSize); any other value is dropped, so the threading settings' pool applies (a PAGE THREADS line names the refused
   // value). The choice is made once, here; no template script that runs later writes the pool, and a value a project's later
   // script writes is checked only by the expression, which falls back to the link's own rule. Single-threaded, the profile's
-  // audio thread (wasm-profile.js: ?audiothread=1, <meta name="ue-audio-thread">) gives sound one pthread of its own
+  // audio thread (wasm-profile.js; the order of its inputs, the WebKit 26 rule included, is in Docs/PageContract.md,
+  // ue-audio-thread) gives sound one pthread of its own
   // (-WebAudioThread) instead of the game thread's mixer, which crackles and stops in long frames; ueProfile.audioThread then
   // holds whether it runs, and the link's iOS pool expression adds one for it
   const threading = window.ueCompat && window.ueCompat.threading ? window.ueCompat.threading() : null;
@@ -255,6 +332,13 @@ async function swKilled() {
     let pool = null;
     try { pool = window.ueProfile.poolSize || null; } catch (e) { pool = null; }
     console.log('WEB_THREADS ' + JSON.stringify({ ...threading, pool }));
+    // UE-411514: ?threads=1 refused on iOS (wasm-compat.js threading()): the page says why, under the bar and on the playing page
+    if (threading.refused) {
+      console.log('PAGE THREADS ?threads=1 refused on ios: the threaded engine starts about 22 Workers, each with its own instance of the module, more than an iPhone or iPad tab may hold; single-threaded (?threads=force starts it threaded)');
+      const text = T('This game runs single-threaded on iPhone and iPad: the threaded version needs more memory than Safari gives a tab.');
+      notice(text);
+      if (!harness) toast(text);
+    }
   } else if (/iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1)) {
     // wasm-compat.js did not load (or has no threading()): keep the template's iOS defaults, single-threaded without sound,
     // which an iPhone or iPad tab needs to start at all
@@ -293,10 +377,32 @@ async function swKilled() {
   }
   const status = $('status');
   const canvas = $('canvas');
-  // The render target at most ue-max-dpr device pixels per CSS pixel (default 1)
-  const dpr = Math.min(window.devicePixelRatio || 1, Number(pageMeta('ue-max-dpr')) || 1);
-  canvas.width = Math.round(canvas.clientWidth * dpr);
-  canvas.height = Math.round(canvas.clientHeight * dpr);
+  // The render target at most ue-max-dpr device pixels per CSS pixel (default 1). A touch screen (touch points and a coarse
+  // primary pointer: the engine's test for its virtual joysticks, WasmPlatformMisc.cpp) gets at least ue-touch-dpr (default 2,
+  // also for a page without the setting; at most the device's), the density a native phone build gives the game (Android's
+  // r.MobileContentScaleFactor 1: 720 lines; iOS: contentScaleFactor 2). Widgets laid out and hit-tested in viewport pixels
+  // need it: at 1 pixel per CSS pixel a phone's viewport has half the native pixels, so the templates' UMG thumbsticks (which
+  // take any finger within 250 pixels of their centre) reached twice as far across the screen, and a finger sliding off the
+  // movement stick drove the camera stick too. (The engine's own virtual joystick scales with the viewport either way.) The
+  // 3D scene keeps the ue-max-dpr resolution: the engine renders it at Module.sceneScale (WasmApplication.cpp)
+  const deviceDpr = window.devicePixelRatio || 1;
+  const sceneDpr = Math.min(deviceDpr, Number(pageMeta('ue-max-dpr')) || 1);
+  const touchScreen = navigator.maxTouchPoints > 0 && typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  // ue-touch-dpr 1 (or less, 0 included) keeps the ue-max-dpr canvas, also when ue-max-dpr is below 1; no setting or a value
+  // that is not a number gives the default 2
+  const touchMeta = pageMeta('ue-touch-dpr').trim();
+  const touchDpr = touchMeta !== '' && Number.isFinite(Number(touchMeta)) ? Number(touchMeta) : 2;
+  let dpr = touchScreen && touchDpr > 1 ? Math.min(deviceDpr, Math.max(sceneDpr, touchDpr)) : sceneDpr;
+  const cssWidth = canvas.clientWidth, cssHeight = canvas.clientHeight;
+  canvas.width = Math.round(cssWidth * dpr);
+  canvas.height = Math.round(cssHeight * dpr);
+  // a custom page whose canvas has no CSS size grows with its buffer: the denser touch canvas would then no longer be dpr
+  // device pixels per CSS pixel (the engine's input scale), so such a page keeps the ue-max-dpr canvas
+  if (dpr > sceneDpr && (Math.abs(canvas.clientWidth - cssWidth) > 1 || Math.abs(canvas.clientHeight - cssHeight) > 1)) {
+    dpr = sceneDpr;
+    canvas.width = Math.round(cssWidth * dpr);
+    canvas.height = Math.round(cssHeight * dpr);
+  }
   let manifest = [];
   let files = [];
   try {
@@ -331,7 +437,7 @@ async function swKilled() {
     const set = await window.ueCompat.textureSet();
     if (!set) {
       const gpu = await gpuProbe;
-      fail(gpu.message || 'This GPU has no texture format this game was cooked for.');
+      fail(gpu.message || 'This GPU has no texture format this game was cooked for.', window.ueBench ? undefined : (gpu.kind || 'gpu'));
       return;
     }
     const inSet = (e) => !e.set || e.set === set.name;
@@ -344,9 +450,27 @@ async function swKilled() {
   // A file split into parts (a host's per-file limit) loads only through the data cache: without it the game would
   // stop on a missing file deep in the load
   const splitFiles = files.filter((f) => Array.isArray(f.parts) && f.parts.length);
+  // a late file is never split (PageContract.md; check_stage.py refuses it): before its release the data cache reads it as ranges
+  // of its own URL, which a host of its parts does not serve, so the game would stop on a failed read during start-up.
+  // Decided here, before the page binds the data cache, prefetches or compiles anything
+  const splitLate = splitFiles.find((f) => f.late);
+  if (splitLate) {
+    fail('This site splits a file the game loads after it starts into parts, which this page cannot read. The site needs to send it whole: ' + splitLate.url);
+    return;
+  }
+  if (loadsStopped) return;   // the GPU check failed while the lists loaded: no data cache, prefetch or module load
   // The data cache (sw.js): Brotli whole-file loads and a second visit from Cache Storage. On by default; ?sw=0 runs without it
   // and removes a registered one
   let cached = false;
+  // adds the picked tier's start files to the start-up download count, once that count exists (below)
+  let countTier = () => {};
+  // posts the tier the RHI runs when it differs from the tier the page posted (its fallbacks): the RHI's 'ue-webgpu-tier' event
+  // (WebGPUDevice.cpp, once, after its tier decision)
+  let repostTier = () => {};
+  window.addEventListener('ue-webgpu-tier', (event) => { const t = event.detail && event.detail.tier; if (t) { tierByRhi = t; repostTier(t); } });
+  // the engine's command line before the pick's and a bench's arguments, once it is built (below, where window.Module is made)
+  let resolveEngineArgs = null;
+  const engineArgs = new Promise((resolve) => { resolveEngineArgs = resolve; });
   let swScope = null;   // the data cache's scope: the module's URL in 'module-compiled' is resolved against it, as sw.js lists it
   if ('serviceWorker' in navigator) {
     if (query.get('sw') === '0' || swOff) {
@@ -380,9 +504,28 @@ async function swKilled() {
           });
           if (active && navigator.serviceWorker.controller) console.log('PAGE SW_CLAIMED: the active worker took over this load (a hard reload)');
         }
+        // the check failed while the worker registered: the card is up, nothing is prefetched
+        if (loadsStopped) return;
         if (navigator.serviceWorker.controller) {
           cached = true;
           mark('sw');
+          // The worker's 'mismatch' messages, listened for before this page binds its list and asks for its files (a message
+          // with no listener yet is lost, and the worker tells each page once). The worker serves every page of its scope: a
+          // mismatch counts here only for a file this page's own list names with the same sha1 (another tab's build may list
+          // the same URL with another sha1 or size; an entry without a sha1 cannot tell builds apart and counts)
+          const ownMismatch = (m) => {
+            try {
+              const href = new URL(m.url, location.href).href;
+              const f = files.find((x) => new URL(x.url, location.href).href === href);
+              return !!f && (!f.sha1 || String(f.sha1).toLowerCase() === String(m.sha1 || '').toLowerCase())
+                && (!f.size || !m.size || f.size === m.size);
+            } catch (e) { return false; }
+          };
+          navigator.serviceWorker.addEventListener('message', (event) => {
+            const data = event.data || {};
+            if (data.type === 'mismatch' && ownMismatch(data)) onMismatch(data);
+          });
+          navigator.serviceWorker.controller.postMessage({ type: 'mismatches' });   // any found before this listener (another tab's load)
           // First the list this page read, so the worker serves this page (and its Workers) that build's files
           // even after a deploy or a worker restart; then every game file's whole-file load (sw.js prefetch)
           navigator.serviceWorker.controller.postMessage({ type: 'bind', files });
@@ -391,20 +534,38 @@ async function swKilled() {
           if (primeWhy && primeFile) navigator.serviceWorker.controller.postMessage({ type: 'prefetch-file', url: primeFile });
           // the desktop or deferred tier's loose files that the engine reads at start (global shaders and the pipeline list, about
           // 44 MB on Lyra's desktop tier) load once the page has picked that tier and the game's wasm is compiled (sw.js
-          // prefetchTier); the forward tier's files are in the containers, so a forward pick posts 'mobile', which loads only its
-          // pipeline list; the rest load when the engine reads them. Loaded alongside the wasm download, Chrome failed the wasm read
+          // prefetchTier); each mobile tier's shader libraries are in a container of their own (tagged with its tier), so a forward
+          // pick posts 'mobile' and a deferred pick 'deferred', which load that tier's pipeline list and container. Loaded
+          // alongside the wasm download, Chrome failed the wasm read
           // (253 MB, Development) with net::ERR_BLOB_OUT_OF_MEMORY on most desktop loads; the wasm is the critical path, and
           // the engine reads none of these files before its runtime is up
           const controller = navigator.serviceWorker.controller;
           const codeIn = Promise.race([marked('wasm_compiled'), marked('runtime')]);
-          // (the mobile tier's own start file, its pipeline list, loads the same way)
-          Promise.all([startArgs, codeIn]).then(([args]) => {
-            // a start without tier switches (?compat=1, a harness run without ?tier=) runs the project's tier (ueCompat.runningTier)
-            const running = window.ueCompat && typeof window.ueCompat.runningTier === 'function' ? window.ueCompat.runningTier(args)
-              : (args || []).includes('-WebGPUSM5') ? 'desktop' : (args || []).includes('-WebGPUMobileDeferred') ? 'deferred' : 'forward';
+          // (the mobile tier's own start files, its pipeline list and its shader container, load the same way)
+          // (a pick that failed still posts, with the defaults the engine then starts with: sw.js holds a warm visit's late release
+          // until the pick)
+          Promise.all([engineArgs, startArgs.catch(() => []), codeIn]).then(([base, args]) => {
+            // The engine reads its whole command line (the link's and the stage's arguments, the page's defaults, the harness's, then
+            // the pick's and a bench's: script.onload), so the tier is read from all of it in the RHI's order (ueCompat.runningTier).
+            // A start without tier switches (?compat=1, a harness run without ?tier=) runs the project's tier. A wrong guess costs
+            // only this prefetch: the RHI mounts the tier it runs (WebGPUDevice.cpp)
+            const all = base.concat(args || [], outside((window.ueBench && window.ueBench.args) || [], ''));
+            // (without wasm-compat.js: forward, and the RHI's tier event corrects it)
+            const running = window.ueCompat && typeof window.ueCompat.runningTier === 'function' ? window.ueCompat.runningTier(all) : 'forward';
             const tier = running === 'forward' ? 'mobile' : running;
+            if (loadsStopped) return;
             if (tier !== 'mobile') console.log('LOADTIME tier_posted ' + Math.round(performance.now()));
             controller.postMessage({ type: 'prefetch-tier', tier });
+            tierByPick = running;
+            countTier(running);
+            let posted = running;
+            repostTier = (rhiTier) => {
+              if (rhiTier === posted) return;
+              console.log(`PAGE TIER the RHI runs ${rhiTier} (the page posted ${posted}): its files load instead`);
+              posted = rhiTier;
+              controller.postMessage({ type: 'prefetch-tier', tier: rhiTier === 'forward' ? 'mobile' : rhiTier });
+              countTier(rhiTier);
+            };
           }, () => {});
         } else {
           console.log('service worker not controlling this load (a hard reload): uncached');
@@ -415,10 +576,11 @@ async function swKilled() {
     }
   }
   try { sessionStorage.removeItem('ue.sw.unregistered'); } catch (e) { /* private window */ }
+  if (loadsStopped) return;
   // The game's module starts loading and compiling now, through the data cache, instead of when the game script runs:
   // before it the page measures the display's rate (up to 1 s of frames), reads the command line and the script, and
   // the module's 254 MB read and compile (or the load of its compiled code, which Chrome keeps for a cached response) waited
-  // for all of it (EMA ttff-wasm-cache). Module.instantiateWasm instantiates the compiled module; ?wasmearly=0 leaves
+  // for all of it (measured). Module.instantiateWasm instantiates the compiled module; ?wasmearly=0 leaves
   // Emscripten's own instantiateStreaming at the script's start. The compile goes through wasm-harness.js's wrapper, so
   // wasm_compiled marks this compile (the instantiate of the compiled module is not counted), and the desktop or deferred tier's
   // prefetch (held above until wasm_compiled) follows it, still after the module's download. The page's GPU device
@@ -440,17 +602,40 @@ async function swKilled() {
     ? caches.match(new URL('__ue/http-copy', swScope).href).then((r) => (r ? r.json() : null))
       .then((record) => !!(record && record.held && record.held[earlyListed.sha1]), () => false)
     : Promise.resolve(false));
+  // (a stop aborts it, also one that comes while the HTTP cache record is read: stopLoads)
+  const signal = pageLoads ? pageLoads.signal : undefined;
   const earlyResponse = () => {
-    if (!cached || !earlyListed.sha1) return fetch(earlyListed.url, { credentials: 'same-origin' });
-    return earlyHeld().then((held) => (!held ? fetch(earlyListed.url, { credentials: 'same-origin' })
-      : fetch(earlyListed.url + '?v=' + earlyListed.sha1, { cache: 'only-if-cached', mode: 'same-origin' })
+    if (!cached || !earlyListed.sha1) return fetch(earlyListed.url, { credentials: 'same-origin', signal });
+    return earlyHeld().then((held) => (!held ? fetch(earlyListed.url, { credentials: 'same-origin', signal })
+      : fetch(earlyListed.url + '?v=' + earlyListed.sha1, { cache: 'only-if-cached', mode: 'same-origin', signal })
         .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); earlyFrom = "browser's HTTP cache"; return r; })
-        .catch(() => fetch(earlyListed.url, { credentials: 'same-origin' }))));
+        .catch(() => fetch(earlyListed.url, { credentials: 'same-origin', signal }))));
+  };
+  // the game's module as the stop card names it (wasm-play.js stopLead: a compile error of a module cut short)
+  window.ueModuleFile = earlyListed ? earlyListed.url : '';
+  // The bytes the fallback compiles are checked against the list first: a host that has the module cut short (an upload that
+  // stopped) or not at all is named on the card as a missing file (wasm-play.js noteFileProblem), not as the raw CompileError
+  // (an HTTP error is told before its body is read: a body that fails to arrive does not hide it)
+  const moduleBytes = (r) => {
+    const tell = (got) => window.ueFileProblem({ path: earlyListed.url, status: r.status || 0, expected: earlyListed.size || 0, got });
+    if (!r.ok) tell(-1);
+    return r.arrayBuffer().then((bytes) => {
+      if (r.ok && earlyListed.size && bytes.byteLength < earlyListed.size) tell(bytes.byteLength);
+      return bytes;
+    });
   };
   const earlyModule = earlyListed && query.get('wasmearly') !== '0' && WebAssembly.compileStreaming && (cached || !splitFiles.length)
     ? WebAssembly.compileStreaming(earlyResponse()).catch((e) => {
+      // a stop aborted the module's load (stopLoads): it is not loaded again
+      if (loadsStopped) { console.log('PAGE WASM_EARLY stopped: ' + e); throw e; }
       console.log('PAGE WASM_EARLY compile failed, compiling from bytes: ' + e);
-      return fetch(earlyListed.url, { credentials: 'same-origin' }).then((r) => r.arrayBuffer()).then((bytes) => WebAssembly.compile(bytes));
+      // a module that differs from the list (the data cache's read of it errored, then it refuses it): the page stops
+      // (the page's stop aborts this fetch too: stopLoads)
+      return fetch(earlyListed.url, { credentials: 'same-origin', ...(pageLoads ? { signal: pageLoads.signal } : {}) }).then((r) => {
+        const m = mismatchOf(r);
+        if (m) { onMismatch(m); throw Object.assign(new Error('the game module differs from wasm-cache.json'), { mismatch: true }); }
+        return moduleBytes(r);
+      }).then((bytes) => WebAssembly.compile(bytes));
     })
     : null;
   if (earlyModule) {
@@ -471,14 +656,17 @@ async function swKilled() {
   }
   // Progress: sw.js reports each whole-file load; the total is the game's binaries and containers, counted as they travel: a
   // file's Brotli size ("br" in wasm-cache.json, 0 for one served as it is), so the page counts wire bytes, not unpacked
-  // bytes. sw.js reports unpacked bytes, scaled here by each file's ratio. The later pak chunks' containers (sw.js isLate) load
-  // after the game is ready, in the background, so the step and the bar count the start-up bytes only. The same files as sw.js
-  // isLate, pakchunk99's .pak too (61 MB on Lyra): counted here, the total was reached only after ready on every cold visit
-  const late = (url) => /\/pakchunk(?:[1-9][0-9]*[^/]*|[0-9]+optional[^/]*)\.ucas$/i.test(url) || /\/pakchunk99-[^/]*\.pak$/i.test(url);
+  // bytes. sw.js reports unpacked bytes, scaled here by each file's ratio. The later pak chunks' containers (wasm-cache.json
+  // "late": true, as sw.js isLate) load after the game is ready, in the background, so the step and the bar count the start-up
+  // bytes only. The late text pak too (61 MB on Lyra): counted here, the total was reached only after ready on every cold visit
+  // A tier's start files (its shader container below Content/TierPaks, its loose global shaders and pipeline list: sw.js
+  // tierStartFiles) are counted once the page has picked that tier (countTier): the worker loads them with the start-up data, and
+  // no other tier's
+  const late = (f) => !!f.late;
   window.ueStageFiles = files.filter((f) => /\/Binaries\/Wasm\//.test(f.url)).map((f) => ({ url: f.url, sha1: f.sha1 }));   // for error reports
-  const needed = files.filter(f => (/\/Binaries\/Wasm\/[^/]+\.(js|wasm)$/.test(f.url) || /\/Content\/Paks\//.test(f.url)) && !late(f.url));
+  const needed = files.filter(f => (/\/Binaries\/Wasm\/[^/]+\.(js|wasm)$/.test(f.url) || /\/Content\/Paks\//.test(f.url)) && !late(f));
   const wire = f => f.br || f.size;
-  const total = needed.reduce((sum, f) => sum + wire(f), 0);
+  let total = needed.reduce((sum, f) => sum + wire(f), 0);
   const byUrl = new Map(needed.map(f => [new URL(f.url, location.href).href, f]));
   const loaded = new Map();
   let downloaded = false;
@@ -486,10 +674,23 @@ async function swKilled() {
   // The start-up download as counted here, for the pipeline hold (wasm-play.js pipelineHold): wire bytes in of the total, the
   // bytes that came over the network (not from this browser's cache) and when the last count arrived; none without the worker
   const boot = window.ueBootDownload = cached && total ? { total, bytes: 0, netBytes: 0, since: timings.sw || 0, at: 0 } : null;
+  // The picked tier's start files count from the pick on, the same set the worker loads then (sw.js tierStartFiles: the tier's
+  // container below Content/TierPaks and its loose GlobalShaderCache-, ShaderArchive-Global- and PipelinePrewarm- files), so the
+  // step and the bar count what a start downloads before its first frame
+  const tierStart = (f, tier) => f.tier === tier && !f.late && (/\/Content\/TierPaks\//.test(f.url)
+    || /^(?:GlobalShaderCache-|ShaderArchive-Global-|PipelinePrewarm-)/i.test(f.url.split('/').pop()));
+  countTier = (tier) => {
+    const added = files.filter((f) => tierStart(f, tier) && !byUrl.has(new URL(f.url, location.href).href));
+    for (const f of added) { byUrl.set(new URL(f.url, location.href).href, f); total += wire(f); }
+    if (!added.length) return;
+    downloaded = false;
+    if (boot) boot.total = total;
+  };
   if (cached) {
     navigator.serviceWorker.addEventListener('message', (event) => {
       const data = event.data || {};
       if (data.type === 'log') { console.log(data.text); return; }
+      if (data.type === 'mismatch') return;   // the listener above (this page's own files only)
       // The worker could not keep the files (storage full) or was turned off by the host
       if (data.type === 'storage-low') { notice(T('This browser has no room to keep the game, so it downloads again on the next visit.')); return; }
       if (data.type === 'sw-off') { console.log('PAGE SW_OFF: the data cache is off for this site; this load runs uncached'); return; }
@@ -507,10 +708,9 @@ async function swKilled() {
     });
   }
   progress(cached ? 'Downloading...' : 'Downloading the game...', 0.02, cached && total ? 'download' : undefined);
-  // Frames capped at the display's rate, measured by index.html with requestAnimationFrame (t.MaxFPS; a non-Shipping -ini
-  // override, so Shipping needs the RHI's own present pacing)
+  // The display's rate, measured by index.html with requestAnimationFrame (window.ueDisplayHz): the engine reads it whenever the game's
+  // settings apply (FWasmPlatformMisc::GetDefaultFrameRateLimit, the limit when FrameRateLimit is 0), so it is measured first
   if (window.ueDisplayHzReady) await Promise.race([window.ueDisplayHzReady, new Promise((r) => setTimeout(r, 1000))]);
-  if (window.ueDisplayHz) defaults.push('-ini:Engine:[ConsoleVariables]:t.MaxFPS=' + window.ueDisplayHz);
   // A device profile's frame cap (wasm-profile.js fps=N, the lower of it and the display's rate) becomes a ceiling on the game's
   // frame rate: the page bridge holds t.MaxFPS at or below it (WasmPageBridge.cpp ApplyWebStartSettings), so the game's own
   // settings updates cannot lift it, where a t.MaxFPS value alone was undone during start-up. Shipping too
@@ -524,7 +724,8 @@ async function swKilled() {
   const engineGame = pageMeta('ue-game') === 'UnrealGame';
   const stagedArgs = splitArgs(staged).filter((a) => engineGame || !/^-project=/i.test(a));
   const queryArgs = linkArgs(splitArgs(query.get('args') || ''));
-  const isMap = (a) => a && !a.startsWith('-');
+  // (a tier switch written with '/', such as ?args=/WebGPUSM5, is a switch, not a map: the engine reads it as one)
+  const isMap = (a) => a && !a.startsWith('-') && !/^\/webgpu(no)?(sm5|mobiledeferred)$/i.test(a);
   const map = isMap(queryArgs[0]) ? queryArgs.shift() : isMap(stagedArgs[0]) ? stagedArgs.shift() : null;
   if (isMap(stagedArgs[0])) stagedArgs.shift();
   if (staged) console.log('LOADTIME staged_cmdline ' + Math.round(performance.now()) + ' ' + staged.trim());
@@ -536,21 +737,32 @@ async function swKilled() {
   // An intro shell sets window.ueExtraArgs; wait for its script (at most 3 s) so a cached load does not
   // build the command line before it ran
   if (window.ueShellReady) await Promise.race([window.ueShellReady, new Promise((r) => setTimeout(r, 3000))]);
-  const args = (map ? [map] : []).concat(queryArgs, stagedArgs, window.ueExtraArgs || [], defaults, profileIni,
+  // After this tab's GPU fallback the pick's forward switches decide the tier: a tier switch from anywhere else is dropped
+  // (wasm-compat.js dropTierSwitches, UE-414087), so the start runs the forward renderer its toast names
+  const outside = (list, where) => (window.ueCompat && window.ueCompat.dropTierSwitches ? window.ueCompat.dropTierSwitches(list, where) : list);
+  const args = (map ? outside([map], 'the map argument') : []).concat(outside(queryArgs, "the link's ?args="), outside(stagedArgs, 'the staged command line'),
+    outside(window.ueExtraArgs || [], 'window.ueExtraArgs'), outside(defaults, "the page's ue-args"), outside(profileIni, 'the device profile'),
     // -ForceRes: the display metrics report r.SetRes' 1280x720, so without it the engine picked a smaller window (888x500);
-    // the canvas is already at most ue-max-dpr device pixels per CSS pixel
+    // the canvas is already at its density (ue-max-dpr, or ue-touch-dpr on a touch screen)
     ['-resx=' + canvas.width, '-resy=' + canvas.height, '-windowed', '-ForceRes'],
     // the harness's own arguments (wasm-harness.js: the page's time origin for the engine's boot markers)
     (window.__harness && window.__harness.ueArgs) || []);
+  resolveEngineArgs(args.slice());
   window.Module = {
     arguments: args,
     // the module compiled since the page started it (above); Emscripten passes the imports and takes the instance
     ...(earlyModule ? { instantiateWasm: (imports, done) => {
+      // (a module that differs from wasm-cache.json has stopped the page already: onMismatch)
       earlyModule.then((module) => WebAssembly.instantiate(module, imports).then((instance) => done(instance, module)))
-        .catch((e) => { console.log('HARNESS ABORT wasm instantiate: ' + e); fail('The game could not start: ' + e); });
+        .catch((e) => { if (e && e.mismatch) return; console.log('HARNESS ABORT wasm instantiate: ' + e); fail('The game could not start: ' + e); });
       return {};
     } } : {}),
     canvas: canvas,
+    // the exact factor the canvas was sized with above: the engine sizes the canvas and maps pointer and touch coordinates with
+    // it for the page's life (WasmApplication.cpp), so a turn of the phone during loading cannot change it (UE-411884)
+    canvasScale: dpr,
+    // a touch screen's canvas denser than ue-max-dpr: the 3D scene's share of it (r.SecondaryScreenPercentage.GameViewport)
+    ...(dpr > sceneDpr ? { sceneScale: sceneDpr / dpr } : {}),
     wasmManifest: manifest.map(e => ({ path: e.path, url: e.url, size: e.size, late: e.late })),   // late: the small-chunk fetch backend
     locateFile: (file) => project + '/Binaries/Wasm/' + file,
     print: t => {
@@ -574,8 +786,25 @@ async function swKilled() {
       }
       console.log(t);
     },
-    printErr: t => { rememberLine(t); const failure = classifyLine(t); if (failure) failKind(failure, t); console.error(t); },
-    onAbort: m => { console.log('HARNESS ABORT ' + m); fail(String(m || 'aborted')); },
+    printErr: t => {
+      rememberLine(t);
+      crashNote('err', t);   // the JavaScript stack of a crash, for the crash report (wasm-play.js)
+      const failure = classifyLine(t);
+      if (failure) failKind(failure, t);
+      // a trap or an abort that ends a pthread reaches this thread only as these lines (Build/Link/wasm_crash.js, Emscripten):
+      // with error reports on (an endpoint, crashUrl in wasm-play.js), a stop with its card, so the report goes; without, the
+      // page goes on as before
+      else if (!crashUrl()) { /* error reports off */ }
+      // (a wasm trap or an abort only, which leave the module's state undefined: a JavaScript exception in a pthread's callback
+      // is recorded for a later report, and the game goes on)
+      else if (t.startsWith('UE_CRASH_STACK ')) {
+        let m = ''; try { m = String(JSON.parse(t.slice(15)).message || ''); } catch (e) { m = ''; }
+        if (crashStackFatal(t)) fail(m || 'A game thread stopped with an error.');
+      }
+      // (Emscripten's own "worker sent an error!" line for the same exception stops nothing: the hook's line above decides)
+      console.error(t);
+    },
+    onAbort: m => { console.log('HARNESS ABORT ' + m); crashNote('abort', m); fail(String(m || 'aborted')); },
     // Emscripten's exit (the engine called exit after RequestExit) ends the game like 'ue-exit'
     onExit: code => gameEnded(Number(code) || 0),
     setStatus: t => { status.textContent = t; },
@@ -589,7 +818,23 @@ async function swKilled() {
       siteStarted(/firefox/i.test(navigator.userAgent) ? 12 : 4);
     },
   };
-  window.addEventListener('error', (event) => { if (event.message && /Aborted|RuntimeError/.test(event.message)) fail(event.message); });
+  window.addEventListener('error', (event) => {
+    if (!event.message || !/Aborted|RuntimeError/.test(event.message)) return;
+    crashNote('error', event.error && event.error.stack ? event.error.stack : event.message);
+    fail(event.message);
+  });
+  // a trap in a promise callback on this thread (a WebGPU callback, the module's start): the game's own, an abort or a
+  // WebAssembly.RuntimeError (a trap, or Emscripten's abort; a JavaScript error is not the game's crash). Only with error reports
+  // on (crashUrl), as a pthread's stop above
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason;
+    // (WebAssembly.RuntimeError, else by its name where the constructor is not there)
+    const runtimeError = typeof WebAssembly === 'object' && typeof WebAssembly.RuntimeError === 'function' ? WebAssembly.RuntimeError : null;
+    if (!reason || !crashUrl() || !(runtimeError ? reason instanceof runtimeError : reason.name === 'RuntimeError')) return;
+    if (!(/Aborted\(/.test(String(reason)) || /wasm-function\[/.test(String(reason.stack || '')))) return;
+    crashNote('error', reason.stack ? String(reason) + '\n' + reason.stack : String(reason));
+    fail(String(reason));
+  });
   const gpu = await gpuProbe;
   if (gpu.message) {
     fail(gpu.message, window.ueBench ? undefined : (gpu.kind || 'gpu'));   // (a bench page's own message is no GPU stop)
@@ -605,16 +850,48 @@ async function swKilled() {
   const game = gameMeta && !gameMeta.startsWith('%') ? gameMeta : project;
   const scriptName = new RegExp('^' + game.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:-Wasm-[A-Za-z]+)?\\.js$');
   const listed = files.find(f => f.url.startsWith(project + '/Binaries/Wasm/') && scriptName.test(f.url.split('/').pop()));
-  const scriptUrl = listed ? listed.url : project + '/Binaries/Wasm/' + game + '.js';
+  // Without the listing (the host's kill switch {"sw":"off"}, or a stage packaged before wasm-cache.json) the page does not know
+  // the script's -Wasm-<Config> suffix: it asks for each name (HEAD), <Game>.js first, and keeps the one the host has (a
+  // Shipping stage's <Game>.js is a 404, UE-412638). A host that refuses HEAD (not a 404) leaves <Game>.js, as before
+  let scriptUrl = listed ? listed.url : null;
+  // (a HEAD that does not settle within 5 s ends the search like a refused one: a stalled host does not hold the start)
+  const probeWait = () => new Promise((resolve) => setTimeout(() => resolve(0), 5000));
+  for (const config of listed ? [] : ['', 'Shipping', 'Test', 'DebugGame']) {
+    const url = project + '/Binaries/Wasm/' + game + (config ? '-Wasm-' + config : '') + '.js';
+    const status = await Promise.race([fetch(url, { method: 'HEAD', cache: 'no-cache' }).then((r) => (r.ok ? 200 : r.status), () => 0), probeWait()]);
+    if (status === 200) { scriptUrl = url; break; }
+    if (status !== 404) break;
+  }
+  if (!scriptUrl) scriptUrl = project + '/Binaries/Wasm/' + game + '.js';
+  if (!listed) {
+    console.log('PAGE SCRIPT unlisted: ' + scriptUrl);
+    window.ueStageFiles.push({ url: scriptUrl });   // the error report and wasm-memory.js see the script's configuration
+  }
   // Fetch the game script once and hand the same Blob URL to every pthread Worker (Module.mainScriptUrlOrBlob): the pool
   // otherwise refetches it per Worker (56 x 273 KB on one game). ?blob=0 loads it by URL
   script.src = scriptUrl;
   let scriptText = null;   // the game script, where the page read it (a device profile's memory checks the glue takes it)
+  let firstDiffers = null;   // {size, sha1} of a first glue body that differed: a second fetch that fails then stops the page too
   if (query.get('blob') !== '0') {
     try {
-      const response = await fetch(scriptUrl);
+      let response = await fetch(scriptUrl);
+      if (mismatchOf(response)) { onMismatch(mismatchOf(response)); return; }
       if (!response.ok) throw new Error('HTTP ' + response.status);
-      const text = scriptText = await response.text();
+      let bytes = await response.arrayBuffer();
+      // the page's own check (a load without the data cache, or one whose worker read the script from the network): once more
+      // with cache: 'reload', then no script that still differs runs
+      let got = await bodyDiffers(bytes, listed);
+      if (got) {
+        firstDiffers = got;
+        console.log(`PAGE MISMATCH ${scriptUrl}: ${got.size} bytes sha1 ${got.sha1}, the list says ${listed.size} bytes sha1 ${listed.sha1}; fetching it again (cache: reload)`);
+        response = await fetch(scriptUrl, { cache: 'reload' });
+        if (mismatchOf(response)) { onMismatch(mismatchOf(response)); return; }
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        bytes = await response.arrayBuffer();
+        got = await bodyDiffers(bytes, listed);
+        if (got) { onMismatch({ kind: 'code', url: new URL(scriptUrl, location.href).href, size: listed.size, sha1: listed.sha1, got }); return; }
+      }
+      const text = scriptText = new TextDecoder().decode(bytes);
       // A script linked without mainScriptUrlOrBlob in INCOMING_MODULE_JS_API does not read it, and its ASSERTIONS build aborts
       // when the property is set (ignoredModuleProp("mainScriptUrlOrBlob")): use the Blob only for a script that reads it
       const readsBlob = /Module\[["']mainScriptUrlOrBlob["']\]|Module\.mainScriptUrlOrBlob\b/.test(text)
@@ -623,6 +900,11 @@ async function swKilled() {
         script.src = window.Module.mainScriptUrlOrBlob = URL.createObjectURL(new Blob([text], { type: 'text/javascript' }));
       }
     } catch (e) {
+      if (firstDiffers) {
+        console.log(`PAGE MISMATCH ${scriptUrl}: the second fetch failed (${e}); the script that differed is not run`);
+        onMismatch({ kind: 'code', url: new URL(scriptUrl, location.href).href, size: listed.size, sha1: listed.sha1, got: firstDiffers });
+        return;
+      }
       console.log('game script Blob unavailable, loading by URL: ' + e);
     }
   }
@@ -634,8 +916,12 @@ async function swKilled() {
     // a throw in the GPU check (or a bench script) starts the game with the defaults instead of stopping silently
     let picked = [];
     try { picked = await startArgs; } catch (e) { console.log('WEB_COMPAT start arguments failed, using the defaults: ' + e); }
+    // the pick's task-graph worker count (wasm-compat.js workerCap) gives way to a count the page's own arguments or a staged
+    // wasm-bench.js already name, whatever their order (the engine reads the first -WebWorkerThreads=, in any case)
+    const namesCount = (list) => Array.isArray(list) && list.some((a) => /^-WebWorkerThreads=/i.test(a));
+    if (namesCount(window.Module.arguments) || namesCount(window.ueBench && window.ueBench.args)) picked = picked.filter((a) => !/^-WebWorkerThreads=/i.test(a));
     window.Module.arguments.push(...picked);
-    if (window.ueBench && window.ueBench.args) window.Module.arguments.push(...window.ueBench.args);   // a staged wasm-bench.js
+    if (window.ueBench && window.ueBench.args) window.Module.arguments.push(...outside(window.ueBench.args, 'wasm-bench.js'));   // a staged wasm-bench.js
     // The device wasm-prewarm.js made during the download, for the engine's WebGPU RHI to take (it checks the device has what
     // it would request itself); not ready within 2 s, the RHI requests its own
     if (window.uePrewarm) {
@@ -654,8 +940,12 @@ async function swKilled() {
     if (profile && (profile.configured || profile.forced) && typeof profile.describe === 'function') {
       try { console.log(profile.describe()); } catch (e) { console.log('PAGE PROFILE ' + profile.name + ': its settings could not be printed: ' + e); }
     }
-    try { createUEModule(window.Module).catch(e => fail(String(e))); } catch (e) { fail(String(e)); }
+    if (codeStopped) return;   // a code file differed while the script loaded (onMismatch has stopped the page)
+    // (a start-up error's stack goes to the crash report, as a trap's does: crashNote, wasm-play.js)
+    const startFailed = (e) => { if (e && e.stack) crashNote('start', String(e) + '\n' + e.stack); fail(String(e)); };
+    try { createUEModule(window.Module).catch(startFailed); } catch (e) { startFailed(e); }
   };
   script.onerror = () => fail('The game script could not be loaded: ' + script.src);
+  if (codeStopped) return;
   document.body.appendChild(script);
 })();

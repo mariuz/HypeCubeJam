@@ -29,24 +29,117 @@ const blobs = new Map();
 const arriving = new Map();
 const starting = new Map();  // url?v=sha1 -> a promise of its arriving entry, or null once there is none (cached, failed)    // url?v=sha1 -> the cached file's Blob (disk-backed; slices are cheap)
 
+// UE-411931: a page that stops on a card the game cannot get past here (the browser, GPU, device or site stops; wasm-loader.js
+// stopLoads) posts {type: 'stop', why}. Its own loads stopped, but a whole-file load this worker ran for it went on: the .wasm
+// finished, the containers started about 14 s after the card and 259 MB were stored. The stop is that page's only: the whole-file
+// loads (and their staged pieces) that no other page asked for are aborted, their queued cache writes are dropped, and from then
+// on that page's prefetch messages and timers start nothing, its reads start no load and store nothing (they are answered from
+// what is cached or loading, else from the network, a code file checked as one this worker cannot store: uncachedCode), and its
+// module copy into the HTTP cache is aborted. Other pages' loads, reads and writes go on; what an aborted load stored is left to
+// the next visit (an index entry is written last, so a partial file is never read, and its pieces are reused or pruned)
+const stoppedPages = new Set();   // window client ids
+// (only a window counts as a page: one that is bound, or has posted this worker a message (its 'bind' is posted before its reads, and
+// is recorded before bind() has stored it); a Worker's requests are '', a client that never stops, since this worker cannot be sure
+// which page a Worker belongs to)
+const windowIds = new Set();   // window client ids that posted a message
+const pageOf = (clientId) => (clientId && (bound.has(clientId) || windowIds.has(clientId) || stoppedPages.has(clientId)) ? clientId : '');
+// url?v=sha1 -> {abort, pages, settled}: a whole-file load's (or its staged pieces') AbortController, the pages that asked for it
+// ('' for a client this worker cannot tie to a page, which never stops), and a promise of the end of the load, its cache writes
+// and its deletions. A stop aborts a load once every page in it has stopped; it stays here, aborted (so a fetch it makes later is
+// aborted too), until it has settled, and a new load of the file waits for that (fill)
+const loads = new Map();
+function interest(key, page) {
+  let load = loads.get(key);
+  if (!load) loads.set(key, load = { abort: typeof AbortController === 'function' ? new AbortController() : null, pages: new Set(), settled: null });
+  if (!loadAborted(load)) load.pages.add(page || '');
+  return load;
+}
+const loadAborted = (load) => !!(load && load.abort && load.abort.signal.aborted);
+// a load's fetch options, with its stop signal
+const signalled = (key, init) => { const load = loads.get(key); return load && load.abort ? { ...init, signal: load.abort.signal } : init; };
+const pageAborts = new Map();   // page -> the AbortController of its module copy into the HTTP cache (fillHttpCache)
+function stopLoads(page, why) {
+  if (!page) return;
+  stoppedPages.add(page);
+  if (pageAborts.has(page)) pageAborts.get(page).abort();
+  const aborted = [];
+  for (const [key, load] of [...loads]) {
+    if (loadAborted(load) || ![...load.pages].every((id) => stoppedPages.has(id))) continue;
+    if (load.abort) load.abort.abort();
+    for (const piece of [...tails.keys()]) if (piece.startsWith(key + '#')) tails.delete(piece);
+    if (!load.settled) loads.delete(key);   // (staged pieces only: no load to settle)
+    if (pending.has(key)) aborted.push(key.split('?')[0].split('/').pop());
+  }
+  post({ type: 'log', text: `SW STOP ${why || 'page'}: ${aborted.length} load(s) of this page aborted${aborted.length ? ' (' + aborted.join(', ') + ')' : ''}; it starts no load and stores nothing from now on` });
+}
+// a page's load: none for a page that stopped
+const fillFor = (page, url, entry) => fill(url, entry, page);
 self.addEventListener('install', () => self.skipWaiting());
 // the page asks for every game file at once, before the engine asks for any of them, so the
 // downloads overlap the wasm compile and the engine's start (the wasm and script first, then the containers)
 // containers of later pak chunks (pakchunk1 and up: audio, unused attachments) are not needed before
-// the site, so they stay out of the start-up prefetch; until the page says the site is up ('prefetch-late', at
+// the level, so they stay out of the start-up prefetch; until the page says the level is up ('prefetch-late', at
 // LOADING_READY), the engine's reads of them go to the network as plain ranges instead of waiting for the whole file
 // only the later chunks' .ucas waits; their .pak and .utoc (a few KB) load with the start-up data, so the
 // engine's mount of late/ (after pakchunk0's, whose .ucas it waits for) reads them from the cache instead of the network
-// The optional containers (pakchunk<N>optional: for example textures' top mips) are late too, and so is pakchunk99's .pak:
-// BaseWasmPakFileRules.ini [WasmLateText] puts the text and fonts a first visit does not read there (Lyra: 64 MB of Brotli)
-const isLate = (url) => /\/pakchunk(?:[1-9][0-9]*[^/]*|[0-9]+optional[^/]*)\.ucas$/i.test(url) || /\/pakchunk99-[^/]*\.pak$/i.test(url);
+// The optional containers (pakchunk<N>optional: for example textures' top mips) are late too, and so is the late text pak:
+// BaseWasmPakFileRules.ini [WasmLateText] puts the text and fonts a first visit does not read there (Lyra: 64 MB of Brotli).
+// UAT tags each of these "late": true in wasm-cache.json (WasmPlatform.Automation.cs IsLate); the page never matches chunk
+// numbers. A tier's container is late only where it is a cold shader container's code (isTierContainer)
+const isLate = (entry) => !!(entry && entry.late);
+// A tier's shader container (BaseWasmPakFileRules.ini [WasmForwardTierContainer], [WasmDeferredTierContainer]: each mobile tier's
+// shader libraries in a container of their own, so the first chunk's container carries neither tier's): UAT stages it below
+// Content/TierPaks/<tier>/Paks/ (or a texture set's folder below that), outside the boot-time pak scan, and tags its .ucas, .utoc and
+// .pak "tier": "forward" or "deferred" (WasmPlatform.Automation.cs TierOf). The engine mounts only the running tier's container,
+// once its WebGPU RHI has made the final tier decision (WebGPUDevice.cpp), so no start reads another tier's container. None of
+// them is shared start-up data: the page's pick loads its own tier's container whole (prefetchTier, tierStartFiles); a read of
+// another tier's container (the RHI fell back from the pick) starts that file's one whole-file load
+// A tier's cold shader container (Content/TierPaks/<tier>/Cold/Paks, tagged "cold"; BaseWasmPakFileRules.ini [WasmForwardTierCold],
+// [WasmDeferredTierCold]) is one of these too, the one tier container that is late: its .pak and .utoc load at the pick with the
+// tier's container (the RHI mounts both), its code (.ucas, "late") only after this page's late release (prefetchLate), and nothing
+// reads it ahead (tierStartFiles skips late files)
+const isTierContainer = (url, entry) => !!(entry && entry.tier) && /\/Content\/TierPaks\//.test(url);
+// The tier each page picked, by its bound file list (manifestFor: one map per page), for the warm release that waits for that
+// tier's start files and for the tier-tagged late files of a ready release whose message names no known tier (a page from before
+// 'prefetch-late' carried one; a worker restarted since the pick has lost this). A fallback's re-post (wasm-loader.js, the
+// RHI's 'ue-webgpu-tier' event) replaces the pick, so at ready this is the tier the RHI runs. Per page, not per worker: one worker serves every open page and its I/O workers, and another page of the
+// site may have picked another tier
+const tierPicked = new WeakMap();
+// The tiers whose late files a page's late release has loaded (prefetchLate at ready, or a pick or re-post after it: prefetchTier)
+const lateTiers = new WeakMap();
+const lateTiersLoaded = (map) => { if (!lateTiers.has(map)) lateTiers.set(map, new Set()); return lateTiers.get(map); };
+// The bound file lists (pages) whose late release happened: the page's 'prefetch-late', its warm release or the worker's 20 s
+// timer for it. Per page: one worker serves every page and reload of the site until it stops, and a later page's start must not
+// load its late files because an earlier page was released. lateReleased only says whether any page was (the /__sw report)
+const released = new WeakSet();
+// The bound file lists whose page sent its ready release ('prefetch-late'): the RHI has decided its tier by then
+const readyReleased = new WeakSet();
 let lateReleased = false;
+// Whether a request's page was released, for its reads: only a bound page's own list counts. A client with no binding gets the
+// newest list (manifestFor), one map shared by every unbound client, so its release would say nothing about this client's page
+const releasedPage = (map) => released.has(map) && [...bound.values()].some((b) => b.map === map);
+// A page's late files: the untagged ones and its tier's (another tier's late file, such as its cold shader code, is never this
+// page's); with no tier, the untagged ones
+const pageLate = (map, tier) => [...map.entries()].filter(([, entry]) => isLate(entry) && (!entry.tier || entry.tier === tier));
 self.addEventListener('message', (event) => {
   indexStore();   // before the first fill queues a write
   const from = event.source && event.source.id;
+  if (from && event.source.type === 'window') windowIds.add(from);   // (pageOf)
+  // a page this worker did not see navigate (a hard reload it then claimed) binds before it reads: the same retry as a navigation
+  if (event.data && event.data.type === 'bind') retryBroken();
   if (event.data && event.data.type === 'bind' && from) event.waitUntil(bind(from, event.data.files));
+  // a page that stopped on a card the game cannot get past here (wasm-loader.js stopLoads): its loads end now (stopLoads)
+  if (event.data && event.data.type === 'stop') stopLoads(from, String(event.data.why || ''));
   if (event.data && event.data.type === 'prefetch') event.waitUntil(prefetch(from));
-  if (event.data && event.data.type === 'prefetch-late') { lateReleased = true; event.waitUntil(prefetchLate(from)); }
+  // a page's mismatch listener is up: every mismatch so far, whether or not this page was told (it may have had no listener)
+  if (event.data && event.data.type === 'mismatches' && from) {
+    event.waitUntil(self.clients.matchAll({ type: 'window' }).then((clients) => {
+      const client = clients.find((c) => c.id === from);
+      if (client) for (const [key, message] of mismatches) { told.add(from + ' ' + key); client.postMessage(message); }
+    }).catch(() => {}));
+  }
+  // the ready release names the tier the page's game runs (wasm-loader.js postLate: the RHI's, else the pick)
+  if (event.data && event.data.type === 'prefetch-late') event.waitUntil(prefetchLate(from, 'page', event.data.tier));
   if (event.data && event.data.type === 'prefetch-tier') event.waitUntil(prefetchTier(from, event.data.tier));
   // the page's WebAssembly.Module exists: the module's downloaded chunks that page read are detached (moduleCompiled)
   if (event.data && event.data.type === 'module-compiled' && typeof event.data.url === 'string') moduleCompiled(event.data.url, from);
@@ -75,37 +168,63 @@ async function claimUnlessBypassed(source) {
   await self.clients.claim();
 }
 // (each loose library fetched twice, about 6.3 MB more on a first visit):
-// the desktop and deferred tiers' files are staged loose, outside Content/Paks (WasmPlatform StageTierLoose), so prefetch()
-// never loads them and the engine's first range reads went to the network before a whole-file copy existed. When the page
-// picks one of those tiers it names it here ('desktop' or 'deferred'), and that tier's files start their whole-file loads
-// before the engine reads them. A forward pick posts 'mobile': only its pipeline list loads early, no deferred or desktop file.
-// SF_WEBGPU_ES3_1_DEFERRED begins with SF_WEBGPU_ES3_1: the forward tier's names never match the deferred pattern (its
-// _DEFERRED is required), and a forward pattern would need its own end anchor (ES3_1 followed by - . or the end)
-const TIER_FILE = {
-  desktop: /[-_.]S[FP]_WEBGPU_SM5(?:[-_.]|$)/i,
-  deferred: /[-_.]S[FP]_WEBGPU_ES3_1_DEFERRED(?:[-_.]|$)/i,
-};
-const isTierFile = (url, tier) => !!TIER_FILE[tier] && TIER_FILE[tier].test(url.split('/').pop()) && !/\/Content\/Paks\//.test(url);
-// Only the files the engine reads during its start are prefetched: the global shader map, the global shader library and the
-// pipeline prewarm list (Lyra: 3 of 14 loose files, 44 of 55 MB). The project's chunk libraries and the cook's shader type
-// and asset info files are not read on the way to the first frame; a read of one still loads it whole (fill) when it comes.
-// The other 11 files loading alongside the start-up containers made the desktop tier's ready line 0.4 s later unshaped; the
-// start files are still prefetched as early as before, since the global library is on the engine's critical path (waiting
-// for the start-up containers before loading them put the ready line 1.3 s later at 300 Mbit/s)
-// The deferred tier has the same three (GlobalShaderCache-SP_WEBGPU_ES3_1_DEFERRED.bin, ShaderArchive-Global-SF_WEBGPU_ES3_1_DEFERRED-*,
-// PipelinePrewarm-SF_WEBGPU_ES3_1_DEFERRED.jsonl)
+// a tier's own files (tagged "tier" in wasm-cache.json: its shader container below Content/TierPaks, and its loose files, such as
+// the desktop tier's libraries and every tier's pipeline list) are not in the start-up prefetch, so the engine's first reads went
+// to the network before a whole-file copy existed. When the page picks a tier it names it here ('desktop', 'deferred', or
+// 'mobile' for forward), and that tier's start files begin their whole-file loads before the engine reads them; no file of
+// another tier loads
+const TIERS = ['forward', 'deferred', 'desktop'];
+const isTierFile = (url, entry, tier) => !!entry && entry.tier === tier && !isTierContainer(url, entry);
+// Only the loose files the engine reads during its start are prefetched: the global shader map, the global shader library and
+// the pipeline prewarm list (Lyra's desktop tier: 3 of 14 loose files, 44 of 55 MB). The project's chunk libraries and the
+// cook's shader type and asset info files are not read on the way to the first frame; a read of one still loads it whole (fill)
+// when it comes. The other 11 files loading alongside the start-up containers made the desktop tier's ready line 0.4 s later
+// unshaped; the start files are still prefetched as early as before, since the global library is on the engine's critical path
+// (waiting for the start-up containers before loading them put the ready line 1.3 s later at 300 Mbit/s)
 const isTierBootFile = (url) => /^(?:GlobalShaderCache-|ShaderArchive-Global-|PipelinePrewarm-)/i.test(url.split('/').pop());
-// The forward ('mobile') tier's start file is its pipeline prewarm list (WasmPipelinePrewarm.cpp reads the running tier's list at
-// the end of engine init); without this it loaded only when the engine read it. The same bytes, read on every start, only sooner.
-// A prewarm list of the deferred or desktop tier is never the forward tier's (their patterns end at the tier's name)
-const isMobileTierBootFile = (url) => {
-  const name = url.split('/').pop();
-  return /^PipelinePrewarm-/i.test(name) && !TIER_FILE.desktop.test(name) && !TIER_FILE.deferred.test(name);
-};
-async function prefetchTier(clientId, tier) {
-  if (tier === 'forward') tier = 'mobile';
-  if (tier !== 'mobile' && !TIER_FILE[tier]) return;
+// A tier's start files: its shader container (.ucas, .utoc, .pak: the engine mounts it and opens its libraries on the way to its
+// first frame) and its loose start files
+// (a late file of the tier loads at this page's ready release, prefetchLate, or after a release at a fallback's re-post or at a pick
+// that follows the ready release: prefetchTier)
+const tierStartFiles = (map, tier) => [...map.entries()]
+  .filter(([url, entry]) => (isTierContainer(url, entry) && entry.tier === tier && !isLate(entry)) || (isTierFile(url, entry, tier) && isTierBootFile(url)));
+async function prefetchTier(clientId, posted) {
+  if (stoppedPages.has(clientId)) return;   // (stopLoads)
+  const tier = posted === 'mobile' ? 'forward' : posted;
+  if (!TIERS.includes(tier)) return;
   const map = await manifestFor(clientId);
+  if (stoppedPages.has(clientId)) return;   // (a stop while the list was read)
+  // a second post is the re-post of a fallback: the tier the RHI runs
+  const repost = tierPicked.has(map);
+  tierPicked.set(map, tier);
+  // a tier known to run that arrives after the late release (it skipped this tier's late files: a warm or 20 s release loads none,
+  // and the page's ready release only the tier it knew then): a fallback's re-post, or any post after the page's ready release (the
+  // RHI has decided by then). Its late files load now, once, and this message holds the worker until they are stored (the start
+  // files below do not wait for them). A first pick after a release before ready is a guess: its tier's late files wait for ready
+  let late = [];
+  if (released.has(map) && (repost || readyReleased.has(map)) && !lateTiersLoaded(map).has(tier)) {
+    lateTiersLoaded(map).add(tier);
+    late = [...map.entries()].filter(([url, entry]) => isLate(entry) && entry.tier === tier && cacheable(url, entry));
+    if (late.length) post({ type: 'log', text: `SW LATE ${tier} picked after the release: ${late.length} late files of the tier load now` });
+  }
+  const lateStored = Promise.all(late.map(([url, entry]) => fillFor(clientId, url, entry).then(() => writes.get(url + '?v=' + entry.sha1)).catch(() => {})));
+  try {
+    await prefetchTierStart(clientId, map, tier);
+  } finally {
+    await lateStored;
+  }
+}
+async function prefetchTierStart(clientId, map, tier) {
+  // a warm visit waits for the pick to release the late containers: only then is it known which tier's start files count. The
+  // release's files are held by this message too, after the start files (which never wait for them)
+  const warm = await releaseLateIfWarm(clientId, map, tier);
+  try {
+    await loadTierStart(clientId, map, tier);
+  } finally {
+    if (warm) await warm.release;
+  }
+}
+async function loadTierStart(clientId, map, tier) {
   // the game's script and wasm loads end first (Chrome failed the wasm read with net::ERR_BLOB_OUT_OF_MEMORY when these files
   // loaded alongside it); the page posts after the wasm compiled, so this only holds a page that posts earlier
   const code = [...map.entries()].filter(([url]) => /\/Binaries\/Wasm\/[^/]+\.(js|wasm)$/.test(url))
@@ -114,24 +233,18 @@ async function prefetchTier(clientId, tier) {
     post({ type: 'log', text: `SW TIER ${tier} waits for ${code.length} code loads` });
     await Promise.all(code);
   }
-  if (tier === 'mobile') {
-    const lists = [...map.entries()].filter(([url, entry]) => isMobileTierBootFile(url) && cacheable(url, entry));
-    if (!lists.length) return;
-    post({ type: 'log', text: `SW TIER mobile: ${lists.length} start files (${lists.map(([url]) => url.split('/').pop()).join(', ')})` });
-    await Promise.all(lists.map(([url, entry]) => fillIfRoom(url, entry)));
-    return;
-  }
-  const tierFiles = [...map.entries()].filter(([url]) => isTierFile(url, tier));
-  const files = tierFiles.filter(([url, entry]) => isTierBootFile(url) && cacheable(url, entry));
-  post({ type: 'log', text: `SW TIER ${tier}: ${files.length} loose files (${files.map(([url]) => url.split('/').pop()).join(', ')}); ` +
-    `${tierFiles.length - files.length} more load when read` });
-  await Promise.all(files.map(([url, entry]) => fillIfRoom(url, entry)));
+  const files = tierStartFiles(map, tier).filter(([url, entry]) => cacheable(url, entry));
+  const later = [...map.entries()].filter(([url, entry]) => entry.tier === tier && !files.some(([u]) => u === url));
+  if (!files.length && !later.length) return;
+  post({ type: 'log', text: `SW TIER ${tier}: ${files.length} start files (${files.map(([url]) => url.split('/').pop()).join(', ')}); ` +
+    `${later.length} more load when read` });
+  await Promise.all(files.map(([url, entry]) => fillIfRoom(clientId, url, entry)));
 }
 // A tier's start file loads when it is stored already or its load is under way or done in this worker (no room needed), or when
 // it fits. The room check only asks (fits(..., false)): a prefetch that finds no room skips the file, which then loads when read,
 // and never marks the storage low for every later file (an estimate taken while another load writes can be stale). It resolves
 // once the file's cache writes are done too, so the message event that waits for it (waitUntil) holds the worker until then
-async function fillIfRoom(url, entry) {
+async function fillIfRoom(page, url, entry) {
   const key = url + '?v=' + entry.sha1;
   const loading = () => pending.has(key) || blobs.has(key);   // asked again after each wait: a read may start the load meanwhile
   const cache = loading() ? null : await caches.open(CACHE);
@@ -145,7 +258,7 @@ async function fillIfRoom(url, entry) {
       return;
     }
   }
-  await fill(url, entry);
+  await fillFor(page, url, entry);
   const writing = writes.get(key);
   if (writing) await writing;
 }
@@ -202,52 +315,85 @@ async function manifestFor(clientId) {
   return manifest();
 }
 async function prefetchFile(clientId, url) {
+  if (stoppedPages.has(clientId)) return;   // (stopLoads)
+  const fill = (url, entry) => fillFor(clientId, url, entry);   // (none once this page has stopped)
   const map = await manifestFor(clientId);
   const href = new URL(url, self.registration.scope).href;
   const entry = map.get(href);
   if (!entry) { post({ type: 'log', text: 'SW PRIME not listed: ' + url }); return; }
   post({ type: 'log', text: 'SW PRIME ' + href.split('/').pop() });
+  // (a load under way, or one whose download is over and whose writes are not: this page's too, room or not)
+  const key = href + '?v=' + entry.sha1;
+  if (pending.has(key) || (loads.has(key) && !loadAborted(loads.get(key)))) { await fill(href, entry); return; }
   if (cacheable(href, entry) && await fits(entry.size)) await fill(href, entry);
 }
-// started: the game is ready (the page's 'prefetch-late', or the worker's own release 20 s after the boot containers); a warm
-// visit that releases the late containers at once, during the start, passes false
-async function prefetchLate(clientId, started = true) {
+// from: 'page', the game is ready (the page's 'prefetch-late'); 'timer', the worker's own release 20 s after the boot containers;
+// 'warm', a warm visit that releases the late containers at once, during the start. posted: the tier the page's ready release
+// names ('mobile' for forward, as in 'prefetch-tier')
+async function prefetchLate(clientId, from, posted) {
+  if (stoppedPages.has(clientId)) return;   // (stopLoads)
   const map = await manifestFor(clientId);
-  const late = [...map.entries()].filter(([url]) => isLate(url));
-  post({ type: 'log', text: `SW LATE released: ${late.length} files (${late.map(([url]) => url.split('/').pop()).join(', ')})` });
-  // The later chunks' containers (the gameplay maps) load first, and pakchunk99's .pak (text and fonts a visit rarely reads;
-  // 62 MB of Brotli on Lyra) after them: sharing the link with it, a first visit's travel to a map soon after ready waited for
-  // that map's container (a read of a container still loading waits until its sequential load reaches the offset): Lyra's
-  // front end to L_Expanse at 50 Mbit/s took 5.1 s (desktop) and 3.3 s (mobile) longer
-  const textPak = ([url]) => /\/pakchunk99-[^/]*$/i.test(url);
+  if (stoppedPages.has(clientId)) return;   // (a stop while the list was read: a shared list is not released for it)
+  released.add(map);
+  lateReleased = true;
+  const started = from !== 'warm';
+  // A late file of one tier, tagged "tier" (its cold shader code), loads with a release only at the page's ready release, for the
+  // tier known then: the RHI has decided by ready, and a fallback's re-post has replaced the pick. A release before ready (a warm
+  // visit's, or the worker's 20 s one) loads only the untagged late files, so a start whose RHI falls back from the pick never loads
+  // the pick's cold code; the tier's late files then load at ready, or at a fallback's re-post that comes before it (prefetchTier;
+  // a first pick after such a release is a guess and loads none). The tier the message names comes first: this worker may have
+  // restarted since the pick (tierPicked is in its memory only); a message with no known tier (an older page) uses the pick or re-post
+  const named = posted === 'mobile' ? 'forward' : posted;
+  const tier = from !== 'page' ? undefined : TIERS.includes(named) ? named : tierPicked.get(map);
+  if (from === 'page') readyReleased.add(map);
+  const late = pageLate(map, tier);
+  if (tier) lateTiersLoaded(map).add(tier);
+  post({ type: 'log', text: `SW LATE released: ${late.length} files (${late.map(([url]) => url.split('/').pop()).join(', ')}), tier ${tier || 'none'}` });
+  // The later chunks' containers (the gameplay maps) load first, and the late text pak's chunk (a late .pak: text and fonts a
+  // visit rarely reads; 62 MB of Brotli on Lyra) after them: sharing the link with it, a first visit's travel to a map soon after
+  // ready waited for that map's container (a read of a container still loading waits until its sequential load reaches the
+  // offset): Lyra's front end to L_Expanse at 50 Mbit/s took 5.1 s (desktop) and 3.3 s (mobile) longer
+  const chunkOf = (url) => url.split('/').pop().split('-')[0].toLowerCase();
+  const textChunks = new Set(late.filter(([url]) => /\.pak$/i.test(url)).map(([url]) => chunkOf(url)));
+  const textPak = ([url]) => textChunks.has(chunkOf(url));
   const wanted = late.filter(([url, entry]) => cacheable(url, entry));
-  await Promise.all(wanted.filter((file) => !textPak(file)).map(([url, entry]) => fill(url, entry)));
-  await Promise.all(wanted.filter(textPak).map(([url, entry]) => fill(url, entry)));
-  if (started && wasmStoredAtStart) {
+  await Promise.all(wanted.filter((file) => !textPak(file)).map(([url, entry]) => fillFor(clientId, url, entry)));
+  await Promise.all(wanted.filter(textPak).map(([url, entry]) => fillFor(clientId, url, entry)));
+  // the message that released holds the worker until these files are stored too
+  await Promise.all(wanted.map(([url, entry]) => writes.get(url + '?v=' + entry.sha1)).filter(Boolean).map((w) => w.catch(() => {})));
+  // (this page's own visit: a return visit's, or a module of its list this worker's load read through the HTTP cache)
+  const returning = !!storedAtStart.get(clientId);
+  if (started && (returning || [...map.entries()].some(([url, entry]) => httpLoaded.has(url + '?v=' + entry.sha1)))) {
     await new Promise((resolve) => setTimeout(resolve, 5000));
-    await fillHttpCache(map);
+    await fillHttpCache(map, clientId, returning);
   }
 }
 // The browser keeps the code it compiled for a WebAssembly module beside the HTTP cache entry the module came from, and a
-// return visit compiles the HTTP cache's copy of the game's module when there is one (wasm-loader.js). So this worker puts
-// the module in the HTTP cache when it has no copy yet: on the first return visit, 5 s after the game is ready, so a first
-// visit carries no extra download and no start does: one more download of it, at idle. A load with force-cache during the
-// first visit's start would need no second download, but the HTTP cache's write slowed the worker's own download (Lyra,
-// 300 Mbit/s: 45 MB in 2.8 s instead of 1.5 s, the first visit's ready 1.3-1.5 s later). Its URL carries the file's sha1,
-// so a cached copy is always current
+// return visit compiles the HTTP cache's copy of the game's module when there is one (wasm-loader.js). So this worker's own
+// whole-file load of the module goes through the HTTP cache (force-cache, viaHttpCache): the one download of the first visit
+// leaves the browser its copy too. 5 s after that visit's ready this worker checks whether the browser kept it and records
+// the answer, so the next visit compiles the HTTP cache's copy, and a module the browser did not keep is never downloaded
+// for it again. (UE-410984: the load used no-store and the copy was made by a second download of the whole module, 5 s after
+// the first return visit's ready.) Its URL carries the file's
+// sha1, so a cached copy is always current. A module an earlier worker stored without that copy (its load used no-store, or
+// the load resumed: a Range answer is not the whole file) is copied as before: one download, on its first return visit, at idle
 // The outcome is kept in this scope's cache (HTTP_COPY), so each copy is made once per module and browser profile, not on every
 // worker start (UE-410984: the in-memory record of earlier builds was lost with each worker, and every return visit downloaded
 // the module again): {held: {sha1: bytes} of modules the HTTP cache kept, refused: {sha1: bytes} of those it did not keep, limit:
-// the smallest size it did not keep} (bytes: the response's Content-Length, the size the HTTP cache keeps).
+// the smallest size a copy's download found it did not keep} (bytes: the response's Content-Length, the size the HTTP cache keeps).
 // The copy is checked with only-if-cached at once: Chrome drops an entry over its per-entry limit (an eighth of its cache size,
 // which it sizes per machine) without an error. Measured, Chrome 157 on Linux: --disk-cache-size 320 MB kept 40 MB and not 45 MB,
 // 200 MB kept 25 MB and not 30 MB, the default kept 100 MB and not 150 MB; the reporter's Chrome 156 kept 30 MB and not 45 MB, so
-// Lyra's 44.5 MB module fits on one machine and not on another, and no fixed size can stand for the limit. A module as large
-// as one refused is not tried again (the next deploy's module of that size neither). The page asks the HTTP cache only for a
+// Lyra's 44.5 MB module fits on one machine and not on another, and no fixed size can stand for the limit. A refused module is
+// not tried again, and no module as large as one a copy's download found refused is copied (its own load through the HTTP
+// cache is still checked: that costs no download). The page asks the HTTP cache only for a
 // module this record holds (wasm-loader.js earlyResponse: an only-if-cached miss is a red console error in Chrome)
 const isWasm = (url) => /\/Binaries\/Wasm\/[^/]+\.wasm$/.test(url);
-let wasmStoredAtStart = false;   // the latest visit's prefetch found the module in Cache Storage (a return visit)
+const storedAtStart = new Map();   // page -> its prefetch found its module in Cache Storage (a return visit)
 const httpCopied = new Set();    // url?v=sha1 of modules this worker has dealt with (copied, found, refused), or whose copy is under way
+const httpLoaded = new Map();    // url?v=sha1 -> wire bytes of modules whose whole body this worker's own load read through the HTTP cache
+// the game's module, whole and unsplit (a file in parts or staged pieces has no single HTTP cache entry to compile from)
+const viaHttpCache = (url, entry) => isWasm(url) && !entry.parts && !entry.body;
 const HTTP_COPY = INTERNAL + 'http-copy';
 async function readHttpCopy() {
   try {
@@ -257,7 +403,10 @@ async function readHttpCopy() {
     return { held: map('held'), refused: map('refused'), limit: (record && Number(record.limit)) || 0 };
   } catch (e) { return { held: {}, refused: {}, limit: 0 }; }
 }
-async function writeHttpCopy(record, map) {
+// (one write at a time in this worker: each merges with what the one before it stored)
+let httpCopyWrite = Promise.resolve();
+const writeHttpCopy = (record, map) => (httpCopyWrite = httpCopyWrite.then(() => mergeHttpCopy(record, map), () => mergeHttpCopy(record, map)));
+async function mergeHttpCopy(record, map) {
   // Pages of two builds can be live in one scope (prune keeps each live page's manifest), so the record is not cut to the
   // caller's list: it is merged with what is stored now (another page's write since this one read it) and keeps the newest
   // 16 modules of each kind, which bounds it across deploys
@@ -275,7 +424,8 @@ async function writeHttpCopy(record, map) {
 }
 const httpHeld = (key) => fetch(key, { cache: 'only-if-cached', mode: 'same-origin' })
   .then((r) => { if (r.body) r.body.cancel().catch(() => {}); return r.ok; }, () => false);
-async function fillHttpCache(map) {
+// (returning: the page's prefetch found its module stored, so a module stored without an HTTP cache copy may be copied)
+async function fillHttpCache(map, page, returning) {
   let record = null;
   for (const [url, entry] of map.entries()) {
     if (!isWasm(url) || entry.parts) continue;
@@ -288,20 +438,39 @@ async function fillHttpCache(map) {
     try {
       if (!record) record = await readHttpCopy();
       const known = !!record.held[entry.sha1];
-      if (!known && (record.refused[entry.sha1] || (record.limit && wire >= record.limit))) {
-        post({ type: 'log', text: `SW HTTP_COPY ${name} skipped: ${record.refused[entry.sha1] || wire} bytes, the HTTP cache did not keep ${record.limit}` });
+      // (a module this worker's load just read through the HTTP cache is asked about even so: the probe costs no download)
+      if (!known && !httpLoaded.has(key) && (record.refused[entry.sha1] || (record.limit && wire >= record.limit))) {
+        post({ type: 'log', text: `SW HTTP_COPY ${name} skipped: ${record.refused[entry.sha1] || wire} bytes, the HTTP cache did not keep ${record.refused[entry.sha1] || record.limit}` });
         done = true;
         continue;
       }
       // one copy already there (this record, or one an earlier worker made before the record existed): no download. A held
-      // copy the browser has since evicted is copied again (the page's one probe of it missed)
+      // copy the browser has since evicted is copied again (the page's one probe of it missed); a later visit this worker
+      // serves asks again (not done: only a copy or a refusal is final)
       if (await httpHeld(key)) {
+        httpLoaded.delete(key);   // (its load's copy is checked: a later miss is an eviction, copied again on a return visit)
         if (!known) { record.held[entry.sha1] = wire; await writeHttpCopy(record, map); }
-        done = true;
         continue;
       }
       if (known) { delete record.held[entry.sha1]; await writeHttpCopy(record, map); }
-      const response = await fetch(key, { cache: 'force-cache' });
+      // this worker's load read the module's whole body through the HTTP cache and the browser did not keep it (over its
+      // per-entry limit): recorded without a second download. Only this module is: a miss here can also be an eviction since the
+      // load, and the size limit is kept to spare a copy's download, which a later module's own load does not need
+      if (httpLoaded.has(key)) {
+        const sent = httpLoaded.get(key) || wire;
+        record.refused[entry.sha1] = sent;
+        await writeHttpCopy(record, map);
+        done = true;
+        post({ type: 'log', text: `SW HTTP_COPY ${name}: not kept by the HTTP cache (${sent} bytes, over its per-entry limit); not tried again` });
+        continue;
+      }
+      // a module this worker's load did not read through the HTTP cache is copied only on this page's return visit, and only
+      // while the data cache holds it (stored whole or in pieces, as cachedResponse reads it)
+      const store = await openCache();
+      if (!returning || (!(await store.match(key)) && !(await store.match(key + '&parts')))) continue;
+      if (stoppedPages.has(page)) return;   // (stopLoads; a stop during the copy aborts it)
+      if (!pageAborts.has(page) && typeof AbortController === 'function') pageAborts.set(page, new AbortController());
+      const response = await fetch(key, pageAborts.has(page) ? { cache: 'force-cache', signal: pageAborts.get(page).signal } : { cache: 'force-cache' });
       if (response.ok && response.body) {
         // the HTTP cache keeps what passes. blob() drains the body inside the browser (Chrome hands the network's data pipe to
         // its Blob registry), where a reader loop took every chunk of the module into this worker's JS heap (Lyra: 168 MB of
@@ -325,7 +494,32 @@ async function fillHttpCache(map) {
     }
   }
 }
+// The bound file lists whose start-up files were all cached at prefetch() while an untagged late container was not: the untagged late
+// containers load at the tier pick when that tier's start files are cached too. Resolves to {release} (the release's promise, for the
+// caller's waitUntil) when it released
+const warmAtPick = new WeakSet();
+async function releaseLateIfWarm(clientId, map, tier) {
+  if (!warmAtPick.has(map)) return;
+  warmAtPick.delete(map);
+  if (released.has(map)) return;
+  const store = await caches.open(CACHE);
+  const stored = async ([url, entry]) => { const key = url + '?v=' + entry.sha1; return !!(await store.match(key + '&parts')) || !!(await store.match(key)); };
+  for (const file of tierStartFiles(map, tier)) {
+    if (!(await stored(file))) {
+      post({ type: 'log', text: `SW LATE waits: the ${tier} tier's ${file[0].split('/').pop()} is not cached` });
+      return;
+    }
+  }
+  // (only the untagged late files count: a warm release loads no tier's late file, and another tier's cold code, never loaded on
+  // this device, would make every settled visit release during its start)
+  let lateMissing = false;
+  for (const file of pageLate(map, undefined)) if (!(await stored(file))) { lateMissing = true; break; }
+  if (!lateMissing || released.has(map)) return;
+  post({ type: 'log', text: `SW LATE at once (every boot file is cached, the ${tier} tier's too; a late one is not)` });
+  return { release: prefetchLate(clientId, 'warm').catch(() => {}) };
+}
 async function prefetch(clientId) {
+  if (stoppedPages.has(clientId)) return;   // (stopLoads)
   const map = await manifestFor(clientId);
   const rank = (url) => url.endsWith('.wasm') ? 0 : url.endsWith('.js') ? 1 : url.endsWith('.pak') ? 2 : url.endsWith('.utoc') ? 3 : url.includes('/global.') ? 4 : 5;
   const wanted = [...map.entries()]
@@ -337,30 +531,49 @@ async function prefetch(clientId) {
   // Only the game's binaries go first; a loose file with a wave (sw.js?waves=1), script or not, waits for its wave
   const isBinary = (url) => /\/Binaries\/Wasm\/[^/]+\.(js|wasm)$/.test(url);
   const code = wanted.filter(([url]) => isBinary(url));
-  const data = wanted.filter(([url]) => !isBinary(url) && !isLate(url));
+  // (a tier's container, below Content/TierPaks, loads at that tier's pick (prefetchTier) or at the engine's first read of it, never
+  // with the start-up data)
+  const data = wanted.filter(([url, entry]) => !isBinary(url) && !isLate(entry) && !isTierContainer(url, entry));
   // A visit that finds every boot file cached has no boot download to protect: the late containers load now
   const store = await caches.open(CACHE);
-  wasmStoredAtStart = false;
-  for (const [url, entry] of code) if (isWasm(url) && await store.match(url + '?v=' + entry.sha1 + '&parts')) wasmStoredAtStart = true;
+  let storedNow = false;
+  for (const [url, entry] of code) if (isWasm(url) && await store.match(url + '?v=' + entry.sha1 + '&parts')) storedNow = true;
+  storedAtStart.delete(clientId);
+  storedAtStart.set(clientId, storedNow);
+  if (storedAtStart.size > 32) storedAtStart.delete(storedAtStart.keys().next().value);   // (the oldest pages': bounded)
   let warm = true;
   for (const [url, entry] of code.concat(data)) {
     const key = url + '?v=' + entry.sha1;
     if (!(await store.match(key + '&parts')) && !(await store.match(key))) { warm = false; break; }
   }
+  // A stage with files of one tier (its container, its loose start files, its late cold code) is warm only when the picked tier's
+  // start files are cached too: a forward start after deferred visits still downloads the forward container, and the late
+  // containers would share the link with it. Which tier's start files count is known at the pick (prefetchTier ->
+  // releaseLateIfWarm); a warm release loads only the untagged late files, the tier's at ready
+  const tiered = [...map.values()].some((entry) => entry.tier);
   // ... unless the late containers are all cached too (+0.5 s on a settled warm visit otherwise), when they need no fill at all
   let lateMissing = false;
-  if (warm) {
-    for (const [url, entry] of [...map.entries()].filter(([url]) => isLate(url))) {
+  if (warm && !tiered) {
+    for (const [url, entry] of pageLate(map, undefined)) {
       const key = url + '?v=' + entry.sha1;
       if (!(await store.match(key + '&parts')) && !(await store.match(key))) { lateMissing = true; break; }
     }
   }
-  if (warm && lateMissing && !lateReleased) {
-    lateReleased = true;
-    post({ type: 'log', text: 'SW LATE at once (every boot file is cached, a late one is not)' });
-    prefetchLate(clientId, false);
+  // a release started here is held by this message too, after its own loads (which never wait for it)
+  let warmRelease = null;
+  if (warm && !released.has(map)) {
+    if (tiered) {
+      warmAtPick.add(map);
+      if (tierPicked.has(map)) warmRelease = releaseLateIfWarm(clientId, map, tierPicked.get(map)).then((w) => w && w.release);
+    } else if (lateMissing) {
+      post({ type: 'log', text: 'SW LATE at once (every boot file is cached, a late one is not)' });
+      warmRelease = prefetchLate(clientId, 'warm');
+    }
   }
-  await Promise.all(code.filter(([url, entry]) => cacheable(url, entry)).map(([url, entry]) => fill(url, entry)));
+  const heldRelease = warmRelease ? warmRelease.catch(() => {}) : null;
+  // (a start-up container's load already under way is this page's too while its code loads: no other page's stop aborts it)
+  for (const [url, entry] of data) { const key = url + '?v=' + entry.sha1; if (pending.has(key) && loads.has(key)) interest(key, clientId); }
+  await Promise.all(code.filter(([url, entry]) => cacheable(url, entry)).map(([url, entry]) => fillFor(clientId, url, entry)));
   // Ahead of the containers themselves, and only for one not in the cache yet (measured: every repeat visit fetched the
   // tails again, about 0.94 MB, though the whole container was already stored); a container's staged head too
   const cache = await caches.open(CACHE);
@@ -369,6 +582,9 @@ async function prefetch(clientId) {
     // (only for a container this worker loads whole, with a usable layout, and has not loaded or given up on yet: its pieces
     // answer reads only while that load runs)
     if (piecedLayoutProblem(entry) === null && cacheable(url, entry) && !blobs.has(key) && !failed.has(key) && !(await cachedResponse(cache, key))) {
+      if (stoppedPages.has(clientId)) return;   // (stopLoads)
+      // (the pieces are this page's load until the file's own load starts: a stop aborts them too; none for a load a stop aborted)
+      if (loadAborted(interest(key, clientId))) continue;
       for (const which of ['head', 'tail']) if (entry[which]) loadPiece(url, entry, which);
     }
   }
@@ -379,19 +595,25 @@ async function prefetch(clientId) {
     post({ type: 'log', text: 'SW WAVES ' + waves.map((w) => w + ': ' + fills.filter((f) => waveOf(f) === w).length).join(', ') + ' files' });
     // the waves wait for their files' loads only: a container's pieces belong to its load (fill -> fetchPieces), which gives up on a
     // stalled head or tail after PIECE_STALL_MS, so no piece request can hold a wave
-    await Promise.all(fills.filter((f) => waveOf(f) === waves[0]).map(([url, entry]) => fill(url, entry)));
-    for (const wave of waves.slice(1)) await Promise.all(fills.filter((f) => waveOf(f) === wave).map(([url, entry]) => fill(url, entry)));
+    await Promise.all(fills.filter((f) => waveOf(f) === waves[0]).map(([url, entry]) => fillFor(clientId, url, entry)));
+    for (const wave of waves.slice(1)) await Promise.all(fills.filter((f) => waveOf(f) === wave).map(([url, entry]) => fillFor(clientId, url, entry)));
   } else {
-    await Promise.all(fills.map(([url, entry]) => fill(url, entry)));
+    await Promise.all(fills.map(([url, entry]) => fillFor(clientId, url, entry)));
   }
   // The page releases the later chunks' containers when the game is ready (wasm-loader.js: 'ue-ready' or the ready line);
-  // only if it has not 20 s after the boot containers are in does the worker release them itself
-  setTimeout(() => {
-    if (lateReleased) return;
-    lateReleased = true;
-    post({ type: 'log', text: 'SW LATE 20 s after the boot containers (the page released nothing)' });
-    prefetchLate(clientId);
+  // only if it has not 20 s after the boot containers are in does the worker release the untagged ones itself (a tier's late files
+  // wait for the page's ready release, or a re-post, when the tier the RHI runs is known)
+  // (after the picked tier's start files too: they are not start-up data above, and the first frame may still need them)
+  setTimeout(async () => {
+    if (released.has(map) || stoppedPages.has(clientId)) return;
+    const tier = tierPicked.get(map);
+    const loads = tier ? tierStartFiles(map, tier).map(([url, entry]) => pending.get(url + '?v=' + entry.sha1)).filter(Boolean) : [];
+    if (loads.length) await Promise.all(loads.map((load) => load.catch(() => null)));
+    if (released.has(map)) return;
+    post({ type: 'log', text: 'SW LATE 20 s after the boot containers (the page released nothing)' + (loads.length ? `, after the ${tier} tier's start files` : '') });
+    prefetchLate(clientId, 'timer');
   }, 20000);
+  await heldRelease;
 }
 
 // (the mount's read of the container's end waited 918 ms for the sequential download): a container's last
@@ -439,7 +661,7 @@ function isolated(response, request) {
   const h = new Headers(response.headers);
   h.set('Cross-Origin-Opener-Policy', 'same-origin');
   h.set('Cross-Origin-Embedder-Policy', 'require-corp');
-  h.set('Cross-Origin-Resource-Policy', 'same-origin');
+  h.set('Cross-Origin-Resource-Policy', 'cross-origin');
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers: h });
 }
 // A piece is keyed by its container's sha1 and its own place and sha1, so a stage that lays the same file out again never
@@ -474,7 +696,7 @@ function loadPiece(url, entry, which) {
   const key = `${url}?v=${entry.sha1}#${which}@${piece.offset || 0}+${piece.size ?? ''}:${piece.sha1}`;
   if (!tails.has(key)) {
     const pieceUrl = new URL(piece.url, self.registration.scope).href + '?v=' + piece.sha1;
-    tails.set(key, fetch(pieceUrl, { cache: 'no-store' })
+    tails.set(key, fetch(pieceUrl, signalled(url + '?v=' + entry.sha1, { cache: 'no-store' }))
       .then((r) => (r.ok ? r.arrayBuffer() : null))
       .then(async (buffer) => {
         if (!buffer) return null;
@@ -559,7 +781,7 @@ async function killSwitch(list) {
 }
 
 // does a file of this size fit what the origin may still store? (no estimate: assume it does)
-// A15 (EngineTest, a 1.82 GB .ucas): a fill holds the whole file in the worker's memory and stores it piece by piece; Chrome's
+// EngineTest (a 1.82 GB .ucas): a fill holds the whole file in the worker's memory and stores it piece by piece; Chrome's
 // Cache.put failed ("Unexpected internal error") and every read of the file failed after it. A file over MAX_CACHED_FILE_BYTES,
 // and every file not yet cached once a store failed for lack of room, is read from the network as ranges (never stored);
 // each case is logged once
@@ -618,14 +840,20 @@ async function prune(map) {
 }
 
 // A file is stored as authoritative (its index entry) only when its bytes hash to the list's sha1; a stale CDN
-// body or a padded one is read this once and fetched again next time. Skipped without WebCrypto or over 1 GiB
+// body or a padded one is not stored, and what happens to it is the mismatch rule's (isCode, above: a code file is fetched once
+// more and not run while it differs; a data file is read from the network with a warning). Files over 1 GiB are never hashed
 // The stored file's SHA-1, one stored piece (CACHE_PART_BYTES, a disk-backed Blob) at a time: reading the whole file into one
 // ArrayBuffer for crypto.subtle.digest (which copies its input again) held two more copies of each file in this worker while
 // the download's own chunks were still alive (Lyra's 258 MB wasm and 192 MB pakchunk0). With memoryFile's release(), Lyra
 // Development cold visits (4 each, mobile tier): renderer Pss at READY 2541 -> 2065 MiB, peak 2541 -> 2342, READY unchanged.
 // WebCrypto has no incremental digest, so this is SHA-1 in JS (about 200 MB/s)
 async function sha1Matches(pieces, sha1) {
-  if (!sha1 || !/^[0-9a-f]{40}$/i.test(sha1)) return true;
+  const hex = await sha1Of(pieces, sha1);
+  return hex === null || hex === sha1.toLowerCase();
+}
+// the pieces' SHA-1 as hex, or null when the list gives no valid sha1 (nothing to check)
+async function sha1Of(pieces, sha1) {
+  if (!sha1 || !/^[0-9a-f]{40}$/i.test(sha1)) return null;
   const h = new Sha1();
   for (const piece of pieces) {
     const bytes = new Uint8Array(await piece.arrayBuffer());
@@ -634,7 +862,7 @@ async function sha1Matches(pieces, sha1) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
   }
-  return h.hex() === sha1.toLowerCase();
+  return h.hex();
 }
 class Sha1 {
   constructor() {
@@ -685,13 +913,17 @@ class Sha1 {
 
 // a file over a host's per-file limit (Cloudflare Pages: 25 MiB) is listed with its parts (by the stage tool);
 // fetch them in order as one body. Such a file needs this worker: without it (?sw=0) the fetch backend asks for the whole URL
-async function fetchWhole(key, entry, url) {
+// (load: the whole-file load these fetches are for, whose stop aborts them; null for a code check outside a load, uncachedCode)
+async function fetchWhole(key, entry, url, load = loads.get(key)) {
+  const stoppable = (init) => (load && load.abort ? { ...init, signal: load.abort.signal } : init);
   if (!entry.parts && entry.body) return fetchPieces(key, entry, url);
-  if (!entry.parts) return fetch(key, lowPriority.has(key) ? { cache: 'no-store', priority: 'low' } : { cache: 'no-store' });
+  // (the game's module through the HTTP cache, so the browser keeps its copy from this one download: viaHttpCache)
+  const mode = viaHttpCache(url, entry) ? 'force-cache' : 'no-store';
+  if (!entry.parts) return fetch(key, stoppable(lowPriority.has(key) ? { cache: mode, priority: 'low' } : { cache: mode }));
   const scope = self.registration.scope;
   const bodies = [];
   for (const part of entry.parts) {
-    const response = await fetch(new URL(part.url, scope).href + '?v=' + part.sha1, { cache: 'no-store' });
+    const response = await fetch(new URL(part.url, scope).href + '?v=' + part.sha1, stoppable({ cache: 'no-store' }));
     if (!response.ok) return response;
     bodies.push(response.body);
   }
@@ -724,7 +956,7 @@ async function fetchWhole(key, entry, url) {
 // then take their bytes from that whole-file load. A failure is: a layout that does not add up, a head or tail that is not
 // usable, a body request that fails or has no body, a body stream that breaks after its headers, a size or sha1 that differs
 async function fetchPieces(key, entry, url) {
-  const init = lowPriority.has(key) ? { cache: 'no-store', priority: 'low' } : { cache: 'no-store' };
+  const init = signalled(key, lowPriority.has(key) ? { cache: 'no-store', priority: 'low' } : { cache: 'no-store' });
   const headSize = entry.head ? entry.head.size : 0;
   const bodySize = (entry.tail ? entry.tail.offset : entry.size) - headSize;
   const whole = (why) => {
@@ -736,6 +968,8 @@ async function fetchPieces(key, entry, url) {
   if (layout !== null) return whole(`the list's layout: ${layout}`);
   const bodyUrl = new URL(entry.body.url, self.registration.scope).href + '?v=' + entry.body.sha1;
   const abort = typeof AbortController === 'function' ? new AbortController() : null;
+  // (a stop aborts the body too, also one that came before this request)
+  if (abort && init.signal) { if (init.signal.aborted) abort.abort(); else init.signal.addEventListener('abort', () => abort.abort(), { once: true }); }
   const body = fetch(bodyUrl, abort ? { ...init, signal: abort.signal } : init).catch(() => null);
   let reader = null;        // the body's stream
   let wholeReader = null;   // the whole file's stream, once a piece failure has fallen back to it
@@ -808,7 +1042,9 @@ async function fetchPieces(key, entry, url) {
     dropBody();
     const fallback = await whole(failure).catch(() => null);
     if (!fallback || !fallback.ok || !fallback.body) {
-      controller.error(new Error(`${failure}; the whole file failed too (${fallback ? 'HTTP ' + fallback.status : 'no response'})`));
+      const error = new Error(`${failure}; the whole file failed too (${fallback ? 'HTTP ' + fallback.status : 'no response'})`);
+      error.http = !!fallback;   // the host answered (an HTTP error): no network break, so no retry on the next page load
+      controller.error(error);
       return;
     }
     wholeReader = fallback.body.getReader();
@@ -837,7 +1073,7 @@ function headers(type, extra) {
   const h = new Headers(extra || {});
   h.set('Content-Type', type || 'application/octet-stream');
   h.set('Cross-Origin-Embedder-Policy', 'require-corp');
-  h.set('Cross-Origin-Resource-Policy', 'same-origin');
+  h.set('Cross-Origin-Resource-Policy', 'cross-origin');
   if (ISOLATE) h.set('Cross-Origin-Opener-Policy', 'same-origin');
   h.set('Accept-Ranges', 'bytes');
   h.set('X-UE-Cache', '1');  // served by sw.js (diagnostics)
@@ -859,10 +1095,230 @@ function post(message) {
 function report(url, loaded, cached) { post({ type: 'progress', url, loaded, cached }); }
 // A file whose whole-file load failed is read from the network for the rest of this worker's life (no retry loop)
 const failed = new Set();
-function problem(key, text) {
+// ... except a load the network broke (the host or the connection went away: fetch rejected, or the body stopped with a read
+// error), which the next page load tries again once (retryBroken). UE-411927: a reload in the same session still found the
+// .wasm failed in this worker, so the page's early compile read it whole from the network while the prefetch's fill loaded it
+// again (two whole .br GETs within 2 ms). Now the reload's reads join that one fill
+const broken = new Set();
+function retryBroken() {
+  if (!broken.size) return;
+  post({ type: 'log', text: `SW RETRY ${broken.size} load(s) the network broke: ${[...broken].map((key) => key.split('?')[0].split('/').pop()).join(', ')}` });
+  for (const key of broken) failed.delete(key);
+  broken.clear();
+}
+function problem(key, text, network = false, file = null) {
   failed.add(key);
+  if (network) broken.add(key);
+  else broken.delete(key);   // (the latest failure decides: one that is not the network's is not tried again)
   errors.push(key + ': ' + text);
   post({ type: 'log', text: 'SW ERROR ' + key + ': ' + text });
+  // (file: kept for the log line's caller; a page is told by its reads' answers, fileAnswered, not by a fill's failure: a fill
+  // whose staged part failed, or one the read's network fallback then serves whole, is no missing file of the page)
+}
+// A listed file the host does not have (HTTP 4xx or 5xx) or has cut short (fewer bytes than the list says): the page's stop card
+// names it (wasm-play.js 'file-problem'), whatever the engine fails with later (UE-411936: a missing .ucas ended as "The game
+// ended with code 1.", a missing global shader file as "native code called abort()"). Once per file and reading client (a
+// page's engine reads from its own Workers): a page that loads after the report (a reload: the file is failed, so its reads go
+// to the network) gets it from its own reads' answers (fileAnswered). path: the file's URL below this worker's scope, as the
+// stage holds it
+const fileProblems = new Set();   // page|url?v=sha1|status|got posted, and url?v=sha1|status|got logged
+// clients: the ids whose reads got the answer (a page, or one of its engine's Workers): only their pages are told (another tab,
+// of this build or another, is not stopped by this page's file). The promise is the delivery's: the read's event holds it
+function fileProblem(url, { status = 0, expected = 0, got = -1, sha1 = '' } = {}, clients = []) {
+  const scope = self.registration.scope;
+  const report = { type: 'file-problem', url, path: url.startsWith(scope) ? url.slice(scope.length) : url, status, expected, got };
+  const what = [url + '?v=' + sha1, status, got].join('|');
+  const bytes = `${got >= 0 ? got : '?'} of ${expected} bytes`;
+  if (!fileProblems.has(what)) post({ type: 'log', text: `SW FILE_PROBLEM ${report.path}: ` + (status === 416 ? 'HTTP 416, ' + bytes : status >= 400 ? 'HTTP ' + status : bytes) });
+  fileProblems.add(what);
+  // each reader's page: a page itself, or the page an engine Worker is matched to (manifestFor matches it to the newest live
+  // page); a reader whose page is unknown is told itself (a Worker's message reaches no page, and no other tab is told)
+  return Promise.all(clients.filter(Boolean).map(async (id) => {
+    if (!bound.has(id) && !workerPage.has(id)) await manifestFor(id).catch(() => null);
+    const page = bound.has(id) ? id : workerPage.get(id) || id;
+    if (fileProblems.has(page + '|' + what)) return;
+    fileProblems.add(page + '|' + what);
+    const client = await self.clients.get(page).catch(() => null);
+    if (client) client.postMessage(report);
+  }));
+}
+// A listed file's answer from the network: an error status (a 416: rangeRefused) or a whole or ranged answer whose length is
+// not the list's size is reported (fileProblem); an encoded body's length says nothing about its size
+function fileAnswered(url, entry, response, client, range) {
+  if (!response || !entry) return null;
+  if (response.status === 416) return rangeRefused(url, entry, response, client, range);
+  if (response.status >= 400) return fileProblem(url, { status: response.status, expected: entry.size || 0, sha1: entry.sha1 }, [client]);
+  // (from this worker, or encoded; and a file the list gives no size cannot be short)
+  if (!entry.size || response.headers.get('X-UE-Cache') || response.headers.get('Content-Encoding')) return null;
+  const total = response.status === 206 ? /\/(\d+)$/.exec(response.headers.get('Content-Range') || '') : null;
+  const length = response.status === 200 ? Number(response.headers.get('Content-Length') || NaN) : NaN;
+  const got = total ? Number(total[1]) : length;
+  return Number.isFinite(got) && got < entry.size ? fileProblem(url, { status: response.status, expected: entry.size, got, sha1: entry.sha1 }, [client]) : null;
+}
+
+// A 416 for a listed file's read (range: the read's Range header). A range that starts inside the list's size is one the host's
+// copy is too short for: the file is cut short, reported as a short file (got: the size its Content-Range: bytes */<size> gives,
+// else unknown). One that starts at or past the list's size is this page's own read past the file's end: a console line, no
+// report (the worker's own 416 too, slice). The worker's own answers and encoded ones say nothing about the host's file
+function rangeRefused(url, entry, response, client, range) {
+  if (response.headers.get('Content-Encoding')) return null;
+  const start = /^bytes=(\d+)-/.exec(range || '');
+  if (start && Number(start[1]) < entry.size) {
+    if (response.headers.get('X-UE-Cache')) return null;
+    const total = /^bytes \*\/(\d+)$/.exec((response.headers.get('Content-Range') || '').trim());
+    return fileProblem(url, { status: 416, expected: entry.size, got: total ? Number(total[1]) : -1, sha1: entry.sha1 }, [client]);
+  }
+  const scope = self.registration.scope;
+  post({ type: 'log', text: `SW RANGE_PAST_END ${url.startsWith(scope) ? url.slice(scope.length) : url} ${range || '(no range)'}: HTTP 416, the list says ${entry.size} bytes (not reported)` });
+  return null;
+}
+// A body that differs from wasm-cache.json (UE-411539: the page booted on it with READY and only a worker line showed it).
+// The game's code (its script and module, isCode) is hashed as it arrives, so the outcome is known with its last byte; a body
+// that differs (size or sha1) is fetched once more with cache: 'reload' (a stale HTTP cache or CDN edge copy), and one that
+// still differs is never handed to a page: the module's read errors at its end (no WebAssembly.Module from those bytes), every
+// later read of the file is refused (HTTP 502, refuse) and every page is told ('mismatch'), which stops with its error card. A
+// data file that differs is read from the network as before (nothing is stored) and every page is told once, which warns the
+// player and keeps loading. Not a security boundary (whoever controls the host controls the list too); the sha1 is over the
+// decoded body, as UAT hashes the staged file, so a host's Content-Encoding (Brotli) is no mismatch
+const isCode = (url) => /\/Binaries\/Wasm\/[^/]+\.(?:js|wasm)$/.test(url);
+const mismatches = new Map();   // mismatchKey -> its 'mismatch' message {type, kind: 'code'|'data', url, size, sha1, got: {size, sha1}}
+// one record per listed size: two lists can name the same url and sha1 with different sizes, and each page counts only its own
+const mismatchKey = (key, size) => key + '#' + (size || 0);
+const told = new Set();         // '<window client id> <key>': each page is told of each mismatch once
+function mismatch(key, kind, url, entry, got) {
+  const mkey = mismatchKey(key, entry.size);
+  if (mismatches.has(mkey)) return;
+  mismatches.set(mkey, { type: 'mismatch', kind, url, size: entry.size, sha1: entry.sha1, got });
+  errors.push(key + ': ' + kind + ' mismatch, ' + got.size + ' bytes sha1 ' + got.sha1);
+  tellMismatch(mkey);
+}
+function tellMismatch(key) {
+  const message = mismatches.get(key);
+  if (!message) return;
+  self.clients.matchAll({ type: 'window' }).then((clients) => {
+    for (const client of clients) {
+      const id = (client.id || '') + ' ' + key;
+      if (told.has(id)) continue;
+      told.add(id);
+      client.postMessage(message);
+    }
+  }).catch(() => {});
+}
+// the answer to every read of a code file that still differed after its second fetch: the page names the file from the header
+function refuse(key, entry) {
+  const mkey = mismatchKey(key, entry && entry.size);
+  tellMismatch(mkey);
+  const m = mismatches.get(mkey);
+  return new Response('This file differs from wasm-cache.json: ' + JSON.stringify(m), { status: 502, statusText: 'Differs from wasm-cache.json',
+    headers: headers('text/plain', { 'X-UE-Mismatch': JSON.stringify(m) }) });
+}
+const codeMismatch = (key, entry) => {
+  const m = mismatches.get(mismatchKey(key, entry && entry.size));
+  return !!m && m.kind === 'code' && (!entry || !entry.size || !m.size || m.size === entry.size);
+};
+const differs = (got, entry) => (!!entry.size && got.size !== entry.size) || got.sha1 !== String(entry.sha1).toLowerCase();
+// The SHA-1 of a download's chunks as they arrive (progress.parts), HASH_SLICE_BYTES per task: hashed inside the read loop, Lyra's
+// 117 MB module held up this worker's other answers (the game script's came 0.7 s later, the module's own transfer took 0.5 s
+// instead of 0.3 s on a local host). null when the download fails
+const HASH_SLICE_BYTES = 2 * 1024 * 1024;
+async function hashAlong(progress, hasher) {
+  let next = 0;
+  let slice = 0;
+  for (;;) {
+    while (next >= progress.parts.length && !progress.done) await new Promise((wake) => progress.wake.push(wake));
+    if (progress.failed) return null;
+    if (next >= progress.parts.length) return hasher.hex();
+    const part = progress.parts[next++];
+    hasher.update(part);
+    slice += part.byteLength;
+    if (slice >= HASH_SLICE_BYTES) { slice = 0; await new Promise((resolve) => setTimeout(resolve, 0)); }
+  }
+}
+// A whole body of a file, hashed as it arrives: {parts, got: {size, sha1}}, got null when the fetch failed (logged)
+// (hashOwner: the whole-file load whose own second fetch of its code body this call is, set by refetchCode just before it calls;
+// a stop of that load aborts the fetch, which then gives no verdict. Any other call, a check outside a load (uncachedCode)
+// included, is no load's and is never aborted)
+let hashOwner = null;
+const refetchOwners = new WeakMap();   // the first body's {size, sha1} -> the load it came from (fill)
+async function fetchHashed(key, url, entry, cacheMode) {
+  const name = url.split('/').pop();
+  const which = cacheMode === 'reload' ? 'the second fetch' : 'the fetch';
+  const tag = cacheMode === 'reload' ? 'SW MISMATCH' : 'SW UNCACHED_CODE';
+  const parts = [];
+  let got = null;
+  // (the second fetch of a load's own code body: that load's stop aborts it, and that gives no verdict. A check outside a load
+  // (uncachedCode) is no load's and is never aborted, so a read always gets its verdict)
+  const load = hashOwner;
+  hashOwner = null;   // (read at once: only the call refetchCode makes right after setting it gets it)
+  try {
+    const response = entry.parts ? await fetchWhole(key, entry, url, load)
+      : await fetch(key, load && load.abort ? { cache: cacheMode, signal: load.abort.signal } : { cache: cacheMode });
+    if (response.ok && response.body) {
+      const hasher = new Sha1();
+      let size = 0;
+      const reader = response.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+        hasher.update(value);
+        size += value.byteLength;
+      }
+      got = { size, sha1: hasher.hex() };
+    } else {
+      post({ type: 'log', text: `${tag} ${name}: ${which} answered HTTP ${response.status}` });
+    }
+  } catch (e) {
+    post({ type: 'log', text: `${tag} ${name}: ${which} failed: ${e}` });
+  }
+  return { parts, got, aborted: !got && loadAborted(load) };
+}
+// The second fetch of a code file that differed: its bytes answer this worker's reads when they match (held in memory; stored on
+// a later visit's load), else the file is refused from now on
+async function refetchCode(key, url, entry, first) {
+  const name = url.split('/').pop();
+  post({ type: 'log', text: `SW MISMATCH ${name}: ${first.size} bytes sha1 ${first.sha1}, the list says ${entry.size} bytes sha1 ${entry.sha1}; fetching it again (cache: reload)` });
+  hashOwner = refetchOwners.get(first) || null;
+  const { parts, got, aborted } = await fetchHashed(key, url, entry, 'reload');
+  if (got && !differs(got, entry)) {
+    post({ type: 'log', text: `SW REFETCHED ${name}: the second fetch matches the list (read from memory on this visit, stored on a later one)` });
+    blobs.set(key, memoryFile(parts, got.size, null));
+    report(url, got.size, false);
+    return new Response(null);
+  }
+  parts.length = 0;
+  if (aborted) {   // a stop cut the second fetch off (stopLoads): no verdict, a later load fetches the file again
+    post({ type: 'log', text: `SW STOPPED ${name}: its second fetch was aborted, no verdict` });
+    return null;
+  }
+  failed.delete(key);
+  const shown = got || first;
+  post({ type: 'log', text: `SW MISMATCH_CODE ${url}: ${shown.size} bytes sha1 ${shown.sha1}, the list says ${entry.size} bytes sha1 ${entry.sha1}; not run (its reads are refused)` });
+  mismatch(key, 'code', url, entry, shown);
+  return null;
+}
+
+// A code file this worker can't store (no room, a store that failed, over MAX_CACHED_FILE_BYTES) loads once into memory, hashed,
+// so no read is answered before its verdict: a match answers this visit's reads from memory (blobs), a mismatch goes the way
+// of a stored file's (refetchCode). false for a data file, one with no sha1 listed or over the limit: read from the network
+const uncachedLoads = new Map();
+function uncachedCode(key, url, entry) {
+  if (!isCode(url) || !/^[0-9a-f]{40}$/i.test(entry.sha1 || '') || entry.size > MAX_CACHED_FILE_BYTES) return Promise.resolve(false);
+  if (blobs.has(key)) return Promise.resolve(true);
+  if (!uncachedLoads.has(key)) {
+    uncachedLoads.set(key, (async () => {
+      const first = await fetchHashed(key, url, entry, 'default');
+      if (first.got && !differs(first.got, entry)) {
+        blobs.set(key, memoryFile(first.parts, first.got.size, null));
+        report(url, first.got.size, false);
+        return true;
+      }
+      if (!first.got) return false;   // the download failed: no verdict, the read goes to the network as before
+      await refetchCode(key, url, entry, first.got);
+      return blobs.has(key);
+    })().finally(() => uncachedLoads.delete(key)));
+  }
+  return uncachedLoads.get(key);
 }
 
 // a cached file is stored as pieces <key>&part=<i> and an index <key>&parts ({parts, size}); an entry stored whole by
@@ -870,7 +1326,7 @@ function problem(key, text) {
 // Resumable fills: pieces are exactly CACHE_PART_BYTES (the last one shorter), so a fill cut off by the end of
 // a visit resumes at its first missing piece with a ranged GET
 const CACHE_PART_BYTES = 8 * 1024 * 1024;
-const baseKey = (url) => url.replace(/&(?:parts|part=\d+|bytes=\d+-\d+)$/, '');
+const baseKey = (url) => url.replace(/&(?:parts|part=\d+|bytes=\d+-\d+|skipped|brotli)$/, '');
 // The whole pieces 0..n-1 of a file that a previous visit stored before it ended (no index), in order
 async function storedPieces(cache, key) {
   const pieces = [];
@@ -902,7 +1358,9 @@ async function cachedResponse(cache, key) {
   }
 }
 // (a "/<Project>//Content/Paks/..." URL showed next to the normal one) a listed file always goes to the network by its
-// collapsed URL (the fetch backend asks for <dir>//<name>), so a host and the browser cache see one URL per file
+// collapsed URL (the fetch backend asks for <dir>//<name>), so a host and the browser cache see one URL per file, and by its
+// versioned one (<url>?v=<sha1>, the cache key its whole-file load asks for): a read that falls back to the network never asks
+// for the bare URL, which a newer deployment may answer with its own bytes
 const toNetwork = (url, range) => fetch(url, range ? { headers: { Range: range } } : {});
 
 // (a warm boot still read pakchunk1's mount ranges from the network) a range read of a file that is not in
@@ -935,7 +1393,7 @@ function indexStore() {
         const bytes = /&bytes=(\d+)-(\d+)$/.exec(request.url);
         if (bytes) (ranges.get(key) || ranges.set(key, []).get(key)).push([Number(bytes[1]), Number(bytes[2])]);
         else if (/&part=\d+$/.test(request.url)) pieces.add(key);
-        else stored.add(key);
+        else if (!/&(?:skipped|brotli)$/.test(request.url)) stored.add(key);   // (a resume decision's marks are no stored file)
       }
       return { stored, pieces, ranges };
     }).catch(() => null);   // no index: every read asks Cache Storage, as before
@@ -974,11 +1432,15 @@ function afterWrites(work) {
   if (!putsRunning && !putsWaiting.length) work();
   else whenIdle.push(work);
 }
-function queuedPut(cache, key, makeBody) {
+// (load: the whole-file load the write belongs to: once a stop has aborted it, its writes still waiting are not made)
+function queuedPut(cache, key, makeBody, load = null) {
   return new Promise((resolve, reject) => {
     const run = () => {
       ++putsRunning;
-      Promise.resolve().then(() => cache.put(key, new Response(makeBody()))).then(resolve, reject).finally(() => {
+      Promise.resolve().then(() => {
+        if (loadAborted(load)) throw new Error('stopped: not stored (stopLoads)');
+        return cache.put(key, new Response(makeBody()));
+      }).then(resolve, reject).finally(() => {
         --putsRunning;
         if (putsWaiting.length) putsWaiting.shift()();
         else if (!putsRunning) for (const work of whenIdle.splice(0)) work();
@@ -988,9 +1450,10 @@ function queuedPut(cache, key, makeBody) {
     else putsWaiting.push(run);
   });
 }
-async function rangeNetwork(cache, key, url, range, entry) {
+// (store: whether the answer may be stored, asked once it is in: not for a read of a page that has stopped)
+async function rangeNetwork(cache, key, url, range, entry, store = () => true) {
   const match = /^bytes=(\d+)-(\d*)$/.exec(range || '');
-  if (!match || !entry.size) return toNetwork(url, range);
+  if (!match || !entry.size) return toNetwork(key, range);
   const first = Number(match[1]);
   const last = match[2] === '' ? entry.size - 1 : Math.min(Number(match[2]), entry.size - 1);
   const held = (await rangesOf(cache, key)).find(([a, z]) => a <= first && last <= z);
@@ -1003,20 +1466,27 @@ async function rangeNetwork(cache, key, url, range, entry) {
         'Content-Range': 'bytes ' + first + '-' + last + '/' + entry.size, 'Content-Length': String(last - first + 1) }) });
     }
   }
-  const response = await toNetwork(url, range);
+  const response = await toNetwork(key, range);
   const got = response.status === 206 ? /^bytes (\d+)-(\d+)\//.exec(response.headers.get('Content-Range') || '') : null;
-  if (got && isLate(url)) {   // only the late containers: a boot file is stored whole by its fill
+  if (got && isLate(entry) && store()) {   // only the late containers: a boot file is stored whole by its fill
     const a = Number(got[1]);
     const z = Number(got[2]);
     response.clone().blob()
-      .then((body) => cache.put(key + '&bytes=' + a + '-' + z, new Response(body)))
+      .then((body) => { if (!store()) throw new Error('stopped: not stored (stopLoads)'); return cache.put(key + '&bytes=' + a + '-' + z, new Response(body)); })
+      .then(async () => { if (!store()) { await cache.delete(key + '&bytes=' + a + '-' + z); throw new Error('stopped: not stored (stopLoads)'); } })
       .then(() => rangesOf(cache, key)).then((list) => list.push([a, z])).catch(() => {});
   }
   return response;
 }
-async function deleteCached(cache, key) {
+const deleting = new Map();   // url?v=sha1 -> its deletion under way (a load's settled waits for it)
+function deleteCached(cache, key) {
   indexStored(key, false);
-  for (const request of await cache.keys()) { if (baseKey(request.url) === key) await cache.delete(request); }
+  const done = Promise.resolve(deleting.get(key)).catch(() => {}).then(async () => {
+    for (const request of await cache.keys()) { if (baseKey(request.url) === key) await cache.delete(request); }
+  });
+  const tracked = done.catch(() => {}).then(() => { if (deleting.get(key) === tracked) deleting.delete(key); });
+  deleting.set(key, tracked);
+  return done;
 }
 
 // A downloaded file whose Cache Storage copy is not complete yet: reads are answered from the fetched chunks themselves, so
@@ -1084,7 +1554,7 @@ function memoryFile(parts, size, module) {
 
 // The game's module: the page compiles it from one whole-file read (wasm-loader.js compileStreaming), and nothing reads it
 // again once it is compiled (the pthread Workers get the compiled module by postMessage). Its download is kept as one copy only,
-// and for as short as the page and the cache writes need it (EMA module-bytes, Lyra's 168 MB module on a cold visit):
+// and for as short as the page and the cache writes need it (measured, Lyra's 168 MB module on a cold visit):
 // - a read while it downloads is answered as the bytes arrive (the compile overlaps the download; it waited for the whole
 //   file), and every read gets the downloaded chunks themselves instead of a copy of each (moduleStream);
 // - a download that breaks or ends short after such a read was answered errors that read (no truncated module), and the file is
@@ -1097,7 +1567,7 @@ function memoryFile(parts, size, module) {
 //   so V8/JSC hold their own copy), or 15 s after that page's read ended if no such message comes;
 // - once every cache piece is stored (its cache.put succeeded, so its Blob was readable), reads of the module move to those
 //   Blobs and the download is released (fill: moduleEarly), instead of after the pieces' sha1 check and every other file's
-//   writes. A piece write that fails never releases it: the download stays the read fallback. Lyra, cold, EMA host: the worker
+//   writes. A piece write that fails never releases it: the download stays the read fallback. Lyra, cold, a cloud host: the worker
 //   held the module's 160 MiB from its download (1 s) to 5.1 s, now to 2.3 s; at the compile + 0.5 s the worker's
 //   buffers were 327 -> 164 MiB and the renderer's Pss 852 -> 707 MiB
 // url?v=sha1 (as the fills: two builds' modules are two states) -> {key, url, size, open, readers, detach, pieces, settled,
@@ -1137,10 +1607,17 @@ function moduleStream(module, progress, client) {
         while (next < progress.parts.length) { const part = progress.parts[next++]; sent += part.byteLength; controller.enqueue(part); }
         return;
       }
-      // the download broke or ended short: the read errors rather than hand the compile a truncated module; the file is failed
-      // already, so the page's next load of the module goes to the network whole (see moduleReads)
-      if (module.size && sent !== module.size) {
-        post({ type: 'log', text: `SW MODULE_FAILED ${module.url.split('/').pop()}: its download stopped at ${sent} of ${module.size} bytes; the read errors and the page loads it again` });
+      // the bytes differ from the list (fill hashed them as they came, progress.differs): the read errors, so the compile makes no
+      // module of them; the page's load of it again waits for the second fetch (refetchCode)
+      if (progress.verdict) await progress.verdict;
+      if (!open) return;
+      if (progress.differs) {
+        post({ type: 'log', text: `SW MODULE_REFUSED ${module.url.split('/').pop()}: its bytes differ from wasm-cache.json; the read errors (no module from them)` });
+        controller.error(new Error('the module differs from wasm-cache.json'));
+      } else if (progress.failed || (module.size && sent !== module.size)) {
+        // the download broke or ended short: the read errors rather than hand the compile a truncated module; the file is failed
+        // already, so the page's next load of the module goes to the network whole (see moduleReads)
+        post({ type: 'log', text: `SW MODULE_FAILED ${module.url.split('/').pop()}: its download stopped at ${sent} of ${module.size} bytes${progress.failed ? ' (it failed)' : ''}; the read errors and the page loads it again` });
         controller.error(new Error(`the module read got ${sent} of ${module.size} bytes`));
       } else controller.close();
       end(true);
@@ -1192,8 +1669,11 @@ function moduleRetire(module) {
 // A load an earlier visit cut off resumes with a Range request from resumeAt. When the container has a usable staged tail that
 // this worker holds (loaded ahead, or arriving within PIECE_STALL_MS), the request stops before the tail and the tail's bytes
 // follow it, so the tail does not cross the link twice; else the range runs to the end of the file, as before
+const resumeSkipped = new Set();   // the files whose kept pieces one load passed over for the whole .br (see fill)
+const sentBrotli = new Map();   // key -> whether the host sent that file's whole load with Brotli (see fill; <key>&brotli: it did)
 async function resumeFetch(url, entry, resumeAt) {
-  const range = (to) => fetch(url, { cache: 'no-store', headers: { Range: 'bytes=' + resumeAt + '-' + to } });
+  // (by the versioned URL, the one the whole-file load asks for: the rest is asked of the listed build, not of the bare URL)
+  const range = (to) => fetch(url + '?v=' + entry.sha1, signalled(url + '?v=' + entry.sha1, { cache: 'no-store', headers: { Range: 'bytes=' + resumeAt + '-' + to } }));
   if (!entry.tail || piecedLayoutProblem(entry) !== null || resumeAt >= entry.tail.offset) return range('');
   const tail = await Promise.race([loadPiece(url, entry, 'tail'), new Promise((resolve) => setTimeout(() => resolve(null), PIECE_STALL_MS))]);
   if (!tail || tail.offset !== entry.tail.offset || tail.offset + tail.bytes.byteLength !== entry.size) return range('');
@@ -1213,14 +1693,29 @@ async function resumeFetch(url, entry, resumeAt) {
 }
 
 // Fetch the whole file once into the cache; resolves to the cached Response (or null on failure)
-function fill(url, entry) {
+// (page: the window client id the load is for, '' or none when unknown; a stopped page's call starts no load, stopLoads)
+function fill(url, entry, page) {
   const key = url + '?v=' + entry.sha1;
-  if (pending.has(key)) return pending.get(key);
+  const running = pending.get(key);
+  if (running && !loadAborted(running.load)) { interest(key, page); return running; }
+  // (a load a stop aborted is not joined: a page that did not stop loads the file again once that load, its writes and its
+  // deletions are over)
+  const prior = loads.get(key);
+  // (an aborted one, or one whose download is over and whose writes are not, with no copy in memory to answer from)
+  const settling = !!(prior && prior.settled && !prior.done) && (loadAborted(prior) || (!running && !blobs.has(key)));
+  if (settling) return stoppedPages.has(page) ? Promise.resolve(null) : prior.settled.then(() => fill(url, entry, page));
+  if (running) return stoppedPages.has(page) ? Promise.resolve(null) : running.then(() => fill(url, entry, page), () => fill(url, entry, page));
   // (a 6.2 MB .ucas body crossed the wire twice): a file whose load has ended is in memory before
   // its Cache Storage write lands; a read that passed the handler's in-memory check while the load ran, and calls fill() after
   // it ended, found no pending load and no stored copy and loaded the whole file again. The ended load's copy answers it
   const loaded = blobs.get(key);
-  if (loaded) return Promise.resolve(loaded.memory ? new Response(null) : new Response(loaded, { headers: headers(typeOf(url), { 'Content-Length': String(loaded.size) }) }));
+  if (loaded && !(loaded.unstored && !stoppedPages.has(page))) {
+    if (loads.has(key)) interest(key, page);   // (a load still writing the file is this page's too: no other page's stop aborts it)
+    return Promise.resolve(loaded.memory ? new Response(null) : new Response(loaded, { headers: headers(typeOf(url), { 'Content-Length': String(loaded.size) }) }));
+  }
+  if (page && stoppedPages.has(page)) return Promise.resolve(null);   // (stopLoads)
+  const load = interest(key, page);
+  const stopped = () => loadAborted(load);
   let started = null;
   starting.set(key, new Promise((resolve) => { started = resolve; }));
   const job = (async () => {
@@ -1238,12 +1733,56 @@ function fill(url, entry) {
     }
     // the pieces an earlier visit stored are kept, and only the rest is fetched (raw bytes, by range)
     const fetchStarted = performance.now();
-    const kept = entry.parts || !entry.size || !lookup ? [] : await storedPieces(cache, key);
+    let kept = entry.parts || !entry.size || !lookup ? [] : await storedPieces(cache, key);
+    // A resume is a Range request, which serve.py and most hosts answer without Content-Encoding: the rest crosses the link
+    // as identity bytes. It goes ahead only when those are fewer than the whole file's Brotli (the list's br); else the .br
+    // loads again from byte 0, over the kept pieces (UE-411927: a Lyra-size module resumed at 72 MB took 64.1 MB of identity
+    // bytes where its whole .br is 25.6 MB)
+    // (once per file: a .br load that is cut off again resumes from its kept pieces, so a link that keeps breaking at the same
+    // point still moves the stored prefix forward. Only for a file whose whole load the host is known to send with Brotli (seen
+    // in a same-origin answer's Content-Encoding): one sent without it, or whose encoding a cross-origin answer hides, resumes,
+    // since its whole file may be identity bytes too. Not for a file staged in pieces (entry.body: its whole load is the staged
+    // pieces, not the .br). Both facts are kept beside the pieces (<key>&skipped, <key>&brotli), written before the load goes
+    // on, so a worker restart between the visits keeps them)
+    const marked = async (mark) => !!(await cache.match(key + mark).catch(() => null));
+    const skippedBefore = kept.length > 0 && (resumeSkipped.has(key) || await marked('&skipped'));
+    const brotliHost = kept.length > 0 && (sentBrotli.get(key) === true || (sentBrotli.get(key) !== false && await marked('&brotli')));
+    let skipping = false;   // this load passes over the kept pieces: recorded (&skipped) once its .br brings its first bytes
+    // (not for a container with a staged tail either: a resume stops before its held tail, so the rest is not all identity bytes)
+    if (kept.length && entry.br > 0 && !entry.body && !entry.tail && brotliHost && entry.size - kept.length * CACHE_PART_BYTES >= entry.br && !skippedBefore) {
+      skipping = true;
+      post({ type: 'log', text: `SW RESUME_SKIPPED ${url.split('/').pop()}: the rest after ${kept.length} kept pieces is ` +
+        `${entry.size - kept.length * CACHE_PART_BYTES} identity bytes, the whole .br ${entry.br}: loading the .br from 0` });
+      kept = [];
+    }
     const resumeAt = kept.length * CACHE_PART_BYTES;
     const resuming = resumeAt > 0 && resumeAt < entry.size;
-    const response = resuming ? await resumeFetch(url, entry, resumeAt) : await fetchWhole(key, entry, url);
-    if (!response.ok || (resuming && response.status !== 206)) { problem(key, 'HTTP ' + response.status); return null; }
+    let response = null;
+    try {
+      response = resuming ? await resumeFetch(url, entry, resumeAt) : await fetchWhole(key, entry, url);
+    } catch (e) {
+      if (stopped()) throw e;   // a stop's abort is no failure of the file (the catch below)
+      problem(key, `${e} (no response: the host or the connection is gone)`, true);
+      return null;
+    }
+    if (!response.ok || (resuming && response.status !== 206)) {
+      problem(key, 'HTTP ' + response.status, false,
+        // (a resume starts inside the list's size: its 416 is a host copy cut short there, as rangeRefused has it)
+        response.status >= 400 ? { url, status: response.status, expected: entry.size } : null);
+      return null;
+    }
+    // (a successful answer with no body is a failed load too: its reads, the module's streamed one included, go to the network)
+    if (!response.body) { problem(key, 'HTTP ' + response.status + ' with no body'); return null; }
     if (resuming) post({ type: 'log', text: 'SW RESUME ' + url.split('/').pop() + ' at ' + resumeAt + ' (' + kept.length + ' pieces kept)' });
+    // what the host sends this file's whole load as, when the list gives it a .br size: Brotli or not (a same-origin answer's
+    // Content-Encoding; a cross-origin one does not show it, and says nothing)
+    else if (entry.br > 0 && !entry.parts && !entry.body) {
+      const encoding = response.headers.get('Content-Encoding');
+      const brotli = encoding ? /\bbr\b/i.test(encoding) : response.type === 'basic' ? false : null;
+      if (brotli !== null) sentBrotli.set(key, brotli);
+      if (brotli === true) await cache.put(key + '&brotli', new Response('')).catch(() => {});
+      else if (brotli === false) await cache.delete(key + '&brotli').catch(() => {});
+    }
     // the body is read once, in pieces (the page's progress bar), into chunks that answer reads as soon as the download
     // ends (memoryFile); the cache write takes its pieces from the same chunks alongside (queuedPut).
     // (Measured: reads answered only after the cache write put the runtime 0.34 s and pakchunk0's mount 0.53 s later.) When
@@ -1251,7 +1790,7 @@ function fill(url, entry) {
     // (a warm visit downloaded 209.6 MB again: one cache.put of a large container had failed) the body is stored in CACHE_PART_BYTES pieces as
     // it arrives (one cache.put of a large container failed with NetworkError), plus a small index entry; a visit finds
     // the file only once every piece and the index are in (cachedResponse)
-    const puts = [];
+    const puts = load.puts = [];   // (its piece writes: the load settles after them)
     let pieceIndex = resuming ? kept.length : 0;
     let partChunks = [];
     let partBytes = 0;
@@ -1288,7 +1827,12 @@ function fill(url, entry) {
         chunks.length = 0;
         if (module && module.pieces) module.pieces[index] = body;
         return body;
-      }).then(() => { if (module) { ++piecesStored; moduleEarly(); } }));
+      }, load).then(() => {
+        // the store index this worker read at its start learns the piece, so a load this worker starts again after a cut
+        // sees the pieces it kept (resume or not: see above), as a new worker would
+        indexStore().then((stored) => { if (stored) stored.pieces.add(key); }).catch(() => {});
+        if (module) { ++piecesStored; moduleEarly(); }
+      }));
       ++pieceIndex;
       partChunks = [];
       partBytes = 0;
@@ -1300,17 +1844,36 @@ function fill(url, entry) {
       loaded += piece.size;
     }
     let reported = 0;
-    const progress = { parts, loaded, done: false, failed: false, wake: [], started: Date.now(), netBytes: 0 };
+    const progress = { parts, loaded, done: false, failed: false, wake: [], started: performance.now(), netBytes: 0 };
     // the page's whole read of the module while it downloads (the fetch handler)
     if (module) progress.stream = (client) => moduleStream(module, progress, client);
+    // the game's code is hashed beside its download (isCode, hashAlong): its outcome (progress.got, progress.differs) is known soon
+    // after its last byte, before the module's read ends; the file answers no read before it (blobs waits for it below)
+    const hasher = isCode(url) && /^[0-9a-f]{40}$/i.test(entry.sha1 || '') ? new Sha1() : null;
+    if (hasher) {
+      progress.verdict = hashAlong(progress, hasher).then((sha1) => {
+        if (sha1 === null) return;
+        progress.got = { size: progress.loaded, sha1 };
+        progress.differs = differs(progress.got, entry);
+      });
+    }
     const notify = () => { const wake = progress.wake; progress.wake = []; for (const f of wake) f(); };
     arriving.set(key, progress);
     started(progress);
     const reader = response.body.getReader();
+    // a read that waited RANGE_WAIT_STALL_MS on this load with no byte arriving ends it: the load then fails as one that broke off
+    // (its file and every later read go to the network), with no second copy of its bytes in flight
+    progress.stop = () => { progress.stalled = true; reader.cancel().catch(() => {}); };
     try {
       for (;;) {
         const { done, value } = await reader.read();
+        if (progress.stalled) throw new TypeError(`stalled: no byte for ${RANGE_WAIT_STALL_MS} ms`);
         if (done) break;
+        if (skipping && value.byteLength) {
+          skipping = false;
+          resumeSkipped.add(key);
+          await cache.put(key + '&skipped', new Response('')).catch(() => {});
+        }
         parts.push(value);
         for (let at = 0; at < value.byteLength;) {   // exact piece boundaries
           const take = Math.min(value.byteLength - at, CACHE_PART_BYTES - partBytes);
@@ -1321,18 +1884,27 @@ function fill(url, entry) {
         }
         loaded += value.byteLength;
         progress.loaded = loaded;
+        progress.lastByteAt = performance.now();
         notify();
         if (loaded - reported >= (1 << 20)) { reported = loaded; report(url, loaded, false); }
       }
     } catch (e) {
       progress.failed = true;
-      // say where a whole-file load broke (one cold load in 16 on the live host, not reproduced with net logs)
-      throw new Error(`${e} after ${loaded} of ${entry.br || entry.size} bytes (${response.headers.get('Content-Encoding') || 'identity'}, ` +
+      Promise.all(puts).catch(() => {});   // (the piece writes this load queued end on their own; a stop drops those still waiting)
+      // say where a whole-file load broke (one cold load in 16 on the live host, not reproduced with net logs). The counts
+      // are decoded bytes (what the reader got, kept pieces included); the wire size is the response's own as the list
+      // states it: the whole .br, or the identity bytes a resume asked for (UE-411927: "112386350 of 25622250" mixed them)
+      const encoding = response.headers.get('Content-Encoding') || 'identity';
+      const wire = encoding === 'br' && entry.br ? `the whole .br, ${entry.br} bytes` : `${entry.size - resumeAt} identity bytes${resuming ? ' from ' + resumeAt : ''}`;
+      const error = new Error(`${e} after ${loaded} of ${entry.size} decoded bytes (on the wire: ${encoding}, ${wire}; ` +
         `${Math.round(performance.now() - fetchStarted)} ms in, ${pending.size} loads in flight)`);
+      error.network = !(e && e.http);   // (a staged file's fallback that the host refused is no network break)
+      throw error;
     } finally {
       // a broken or short download is failed before its readers wake (the module's read then errors, moduleStream), so the
-      // page's next load of it, and any read that comes after, goes to the network
-      if (progress.failed || (entry.size && loaded !== entry.size)) failed.add(key);
+      // page's next load of it, and any read that comes after, goes to the network. A whole code body that differs from the
+      // list (size or sha1) is not failed: its readers' reads error (moduleStream) or wait, and it is fetched once more below
+      if (!stopped() && (progress.failed || (!hasher && entry.size && loaded !== entry.size))) failed.add(key);
       progress.done = true;
       arriving.delete(key);
       notify();
@@ -1343,30 +1915,61 @@ function fill(url, entry) {
     // no whole-file Blob of the download (it doubled the Blob bytes, and the 41 MB global shader
     // archive's came back unreadable on cold desktop visits: CACHE_PUT_FAILED, then READ_FAILED on the engine's first read);
     // reads use the chunks until the stored copy's disk-backed Blob replaces them
+    if (progress.verdict) await progress.verdict;   // the code's hash (its download's chunks stay whole until then)
     const blob = memoryFile(parts, loaded, module);
     pieceCount = pieceIndex;
     const writing = Promise.all(puts).then(async () => {
       // checked on the stored pieces (disk-backed Blobs, read asynchronously), not on a copy of the download made on this
       // worker's thread, which held up the engine's reads (about 0.6 GB copied during engine_preinit)
       const stored = [];
+      let storedSha1 = null;   // a data file's body, for a mismatch message (sha1 or size)
       for (let i = 0; i < count; i++) {
         const piece = await cache.match(key + '&part=' + i);
         if (!piece) throw new Error('piece ' + i + ' of ' + count + ' is not stored');
         stored.push(await piece.blob());
       }
-      if (!(await sha1Matches(stored, entry.sha1))) throw new Error('sha1 differs from the list (' + entry.sha1 + ')');
+      // a code file was hashed as it arrived: its stored pieces are only read back (a piece that came out unreadable fails here)
+      if (hasher) {
+        if (progress.differs) throw new Error('sha1 differs from the list (' + entry.sha1 + ')');
+        for (const piece of stored) await piece.arrayBuffer();
+      } else {
+        const got = storedSha1 = await sha1Of(stored, entry.sha1);
+        if (got !== null && got !== entry.sha1.toLowerCase()) throw Object.assign(new Error('sha1 differs from the list (' + entry.sha1 + ')'), { got });
+      }
+      if (stopped()) throw new Error('stopped: not stored (stopLoads)');
       await cache.put(key + '&parts', new Response(JSON.stringify({ parts: count, size: loaded })));
+      if (stopped()) { await cache.delete(key + '&parts'); throw new Error('stopped: not stored (stopLoads)'); }   // (a stop during it)
+      return storedSha1;
     });
     // a read's fetch event holds these writes too (holdFor in the fetch handler)
     const settled = writing.catch(() => {}).finally(() => { if (writes.get(key) === settled) writes.delete(key); });
     writes.set(key, settled);
-    if (entry.size && blob.size !== entry.size) {
+    // a code body that differs is never read from (its pieces are deleted once written) and is fetched once more
+    if (progress.differs) {
       writing.catch(() => {}).finally(() => deleteCached(cache, key)).catch(() => {});
-      problem(key, `size ${blob.size}, the list says ${entry.size} (Content-Encoding ${response.headers.get('Content-Encoding')})`);
+      if (module) moduleSettle(module);
+      blob.release();
+      refetchOwners.set(progress.got, load);   // (its second fetch is this load's: fetchHashed)
+      return refetchCode(key, url, entry, progress.got);
+    }
+    if (entry.size && blob.size !== entry.size) {
+      // a data file: its reads go to the network (problem), and every page is told once, with the body's sha1 once its stored
+      // pieces are hashed
+      writing.then((sha1) => sha1 || null, (e) => (e && e.got) || null).then((sha1) => mismatch(key, 'data', url, entry, { size: blob.size, sha1 }));
+      writing.catch(() => {}).finally(() => deleteCached(cache, key)).catch(() => {});
+      problem(key, `size ${blob.size}, the list says ${entry.size} (Content-Encoding ${response.headers.get('Content-Encoding')})`, false,
+        blob.size < entry.size ? { url, status: response.status, expected: entry.size, got: blob.size } : null);
+      // the module's whole body (not of staged pieces or parts) shorter than the list: the host's file is cut short, and the page's
+      // read of it was this load's stream (moduleStream), which saw no other answer, so the pages are told here. Another file's
+      // short fill is told by its reads, which go to the network (fileAnswered)
+      // (no page is told from the fill: the page's retry of the module reads it from the network, whose answer is the report,
+      // fileAnswered, so a fill cut short that the retry then gets whole names nothing)
       return null;
     }
     blobs.set(key, blob);
     held = blob;
+    // the module's whole body, its sha1 checked, came through the HTTP cache (fetchWhole): fillHttpCache asks whether it was kept
+    if (!resuming && viaHttpCache(url, entry)) httpLoaded.set(key, Number(response.headers.get('Content-Length')) || entry.br || entry.size || 0);
     moduleEarly();
     const stored = new Response(null);   // reads take the file from blobs
     writing.then(async () => {
@@ -1387,11 +1990,24 @@ function fill(url, entry) {
     // copy's Blob, whose pieces this catch then deleted. Now reads stay on (or go back to) the downloaded copy, and a read that
     // cannot be served from it goes to the network (slice)
     }).catch((e) => {
+      // a stop during the writes is no failure: the download is let go (only stopped pages wanted it) and the pieces stored stay
+      // for a later visit to resume (no index entry, so none is read)
+      if (stopped()) {
+        if (module) moduleSettle(module);
+        if (blobs.get(key) === held) blobs.delete(key);
+        blob.release();
+        post({ type: 'log', text: `SW STOPPED ${url.split('/').pop()}: its cache writes were cut off` });
+        return;
+      }
       errors.push(key + ': cache.put ' + e);
       post({ type: 'log', text: 'SW CACHE_PUT_FAILED ' + key + ' ' + blob.size + ': ' + e });
       if (module) moduleSettle(module);
-      // later reads go to the network; the rejected download is let go
-      if (/sha1 differs/.test(String(e))) { failed.add(key); blobs.delete(key); blob.release(); }
+      // later reads go to the network; the rejected download is let go, and every page is told once (a data file: a code file
+      // that differs never gets here)
+      if (/sha1 differs/.test(String(e))) {
+        failed.add(key); blobs.delete(key); blob.release();
+        if (e.got) mismatch(key, 'data', url, entry, { size: blob.size, sha1: e.got });
+      }
       else blobs.set(key, held || blob);   // the downloaded copy, or the module's stored pieces' Blobs (moduleEarly)
       // no room (quota, or Chrome's "Unexpected internal error" on a large store): files not cached yet go to the network
       const notReadable = /NotReadable/i.test(String(e)) && ++notReadableFailures >= 2;
@@ -1402,16 +2018,28 @@ function fill(url, entry) {
       deleteCached(cache, key).catch(() => {});
     });
     return stored;
-  })().catch((e) => { problem(key, String(e)); return null; }).finally(() => {
+  })().catch((e) => {
+    // a load a stop aborted is not failed: a page that did not stop loads the file again (stopLoads)
+    if (stopped()) { post({ type: 'log', text: `SW STOPPED ${url.split('/').pop()}: its load was aborted` }); return null; }
+    problem(key, String(e), !!(e && e.network));
+    return null;
+  }).finally(() => {
     if (loadEnds.has(key)) { endLoad(key); loadEnds.delete(key); }   // no read waits on a piece of a load that has ended
     // the container's staged pieces served this load only: their buffers go with it (reads now take the loaded or stored file)
     for (const piece of [...tails.keys()]) if (piece.startsWith(key + '#')) tails.delete(piece);
-    pending.delete(key); starting.delete(key); started(null);
+    if (pending.get(key) === job) { pending.delete(key); starting.delete(key); }
+    started(null);
     // the module's state lives while its download is held or read (moduleCompiled may still come); a failed load keeps it
     // only for its reads (this build's: another build's state is its own)
     const module = moduleReads.get(key);
     if (module && !blobs.has(key)) moduleSettle(module);
   });
+  job.load = load;
+  // the load has settled once its job, its cache writes and the deletions they start are over (one turn after the writes: a failed
+  // write's deletion starts just after it), and it leaves the registry then
+  load.settled = job.catch(() => null).then(() => Promise.all((load.puts || []).map((put) => put.catch(() => {}))))
+    .then(() => writes.get(key)).then(() => new Promise((turn) => setTimeout(turn, 0)))
+    .then(() => deleting.get(key)).catch(() => {}).then(() => { load.done = true; if (loads.get(key) === load) loads.delete(key); });
   pending.set(key, job);
   return job;
 }
@@ -1422,13 +2050,23 @@ function fill(url, entry) {
 // done at its current rate, and only up to RANGE_NET_MAX_BYTES of raw bytes per file (each such byte is fetched twice)
 const RANGE_NET_MIN_S = 0.5;
 const RANGE_NET_MAX_BYTES = Infinity;   // a 32 MiB cap cost 9.2 s at 50 Mbit (reads waited for the fill again)
+// ...and never for a file of RANGE_WAIT_BYTES or less: the fetch backend's first read of a file is its first two 1 MiB chunks
+// (WasmIoWorker.cpp FirstFetch, Range: bytes=0-2097151), which for such a file is half of it or more, raw, while its whole-file
+// load (Brotli) brings those bytes in fewer bytes on the wire. In a load's first 0.2 s its rate is not known, so the time rule
+// above sent every such read to the network: each project shader archive of a deferred cold load came twice (UE-411929).
+// Only a file loaded as one stream from byte 0: a container staged in pieces (head, body, tail) keeps the rules above
+const RANGE_WAIT_BYTES = 4 * 1024 * 1024;
+// a read waiting on a load that has brought no byte for RANGE_WAIT_STALL_MS (since its last byte, or its start: a stalled
+// connection) goes to the network, and so does every later read of it while it stays quiet; a load that breaks off (a cut-off
+// connection) wakes its reads at once, which then read the file from the network
+const RANGE_WAIT_STALL_MS = 1000;
 function worthNetwork(progress, entry, range) {
   const match = /^bytes=(\d+)-(\d*)$/.exec(range || '');
-  if (!match || !entry.size) return false;
+  if (!match || !entry.size || (entry.size <= RANGE_WAIT_BYTES && !entry.head && !entry.body && !entry.tail)) return false;
   const last = match[2] === '' ? entry.size - 1 : Math.min(Number(match[2]), entry.size - 1);
   const bytes = last - Number(match[1]) + 1;
   if (progress.netBytes + bytes > RANGE_NET_MAX_BYTES) return false;
-  const seconds = (Date.now() - progress.started) / 1000;
+  const seconds = (performance.now() - progress.started) / 1000;
   const rate = seconds > 0.2 ? progress.loaded / seconds : 0;   // bytes per second of the fill (decoded)
   if (rate > 0 && (last + 1 - progress.loaded) / rate < RANGE_NET_MIN_S) return false;
   progress.netBytes += bytes;
@@ -1443,13 +2081,23 @@ function arrivedBy(progress, entry, range) {
   return progress.loaded > last;
 }
 
-async function partial(progress, entry, range, url) {
+// stallMs: 'stalled' once the load has brought no byte for that long (0: wait for as long as the load runs)
+async function partial(progress, entry, range, url, stallMs = 0) {
   const match = /^bytes=(\d+)-(\d*)$/.exec(range || '');
   if (!match || !entry.size) return null;
   const first = Number(match[1]);
   const last = match[2] === '' ? entry.size - 1 : Math.min(Number(match[2]), entry.size - 1);
   if (first > last) return null;
-  while (progress.loaded <= last && !progress.done) await new Promise((f) => progress.wake.push(f));
+  while (progress.loaded <= last && !progress.done) {
+    const quiet = stallMs - (performance.now() - (progress.lastByteAt || progress.started));   // (a monotonic clock: a wall-clock change moves no stall)
+    if (stallMs && quiet <= 0) return 'stalled';
+    await new Promise((f) => {
+      // a wait that times out takes its wake callback back out of the load's list (a stalled load keeps no callback per read)
+      const wake = () => { clearTimeout(timer); f(); };
+      const timer = stallMs ? setTimeout(() => { const i = progress.wake.indexOf(wake); if (i >= 0) progress.wake.splice(i, 1); f(); }, quiet) : 0;
+      progress.wake.push(wake);
+    });
+  }
   if (progress.done) return null;
   // Only the pieces the range covers (a Blob of everything arrived would copy up to the whole file per read)
   const pieces = [];
@@ -1486,7 +2134,7 @@ async function slice(key, response, range, url, client) {
   let blob = blobs.get(key);
   if (!blob) {
     try { blob = response.body ? await response.blob() : null; } catch (e) { blob = null; }
-    if (!blob) { failed.add(key); return toNetwork(url, range); }
+    if (!blob) { failed.add(key); return toNetwork(key, range); }
     blobs.set(key, blob);
   }
   const match = /^bytes=(\d*)-(\d*)$/.exec(range || '');
@@ -1502,7 +2150,7 @@ async function slice(key, response, range, url, client) {
   }
   if (!match) {
     const whole = await readable(key, blob, url, range);
-    if (!whole) return toNetwork(url, range);
+    if (!whole) return toNetwork(key, range);
     return new Response(whole, { status: 200, headers: headers(typeOf(url), { 'Content-Length': String(blob.size) }) });
   }
   let first = match[1] === '' ? Math.max(0, blob.size - Number(match[2])) : Number(match[1]);
@@ -1514,7 +2162,7 @@ async function slice(key, response, range, url, client) {
   // answered (readable), and every engine read waited for that copy (warm Lyra: 251 reads in engine_preinit, median 8.5 ms,
   // the worker's thread 0.56 s busy). The Blob slice is the answer now, so the browser hands the bytes to the reader without
   // this thread; the check that a stored copy is still readable is made once per CACHE_PART_BYTES piece instead (a 1-byte read)
-  if (!(await piecesReadable(key, blob, first, last, url, range))) return toNetwork(url, range);
+  if (!(await piecesReadable(key, blob, first, last, url, range))) return toNetwork(key, range);
   return new Response(blob.slice(first, last + 1), { status: 206, headers: headers(typeOf(url), {
     'Content-Range': `bytes ${first}-${last}/${blob.size}`, 'Content-Length': String(last - first + 1) }) });
 }
@@ -1553,12 +2201,14 @@ self.addEventListener('fetch', (event) => {
       let storage = null;
       try { storage = await self.navigator.storage.estimate(); } catch (e) { storage = null; }
       return new Response(JSON.stringify({ version: SW_VERSION, cache: CACHE, killed, storageLow, lateReleased, storage, errors,
-        failed: [...failed], pieces: tails.size, files: m.size, keys: [...m.keys()].slice(0, 30) }), { headers: { 'Content-Type': 'application/json' } });
+        failed: [...failed], mismatches: [...mismatches.values()], pieces: tails.size, files: m.size, keys: [...m.keys()].slice(0, 30) }), { headers: { 'Content-Type': 'application/json' } });
     }));
     return;
   }
   if (request.mode === 'navigate') {   // a new page load reads the current file list
     manifestPromise = null;
+    // ... and loads again what the network broke for an earlier page (before any of its reads comes in)
+    retryBroken();
     // the new list now, and with it a prune of what no open page's build names any more
     const listing = manifest().catch(() => {});
     if (event.waitUntil) event.waitUntil(listing);
@@ -1567,8 +2217,10 @@ self.addEventListener('fetch', (event) => {
   }
   // The fetch backend asks for <directory>//<name>: collapse repeated slashes in the path before the lookup
   const url = request.url.split('?')[0].split('#')[0].replace(/([^:\/])\/{2,}/g, '$1/');
+  let listed = null;
   event.respondWith((async () => {
-    const entry = (await manifestFor(event.clientId)).get(url);
+    const map = await manifestFor(event.clientId);
+    const entry = listed = map.get(url);
     if (!entry) return fetch(request).then((r) => isolated(r, request));
     // The fetch backend's size probe (HEAD, Range: bytes=0-) is answered from the list, so a host's precompressed
     // .br can never report a compressed length
@@ -1578,16 +2230,32 @@ self.addEventListener('fetch', (event) => {
     const range = request.headers.get('Range');
     const cache = await openCache();
     const key = url + '?v=' + entry.sha1;
-    if (failed.has(key)) return toNetwork(url, range);
-    if (blobs.has(key)) return slice(key, null, range, url, event.clientId);
+    // a read of a page that stopped starts no load and stores nothing (stopLoads): it joins a load under way, else it is read as
+    // a file this worker does not store
+    const page = pageOf(event.clientId);
+    const stopped = () => stoppedPages.has(page);   // (asked at each step: the page may stop while its read waits)
+    const storing = () => !stopped();
+    const live = () => pending.has(key) && !loadAborted(pending.get(key).load);   // a load under way that no stop aborted
+    // a code file that still differed from the list after its second fetch is refused; a data file that differed is read from
+    // the network as before, and a page that has not heard of it yet is told (a reload in this worker's life)
+    if (codeMismatch(key, entry)) return refuse(key, entry);
+    if (mismatches.has(mismatchKey(key, entry.size))) tellMismatch(mismatchKey(key, entry.size));
+    if (failed.has(key)) return toNetwork(key, range);
+    // (not the copy of a load a stop aborted: the read waits for a fresh load, or is read as a file this worker does not store; nor,
+    // for a page that has not stopped, a stopped page's unstored copy: fill starts the load that stores it)
+    if (blobs.has(key) && !loadAborted(loads.get(key)) && !(blobs.get(key).unstored && !stopped())) {
+      if (loads.has(key)) interest(key, page);   // (a load still writing the file is this page's too: no other page's stop aborts it)
+      return slice(key, null, range, url, event.clientId);
+    }
     // a file this worker is loading, or one Cache Storage has nothing of, is not looked up there (see indexStore)
     const hit = !pending.has(key) && await mayBeStored(key) ? await cachedResponse(cache, key) : null;
     if (hit) { report(url, entry.size, true); return slice(key, hit, range, url); }
-    // a late chunk's range read before the site goes to the network. a whole read does not:
+    // a late chunk's range read before the level goes to the network. a whole read does not:
     // WasmFS's fetch backend reads a small file whole at its mount, and that plain GET went out on every load while this worker
-    // loaded the same bytes again after the site; a whole read joins the file's one load
-    if (isLate(url) && !lateReleased && !pending.has(key) && range) {
-      if (!EARLY_LATE_FILL || !cacheable(url, entry)) return rangeNetwork(cache, key, url, range, entry);
+    // loaded the same bytes again after the level; a whole read joins the file's one load. A late file is never split into parts
+    // (PageContract.md; check_stage.py refuses it, the page stops on one), so its own URL serves the range
+    if (isLate(entry) && !releasedPage(map) && !pending.has(key) && range) {
+      if (!EARLY_LATE_FILL || !cacheable(url, entry) || stopped()) return rangeNetwork(cache, key, url, range, entry, storing);
       // (sw.js?late=early) this read starts the file's one load below, at low priority, and is answered as any read of a file
       // still arriving
       if (!lowPriority.has(key)) {
@@ -1595,18 +2263,33 @@ self.addEventListener('fetch', (event) => {
         post({ type: 'log', text: `SW LATE early fill ${url.split('/').pop()} (first read ${range})` });
       }
     }
-    // Not cached yet: wait for the whole file. The game reads nearly all of each container before the site is ready
+    // Not cached yet: wait for the whole file. The game reads nearly all of each container before the level is ready
     // (58.7 of 60.6 MB of the main .ucas), so one Brotli load of the whole file is about a third of the bytes of
     // the reads
     // (a file whose load is under way, a tier prefetch's for one, joins that load: its bytes are being stored already and never
     // count against the room again)
-    if (!cacheable(url, entry) || (!pending.has(key) && !(await fits(entry.size)))) return toNetwork(url, range);
+    // a code file this worker can't store is still checked before any read gets its bytes (uncachedCode)
+    const unstored = async () => {
+      const prior = loads.get(key);
+      if (loadAborted(prior) && prior.settled) await prior.settled;   // (so the code check's fetches are not the aborted load's)
+      if (await uncachedCode(key, url, entry)) {
+        const held = blobs.get(key);
+        const answer = await slice(key, null, range, url, event.clientId);
+        // (a page that stopped leaves a copy in memory that is no stored file: a later page's load stores it, fill)
+        if (stopped() && cacheable(url, entry) && held && blobs.get(key) === held) held.unstored = true;
+        return answer;
+      }
+      if (codeMismatch(key, entry)) return refuse(key, entry);
+      return toNetwork(key, range);
+    };
+    if (!cacheable(url, entry) || (stopped() && !live()) || (!pending.has(key) && !(await fits(entry.size)))) return unstored();
     // The event holds the worker until the whole-file load and its cache writes (pieces, sha1 check, index) are done
-    const filling = fill(url, entry);
+    const filling = fill(url, entry, page);
     holdFor(event, filling.then(() => writes.get(key)).catch(() => {}));
-    const fromTail = await tailRead(entry, range, url);
+    // (an aborted load's pieces and stream answer no read: the read waits for its fill's answer)
+    const fromTail = live() ? await tailRead(entry, range, url) : null;
     if (fromTail) return fromTail;
-    const progress = arriving.get(key) || await starting.get(key);
+    const progress = live() ? arriving.get(key) || await starting.get(key) : null;
     // the module's whole read joins its download (moduleStream): the page compiles as the bytes arrive
     if (progress && !range && progress.stream && !progress.done) {
       return new Response(progress.stream(event.clientId), { status: 200, headers: headers(typeOf(url), { 'Content-Length': String(entry.size) }) });
@@ -1616,12 +2299,23 @@ self.addEventListener('fetch', (event) => {
       // for the whole-file load to reach it (engine_preinit waited 42 s at 50 Mbit); the whole file still fills behind it
       if (RANGES_TO_NETWORK && !arrivedBy(progress, entry, range) && worthNetwork(progress, entry, range)) {
         post({ type: 'log', text: 'SW RANGE_NET ' + url.split('/').pop() + ' ' + range });
-        return rangeNetwork(cache, key, url, range, entry);
+        return rangeNetwork(cache, key, url, range, entry, storing);
       }
-      const answer = await partial(progress, entry, range, url);
+      const answer = await partial(progress, entry, range, url, RANGES_TO_NETWORK ? RANGE_WAIT_STALL_MS : 0);
+      if (answer === 'stalled') {
+        post({ type: 'log', text: `SW RANGE_STALL ${url.split('/').pop()} ${range}: its load brought no byte for ${RANGE_WAIT_STALL_MS} ms, ended; from the network` });
+        if (progress.stop) progress.stop();
+        return rangeNetwork(cache, key, url, range, entry, storing);
+      }
       if (answer) return answer;
     }
     const filled = await filling;
-    return filled ? slice(key, filled, range, url, event.clientId) : toNetwork(url, range);
-  })());
+    if (filled) return slice(key, filled, range, url, event.clientId);
+    // (a stopped page's read whose load a stop aborted is read as a file this worker does not store)
+    return codeMismatch(key, entry) ? refuse(key, entry) : stopped() ? unstored() : toNetwork(key, range);
+  })().then((response) => {
+    const told = fileAnswered(url, listed, response, event.clientId, request.headers.get('Range'));
+    if (told) holdFor(event, told);   // the pages are told before the worker may stop
+    return response;
+  }));
 });

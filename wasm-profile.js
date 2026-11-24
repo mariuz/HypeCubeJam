@@ -19,8 +19,17 @@
 // and <meta name="ue-args-<name>"> has the profile's engine arguments (a device profile with -dp=, a starting resolution).
 // audioThread: on iOS, where the engine runs without threads, one pthread of its own renders and plays the sound
 // (-WebAudioThread, AudioMixerWebAudio.cpp), so it plays on through long frames; the link's iOS pool grows by one for it.
-// ?audiothread=1|0, else <meta name="ue-audio-thread" content="1"> (UAT: bSingleThreadedAudioThread), else the profile's audio=thread.
-// Not with ?threads=1 (a threaded engine has its own audio threads)
+// ?audiothread=1|0 first, then <meta name="ue-audio-thread" content="1|0"> (UAT: bSingleThreadedAudioThread), then, only with no
+// such tag, the profile's audio=thread. The tag or the profile asks for it in vain on an iPhone or iPad whose WebKit is 26 or
+// earlier unless <meta name="ue-audio-thread-ios26" content="1"> (UAT: bUseAudioThreadOnIOS26AndBelow; ?audiothread=1 still turns it
+// on there, as it decides first): there that Worker's own instance of the
+// module took a template-size Development build's tab past the browser's memory cap during engine start (WebKit 27 does not pay
+// for it). WebKit 27 has WebAssembly.Suspending and 26 does not, so a page without it counts as 26, as does one where the test
+// fails. The rule uses the device's own iOS check (an iPhone or iPad user agent, or a Mac one with touch: iPadOS's desktop-class
+// Safari), so a forced ?profile=ios on a desktop always takes the WebKit 27 path. UAT writes both tags on every stage, so a 1 or 0
+// written into a page lasts only on a page edited after staging. audioWhy names what decided (the values: Docs/PageContract.md,
+// ue-audio-thread); wasm-compat.js threading() reports it on iOS.
+// Not with ?threads=force (a threaded engine has its own audio threads; ?threads=1 does not start one on iOS, wasm-compat.js)
 // applyMemory(Module) gives the loader's Module the fixed memory; describe() is the PAGE PROFILE line
 (() => {
   const query = new URLSearchParams(location.search);
@@ -54,17 +63,27 @@
   const memoryPages = (settings.get('memory') || '').split('/').map(whole).filter(Boolean).map((mb) => mb * 16);
   const audioAsked = query.get('audiothread');
   const audioMeta = document.querySelector('meta[name=ue-audio-thread]');
-  // ?audiothread= first, then the project's setting (a staged 0 is an explicit off), then the device profile's audio=thread
   const audioMetaValue = audioMeta ? audioMeta.content.trim() : '';
-  const audioWanted = audioAsked === '1' || (audioAsked !== '0'
-    && (audioMetaValue === '1' || (audioMetaValue !== '0' && settings.get('audio') === 'thread')));
+  const ios26Meta = document.querySelector('meta[name=ue-audio-thread-ios26]');
+  const ios26Allowed = !!ios26Meta && ios26Meta.content.trim() === '1';
+  // WebKit 26 or earlier on an iPhone or iPad (above)
+  const webkitBefore27 = appleTouch && (() => { try { return typeof WebAssembly.Suspending !== 'function'; } catch (e) { return true; } })();
+  // what asked for the thread (the project's tag, else the device profile's audio=thread), then the WebKit 26 rule over it
+  const audioAskedBy = audioMetaValue === '1' ? 'meta' : audioMetaValue === '0' ? '' : settings.get('audio') === 'thread' ? 'profile' : '';
+  const audioRule = audioMetaValue === '0' ? 'meta' : !audioAskedBy ? 'none'
+    : !webkitBefore27 ? (appleTouch && audioAskedBy === 'meta' ? 'ios27' : audioAskedBy) : ios26Allowed ? 'ios26-setting' : 'ios26';
+  // ?audiothread= first
+  const [audioWanted, audioWhy] = audioAsked === '1' || audioAsked === '0' ? [audioAsked === '1', 'query']
+    : [!!audioAskedBy && (!webkitBefore27 || ios26Allowed), audioRule];
   const profile = {
     name,
     forced: !!forced,
     memoryPages,
     poolSize: pool(settings.get('pool')),
     fps: whole(settings.get('fps')),
-    audioThread: name === 'ios' && query.get('threads') !== '1' && audioWanted,
+    // (?threads=1 is refused on an iOS page kept single-threaded, wasm-compat.js threading(), so only ?threads=force rules it out)
+    audioThread: name === 'ios' && query.get('threads') !== 'force' && audioWanted,
+    audioWhy,
     reserved: 0,   // the pages applyMemory reserved (0: the link's own memory)
   };
   profile.configured = memoryPages.length > 0 || !!profile.poolSize || !!profile.fps || poolRefused !== null || !!askRefused || profile.audioThread;

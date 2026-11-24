@@ -2,11 +2,13 @@
 //
 // Chrome creates a WebGPU device, and later every shader module and pipeline, in its GPU process, which is idle while the
 // game's files download. This script asks for the adapter and the device as soon as the compatibility check (wasm-compat.js)
-// has picked the renderer tier, so the check's timed test draws never share the GPU with this work. It asks for the features
-// and limits the engine's WebGPU RHI asks for on that tier (WebGPURHI, WebGPUDevice.cpp, FWebGPUDynamicRHI::Init: keep the two
-// lists in step). The loader puts the device in Module.preinitializedWebGPUDevice before the engine starts. The RHI takes it
-// when it has every feature and limit the RHI wants and otherwise requests its own device; either way it sends a
-// 'ue-webgpu-device' event ({page: true|false, why}), and this script releases a device the engine did not take.
+// has picked the renderer tier, so the check's timed test draws never share the GPU with this work. It asks for at least the
+// features and limits the engine's WebGPU RHI asks for on that tier (WebGPURHI, WebGPUDevice.cpp, FWebGPUDynamicRHI::Init:
+// keep the two lists in step; maxDynamicUniformBuffersPerPipelineLayout is asked for at or above the RHI's request on
+// purpose, see MIN_DYNAMIC_UNIFORM_BUFFERS). The loader puts the device in Module.preinitializedWebGPUDevice before the
+// engine starts. The RHI takes it unless TakePageDevice declines it (its doc in WebGPUDevice.cpp states the contract and
+// says when) and then requests its own device; either way it sends a 'ue-webgpu-device' event ({page: true|false, why}),
+// and this script releases a device the engine did not take.
 //
 // The prewarm pack: one per shader format, so per tier (forward SF_WEBGPU_ES3_1, deferred SF_WEBGPU_ES3_1_DEFERRED, desktop
 // SF_WEBGPU_SM5). When the stage has the tier's pack (<Project>/Content/WebGPUPrewarm-<shader format>.json, made by
@@ -106,6 +108,8 @@
     window.uePrewarm = { mode: 'off', start: () => {}, device: () => Promise.resolve(null) };
   };
   if (asked === '0' || asked === 'off') return off('asked');
+  // a page opened from disk fetches nothing (the loader stops it: wasm-compat.js fromDisk; its listing fetch was a CORS error)
+  if (location.protocol === 'file:') return off('file');
   if (firefox && !asked) return off('firefox');
   if (!navigator.gpu || typeof GPUAdapter === 'undefined' || typeof GPUDevice === 'undefined') return off('no WebGPU');
   const mode = asked === 'capture' ? 'capture' : asked === 'device' ? 'device' : 'replay';
@@ -128,7 +132,9 @@
     'maxComputeWorkgroupStorageSize', 'maxComputeInvocationsPerWorkgroup', 'maxComputeWorkgroupSizeX', 'maxComputeWorkgroupSizeY',
     'maxComputeWorkgroupSizeZ', 'maxBindingsPerBindGroup', 'maxColorAttachmentBytesPerSample'];
   const DESKTOP_LIMITS = ['maxStorageTexturesPerShaderStage'];
-  // At least this many dynamic uniform buffers per pipeline layout (the RHI asks for max(adapter, 8))
+  // The page asks for the adapter's whole count of dynamic uniform buffers per pipeline layout, at least WebGPU's default 8,
+  // on purpose: the RHI asks for at most 10 by default and for the adapter's count under -WebGPUAdapterDynamicUniforms, and
+  // takes a device that has more (WebGPUDevice.cpp TakePageDevice), so both take this one. Do not cap it at the RHI's default.
   const MIN_DYNAMIC_UNIFORM_BUFFERS = 8;
   // The page's tier ids (wasm-compat.js pickTier): forward (once mobile), deferred, desktop
   const FORMAT = { desktop: 'SF_WEBGPU_SM5', forward: 'SF_WEBGPU_ES3_1', deferred: 'SF_WEBGPU_ES3_1_DEFERRED' };
@@ -154,8 +160,9 @@
   };
 
   // ---- the pack: its listing entry and its stamp ----
-  // The listing (sw.js's list, which the loader reads too) names the staged packs and gives every file's sha1
-  const listing = fetch('wasm-cache.json', { cache: 'no-cache' }).then((r) => (r.ok ? r.json() : []), () => []).catch(() => [])
+  // The listing (sw.js's list, which the loader reads too) names the staged packs and gives every file's sha1; read once the
+  // start gate opens (wasm-gate.js: nothing loads in an iOS link preview)
+  const listing = Promise.resolve(window.ueStartGate).then(() => fetch('wasm-cache.json', { cache: 'no-cache' })).then((r) => (r.ok ? r.json() : []), () => []).catch(() => [])
     .then((l) => (Array.isArray(l) ? l : []));
   const packEntry = (entries, tier) => entries.find((e) => e && typeof e.url === 'string' && e.url.endsWith('/Content/WebGPUPrewarm-' + FORMAT[tier] + '.json'));
   // The stamp prewarm_pack.py writes: sha1 over sorted lines. With the game binary's code hash in the listing ("code": the

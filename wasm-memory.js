@@ -5,7 +5,7 @@
 // use: a heap whose in-use bytes stay flat can still grow, by fragmentation or by blocks that live only briefly. Every 10 s from
 // 5 s after the page starts the recorder takes a sample: the linear memory's size and the allocator's top (emmalloc's first root
 // region's end pointer, found once by its signature in the heap's first 64 MB, which the allocator has already touched), the
-// Workers made and alive since it started, and the JS heap where the browser reports it. Every 20 s for the first 3 minutes,
+// Workers made and alive since the page started, and the JS heap where the browser reports it. Every 20 s for the first 3 minutes,
 // then every 60 s, it also walks the allocator's regions (a few tens of ms on the main thread for a heap of several hundred MB): in use, free,
 // the largest free block, free space by block size (< 64 KB, < 1 MB, < 8 MB, larger: fragmentation shows as many small free
 // blocks), and what the heap grew into since the last walk: the used blocks above its top by size (< 4 KB, < 64 KB, < 1 MB,
@@ -24,52 +24,37 @@
   const project = pageMeta('ue-project') || 'game';
   const lastKey = 'ue.' + project + '.memLast';
   const samples = [];
-  const info = { root: 0, rootKind: '', walks: 0, walkMs: 0, lastTop: 0, lastWalk: null, made: 0, alive: 0, previous: null, off: '' };
+  const info = { root: 0, rootKind: '', walks: 0, walkMs: 0, lastTop: 0, lastWalk: null, previous: null, off: '' };
   try { info.previous = JSON.parse(sessionStorage.getItem(lastKey) || 'null'); sessionStorage.removeItem(lastKey); } catch (e) { info.previous = null; }
-  // The Workers made from here on, and those not yet terminated
-  const Native = window.Worker;
-  if (Native) {
-    window.Worker = function (url, options) {
-      const worker = new Native(url, options);
-      info.made++;
-      info.alive++;
-      const terminate = worker.terminate ? worker.terminate.bind(worker) : null;
-      let ended = false;
-      worker.terminate = () => { if (!ended) { ended = true; info.alive--; } if (terminate) terminate(); };
-      return worker;
-    };
-    window.Worker.prototype = Native.prototype;
-  }
+  // The Workers made since the page started, and those not yet terminated (wasm-play.js ueWorkers)
+  const workers = window.ueWorkers || { made: 0, alive: 0 };
   // The game's linear memory: wasm-harness.js keeps the memory the game's module was instantiated with
   const memory = () => (window.__harness && window.__harness.memory) || null;
   const MB = 1048576;
   const mb = (bytes) => +(bytes / MB).toFixed(1);
 
-  // emmalloc's first RootRegion: [size, next, endPtr, size] of one used region, as 64-bit words (a wasm64 build: 32-byte region)
-  // or 32-bit words (a wasm32 build: 16-byte region); the first match whose regions walk consistently for 2000 steps
+  // emmalloc's first RootRegion: [size, next, endPtr, size] of one used region, as 64-bit words (a 32-byte region); the first
+  // match whose regions walk consistently for 2000 steps
   function heapRoot(u32, length) {
     const limit = Math.min(length, 64 * MB) >>> 2;
-    for (const kind of ['q', 'w']) {
-      const size = kind === 'q' ? 32 : 16, last = kind === 'q' ? 6 : 3, step = kind === 'q' ? 2 : 1;
-      for (let i = 0; i + 8 < limit; i += step) {
-        if (u32[i] !== size || u32[i + last] !== size || (kind === 'q' && (u32[i + 1] || u32[i + 5] || u32[i + 7]))) continue;
-        const at = i * 4, end = u32[i + (kind === 'q' ? 4 : 2)];
-        if (end <= at + 1024 || end > length) continue;
-        if (heapWalk(u32, kind, at, end, 2000, 0).ok) return { at, kind };
-      }
+    for (let i = 0; i + 8 < limit; i += 2) {
+      if (u32[i] !== 32 || u32[i + 6] !== 32 || u32[i + 1] || u32[i + 5] || u32[i + 7]) continue;
+      const at = i * 4, end = u32[i + 4];
+      if (end <= at + 1024 || end > length) continue;
+      if (heapWalk(u32, at, end, 2000, 0).ok) return { at };
     }
     return null;
   }
   // The regions from the root to the top: each starts with its size and ends with it again, the low bit set on a free one.
   // since: the previous walk's top (the blocks above it are what the heap grew into)
-  function heapWalk(u32, kind, root, end, maxSteps, since) {
-    const w = kind === 'q' ? 8 : 4;
+  function heapWalk(u32, root, end, maxSteps, since) {
+    const w = 8;
     const out = { ok: true, used: 0, free: 0, largest: 0, regions: 0, freeBy: [0, 0, 0, 0], freeBytesBy: [0, 0, 0, 0], above: [],
       aboveBy: [0, 0, 0, 0], aboveBytesBy: [0, 0, 0, 0], sizes: new Map() };
     let r = root + 4 * w;
     while (r < end - 4 * w && (!maxSteps || out.regions < maxSteps)) {
       const s = u32[r >>> 2];
-      if (!s || s & (w - 1) || r + s > end || (kind === 'q' && u32[(r >>> 2) + 1])) { out.ok = false; break; }
+      if (!s || s & (w - 1) || r + s > end || u32[(r >>> 2) + 1]) { out.ok = false; break; }
       const tag = u32[(r + s - w) >>> 2];
       if ((tag & ~1) !== s) { out.ok = false; break; }
       if (tag & 1) {
@@ -97,7 +82,7 @@
 
   function sample(walk) {
     const s = { t_s: Math.round(performance.now() / 1000), cover: document.body && document.body.dataset ? document.body.dataset.cover || '' : '',
-      workers: info.alive, workers_made: info.made };
+      workers: workers.alive, workers_made: workers.made };
     try {
       const mem = memory();
       const buffer = mem && mem.buffer;
@@ -106,18 +91,18 @@
         s.heap_mb = Math.round(buffer.byteLength / MB);
         if (!info.root) {
           const found = heapRoot(u32, buffer.byteLength);
-          if (found) { info.root = found.at; info.rootKind = found.kind; }
+          if (found) { info.root = found.at; info.rootKind = 'q'; }
         }
         if (info.root) {
-          const end = u32[(info.root + (info.rootKind === 'q' ? 16 : 8)) >>> 2];
+          const end = u32[(info.root + 16) >>> 2];
           s.top_mb = mb(end);
           if (walk || !info.walks) {
             const t0 = performance.now();
-            const h = heapWalk(u32, info.rootKind, info.root, end, 0, info.lastTop);
+            const h = heapWalk(u32, info.root, end, 0, info.lastTop);
             const ms = Math.round(performance.now() - t0);
             info.walks++;
             info.walkMs = Math.max(info.walkMs, ms);
-            const first = (o) => hex(u32, o + (info.rootKind === 'q' ? 8 : 4));
+            const first = (o) => hex(u32, o + 8);
             if (h.ok) {
               Object.assign(s, { used_mb: mb(h.used), free_mb: mb(h.free), largest_free_mb: mb(h.largest), regions: h.regions, walk_ms: ms,
                 free_by: h.freeBy, free_mb_by: h.freeBytesBy.map(mb), above_by: h.aboveBy, above_mb_by: h.aboveBytesBy.map(mb),
@@ -144,8 +129,8 @@
   }
   function report() {
     return { version: 1, page: location.pathname, at: new Date().toISOString(), t_ms: Math.round(performance.now()), samples: samples.slice(),
-      heap_root: info.root, heap_root_kind: info.rootKind, walks: info.walks, walk_ms_max: info.walkMs, workers_made: info.made,
-      workers_alive: info.alive, previous: info.previous, user_agent: navigator.userAgent };
+      heap_root: info.root, heap_root_kind: info.rootKind, walks: info.walks, walk_ms_max: info.walkMs, workers_made: workers.made,
+      workers_alive: workers.alive, previous: info.previous, user_agent: navigator.userAgent };
   }
   const url = pageMeta('ue-memory-report-url');
   const target = url && (/^https:\/\//.test(url) || /^\/(?!\/)/.test(url)) ? url : '';
