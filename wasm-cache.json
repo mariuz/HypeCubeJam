@@ -1,16 +1,16 @@
 [
   {"url": "Engine/Config/StagedBuild_HypeCubeJam.ini", "size": 3, "sha1": "57218c316b6921e2cd61027a2387edc31a2d9471", "br": 0},
   {"url": "Engine/Content/Renderer/TessellationTable.bin", "size": 259568, "sha1": "3a3402ca2d3531ab8352c818ea1181288bd78c72", "br": 0},
-  {"url": "Engine/GlobalShaderCache-SP_WEBGPU_ES3_1_DEFERRED.bin", "size": 825556, "sha1": "ca453e297a91fb109cea4c9608514431ff38f72d", "br": 0, "tier": "deferred"},
-  {"url": "HypeCubeJam/Binaries/Wasm/HypeCubeJam-Wasm-Shipping.js", "size": 257853, "sha1": "22c17977f21c524449a1635dfad017030c272f09", "br": 0},
-  {"url": "HypeCubeJam/Binaries/Wasm/HypeCubeJam-Wasm-Shipping.wasm", "size": 146955416, "sha1": "5b46fe4ab2b3becaaf8579e24cf9fca4509ff737", "br": 0, "code": "264f99b7bfd59901a7fe1eeab07a66b75c492569", "parts": [{"url": "HypeCubeJam/Binaries/Wasm/HypeCubeJam-Wasm-Shipping.wasm.part000", "sha1": "816ddf7bc5992b5be79e9218c3460bd6c35b5183", "size": 50000000}, {"url": "HypeCubeJam/Binaries/Wasm/HypeCubeJam-Wasm-Shipping.wasm.part001", "sha1": "c1370af37efa4dae443427f3eb43e521a8aa462d", "size": 50000000}, {"url": "HypeCubeJam/Binaries/Wasm/HypeCubeJam-Wasm-Shipping.wasm.part002", "sha1": "56da8c94ca6a0a3599685d2df5e840b97278cf51", "size": 46955416}]},
-  {"url": "HypeCubeJam/Content/Paks/HypeCubeJam-Wasm.pak", "size": 9287513, "sha1": "a950b50c73b64c375d97b41df655b7996c0868ed", "br": 0},
-  {"url": "HypeCubeJam/Content/Paks/HypeCubeJam-Wasm.ucas", "size": 99548096, "sha1": "e1c03e78353a5be9df891f8d686a60a237b9e953", "br": 0},
-  {"url": "HypeCubeJam/Content/Paks/HypeCubeJam-Wasm.utoc", "size": 212060, "sha1": "54103e55aa4e12c67856dcf8384644c51c4b97ee", "br": 0},
+  {"url": "Engine/GlobalShaderCache-SP_WEBGPU_ES3_1_DEFERRED.bin", "size": 823128, "sha1": "2a32f5067230390106e3fd113969fe9f79dc52e1", "br": 0, "tier": "deferred"},
+  {"url": "HypeCubeJam/Binaries/Wasm/HypeCubeJam-Wasm-Shipping.js", "size": 257852, "sha1": "bf763e6ebc5b18cf657ef5f1d8e66ef1dabeb0b2", "br": 0},
+  {"url": "HypeCubeJam/Binaries/Wasm/HypeCubeJam-Wasm-Shipping.wasm", "size": 142584945, "sha1": "e8cd85f8adc30d5d16b9a63787975fe15cb2ea06", "br": 0, "code": "94fd0d2f2b3df1842ee672d0a8c49910692ba919", "parts": [{"url": "HypeCubeJam/Binaries/Wasm/HypeCubeJam-Wasm-Shipping.wasm.part000", "sha1": "322d06314ef670131ba00f3351f70c81257e1514", "size": 50000000}, {"url": "HypeCubeJam/Binaries/Wasm/HypeCubeJam-Wasm-Shipping.wasm.part001", "sha1": "a7dc482821ce9245765b5c2cd54a3636ad0b2573", "size": 50000000}, {"url": "HypeCubeJam/Binaries/Wasm/HypeCubeJam-Wasm-Shipping.wasm.part002", "sha1": "941374d593ef593989762c8dcf6956f88d69fd9e", "size": 42584945}]},
+  {"url": "HypeCubeJam/Content/Paks/HypeCubeJam-Wasm.pak", "size": 9166549, "sha1": "3e8cacb7bdcbe4e69e35623588a22ba5182ee9ba", "br": 0},
+  {"url": "HypeCubeJam/Content/Paks/HypeCubeJam-Wasm.ucas", "size": 99483952, "sha1": "36d31d38ee107f5ae3d75c7a5cd2841d0f400ad9", "br": 0},
+  {"url": "HypeCubeJam/Content/Paks/HypeCubeJam-Wasm.utoc", "size": 209827, "sha1": "de2399a8c24247a9b6bbc7407969aa71920a7de7", "br": 0},
   {"url": "HypeCubeJam/Content/Paks/global.ucas", "size": 16, "sha1": "e129f27c5103bc5cc44bcdf0a15e160d445066ff", "br": 0},
   {"url": "HypeCubeJam/Content/Paks/global.utoc", "size": 206, "sha1": "feefe947075479c18ecefc4229e5e36a5e043313", "br": 0},
-  {"url": "HypeCubeJam/Content/ShaderArchive-Global-SF_WEBGPU_ES3_1_DEFERRED-SP_WEBGPU_ES3_1_DEFERRED.ushaderbytecode", "size": 5542398, "sha1": "0c9fb201c5aab980f1540a25649de01e5e3ddf23", "br": 0, "tier": "deferred"},
-  {"url": "HypeCubeJam/Content/ShaderArchive-HypeCubeJam-SF_WEBGPU_ES3_1_DEFERRED-SP_WEBGPU_ES3_1_DEFERRED.ushaderbytecode", "size": 2866595, "sha1": "7522712fe789bb68cb4195513e408e0b1525c774", "br": 0, "tier": "deferred"},
-  {"url": "HypeCubeJam/Content/ShaderTypeInfo-Global-SF_WEBGPU_ES3_1_DEFERRED-SP_WEBGPU_ES3_1_DEFERRED.stinfo", "size": 22652, "sha1": "f7312a7f61fe35894399ed3477bf48c2ad91d7a7", "br": 0, "tier": "deferred"},
-  {"url": "HypeCubeJam/Content/ShaderTypeInfo-HypeCubeJam-SF_WEBGPU_ES3_1_DEFERRED-SP_WEBGPU_ES3_1_DEFERRED.stinfo", "size": 10776, "sha1": "5fb36a25a0e172cfd1593f9dace27411b785f688", "br": 0, "tier": "deferred"}
+  {"url": "HypeCubeJam/Content/ShaderArchive-Global-SF_WEBGPU_ES3_1_DEFERRED-SP_WEBGPU_ES3_1_DEFERRED.ushaderbytecode", "size": 5538969, "sha1": "efac11a23be68b57b4217b51c737d4565c1d49e9", "br": 0, "tier": "deferred"},
+  {"url": "HypeCubeJam/Content/ShaderArchive-HypeCubeJam-SF_WEBGPU_ES3_1_DEFERRED-SP_WEBGPU_ES3_1_DEFERRED.ushaderbytecode", "size": 2860731, "sha1": "018f91dfa845cedf3419f7cd44caf43d3cbf5b70", "br": 0, "tier": "deferred"},
+  {"url": "HypeCubeJam/Content/ShaderTypeInfo-Global-SF_WEBGPU_ES3_1_DEFERRED-SP_WEBGPU_ES3_1_DEFERRED.stinfo", "size": 22604, "sha1": "2468023a1b4d0373a68fa409e872d721375d5379", "br": 0, "tier": "deferred"},
+  {"url": "HypeCubeJam/Content/ShaderTypeInfo-HypeCubeJam-SF_WEBGPU_ES3_1_DEFERRED-SP_WEBGPU_ES3_1_DEFERRED.stinfo", "size": 10708, "sha1": "eae445a931e51dcf32e8f0745110314db0ecc7ec", "br": 0, "tier": "deferred"}
 ]
