@@ -1090,7 +1090,13 @@ The guard (exit code 0 / 1) accepts only that ensure's block - its two message l
 `begin: stack for UAT` and `end: stack for UAT` - and a cook summary count of exactly that block's lines; any other
 `Error:` / compiler / ensure line, a larger "N error(s)" or a missing summary fails. It can also be run on a log
 without the flag. Builds of the engine before that update (0.21.0 and older) cannot join builds made after it and the
-other way round: the engine's network changelist is part of the network version.
+other way round: the engine's network changelist is part of the network version. So is `ProjectVersion`
+(`Config/DefaultGame.ini`, `[/Script/EngineSettings.GeneralProjectSettings]`): the engine hashes project name,
+`ProjectVersion` and network changelist into the network version (`FNetworkVersion::GetLocalNetworkVersion`; the game
+sets no override), which the engine checks on every join (also a join by address on a LAN) and which the EOS lobby
+(`HCJVER`), FIND GAMES and QUICK PLAY compare. Raise it whenever a replicated property, an RPC or a lobby key changes: 0.2.0 up to build
+0.22.0, **0.23.0 since build 0.23.0** (a replicated flag of the game state, devlog items 42 and 44), so 0.23.0 does
+not pair with 0.22.0 in either direction.
 
 Double-clicking `HypeCubeJam.exe` opens the title menu; PLAY hosts a listen server with bots (the world behind the
 menu already is one: `LocalMapOptions=?listen` in `DefaultEngine.ini`). `HypeCubeJam.exe -AutoHost` hosts without the

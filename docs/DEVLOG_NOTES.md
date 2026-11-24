@@ -3487,8 +3487,95 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
       in `docs\tools` runs BuildCookRun (`make_zip.ps1` only zips a stage), so there was no wrapper to hook.
       Nothing committed.
 
+## 24 Nov 2026 - builds of 0.23.0: Windows zip and web build, a new project version
+44. The 0.23.0 builds from commit a662f16 (items 42 and 43; tree clean at the start), the first full packages without
+    `-IgnoreCookErrors` since the engine update of 22 Nov. Nothing was committed, pushed or uploaded.
+    - **Project version 0.2.0 -> 0.23.0** (`Config/DefaultGame.ini`, `[/Script/EngineSettings.GeneralProjectSettings]`
+      `ProjectVersion`). Item 42 added a replicated property (`AHCJGameState::bWeaponPadPointer`), so 0.23.0 must not
+      play with 0.22.0. How the version is used: the engine hashes "<project name> <ProjectVersion>, NetCL: <changelist>"
+      plus the custom versions into the network version (`FNetworkVersion::GetLocalNetworkVersion`; the game binds no
+      `GetLocalNetworkVersionOverride` and sets no game network protocol version), checks it on every join (also a join
+      by address), and `UHCJEOSSubsystem::GetBuildVersion` sends the same number as `%08X` in the lobby attribute
+      `HCJVER`, which FIND GAMES (rows dimmed, "other version"), `HCJEos::FilterJoinableLobbies` and QUICK PLAY
+      compare. The string itself is shown nowhere in the game (only the engine log line `Set ProjectVersion to ...`
+      and the HTTP user agent), and any change of it separates the builds - so the value was chosen to say which
+      release brought the network change: **0.23.0** (0.2.1 would have worked as well). No test hard-codes it
+      (`HCJEosTests` use made-up versions such as `1A2B3C4D`). README "Packaged build" says when to raise it;
+      `docs/README.txt` (FIND GAMES) says 0.23.0 does not play with 0.22.0 or older.
+      - Network versions now (packaged builds' logs): 0.22.0 `HypeCubeJam 0.2.0, NetCL: 60738873` = 2073374098
+        (7B952D92), 0.23.0 `HypeCubeJam 0.23.0, NetCL: 60738873` = 3427833969 (CC509871) - same engine, only the
+        project version differs.
+      - **Tried both ways** (headless packaged builds, `-HCJNoEOS -HCJNoStats`, listen host on Easy with 3 bots, client
+        to `127.0.0.1:<port>` 20 s later; 0.22.0 = the stage of item 40's last zip, still in `Packaged\ZipStage`
+        before `make_zip.ps1` replaced it; logs `Saved\Item44\join`): 0.23.0 host / 0.22.0 client and 0.22.0 host /
+        0.23.0 client both refuse, verbatim `LogNet: Error: Server is incompatible with the local version of the game:
+        RemoteNetworkVersion=3427833969 vs LocalNetworkVersion=2073374098` (and the reverse), `FailureType =
+        OutdatedClient`; all four processes exit code 0. The EOS lobby path was not run (by the code the two
+        `HCJVER` values differ, so each build lists the other as "other version").
+    - **Editor and tests.** `HypeCubeJamEditor` Win64 Development built (`Saved\Item44\build_editor.log`, 0 errors, no
+      warning of the project; one engine plugin warning, Fab / ToolsetRegistry dependency). **88 automation tests: 88
+      of 88**, exit code 0 (`Saved\Item44\tests1.log`). The `/ToolsetRegistry/` ensure is no longer in the test log.
+      The log has 4 `Error` lines from the engine's Python test discovery (`LogPythonScriptPluginTests: Error:
+      Discovering AIAssistant.Toolsets.EditorToolset tests failed ... module 'unreal' has no attribute
+      'BlueprintToolset'`). This is not a project test, and it does not change the exit code. It probably comes from
+      `AllToolsets` being off; that was not looked into.
+    - **Windows package, the README's command without `-IgnoreCookErrors`** (output to `Saved\Item44\bcr.log`): exit
+      code 0, **BUILD SUCCESSFUL**, 218 s (UBT 104 s - the game target compiled for items 42 / 43 -, cook 51 s,
+      UnrealPak 23 s). Cook "Packages Cooked: 1066, ... Skipped by Platform: 29, Total Packages: 1095", **"Success - 0
+      error(s), 0 warning(s)"**. `python -I docs\tools\cook_error_guard.py Saved\Item44\bcr.log`: `COOK GUARD OK (0
+      known ensure block(s), 1 cook summary, no other error)`, exit code 0. So item 43's fix holds for a full package.
+      - Stage: `HypeCubeJam.exe` **349 065 728 bytes** (0.22.0: 367 547 392; 18.5 MB smaller, presumably because the
+        modules of the toolset plugins that `AllToolsets` pulled in are gone), `HypeCubeJam-Windows.ucas` 426 759 072,
+        `.pak` 11 414 528.
+      - Playthrough suite on the package (`python -I docs\tools\playthrough.py --binary packaged --port 7940`,
+        headless): **8 of 8**, 490 s, exit code 0 (`Saved\Playthrough\20261124_190925`; output
+        `Saved\Item44\playthrough_packaged.txt`). Match 1 was won by Bot-01 with 5 kills after 65 s; layouts 3976D716 ->
+        C9934379 (the packaged checksums, as in item 40). Kills on easy / normal / hard were 61 / 68 / 82, and 92 on
+        four sectors. Client 4 kills / 5 deaths (7.4 corrections per 100 s), late joiner 4 / 2, host 9 rocks destroyed.
+        The autopilot player had 9 kills / 1 death over three matches. Kills by weapon: phaser 150, torpedo 89,
+        missiles 59, rail 42, blaster 40, scatter 37, pulse 33. Every process logged `Set ProjectVersion to 0.23.0`.
+        Their only error line is the known `CDO Constructor (CelestialVaultDaySequenceActor): Failed to find
+        ...MI_StarsStar_EnergyConservative`, as in item 40's suite.
+      - `docs\tools\make_zip.ps1` (exit code 0): `Packaged\mariuz_HypeCubeJam.zip` **585.5 MB (613 944 747 bytes)**,
+        884.7 MB unpacked (927 623 382 bytes), 48 files (0.22.0: 620 526 099). `python -I` / `zipfile.testzip()`
+        found nothing wrong: 48 entries, forward slashes, no `.pdb`; its `README.txt` has the 0.23.0 line. The one
+        `Saved` entry is the engine's stock `Engine/Saved/Config/Windows/Manifest.ini` (25 bytes).
+    - **Web (Wasm) build**, item 28's Shipping BuildCookRun as in item 41 (`PackagedWeb\Ship` deleted first,
+      `WASM_EMSDK_ROOT=F:\work\tools\emsdk`), **without `-IgnoreCookErrors`**. Log `PackagedWeb\logs\bcr_ship8.log`:
+      exit code 0, **BUILD SUCCESSFUL**, 20 min 55 s (UBT 819 s - compile, link and wasm-opt of the game module -,
+      cook 52 s, the rest staging, iostore and Brotli). Cook "Packages Cooked: 1032, ... Skipped by Platform: 63,
+      Total Packages: 1095" (item 41: 1110 / 1047 / 63, with the aggregator's 15), **"Success - 0 error(s), 0
+      warning(s)"**. Guard `COOK GUARD OK (0 known ensure block(s) ...)`, exit code 0. One warning in the log, the
+      linker's known `-pthread + ALLOW_MEMORY_GROWTH` line.
+      - Stage `PackagedWeb\Ship\Wasm`: 55 files, 293 182 003 bytes with the `.br` copies; 33 files, 261 796 898
+        bytes without them. Wasm **142 584 945 bytes** (26 567 161 as Brotli; -4 370 471 against item 41, again
+        presumably the toolset modules). Container `.ucas` **99 483 952 bytes** (-64 144; **516 048 under 100 000
+        000**). Pak 9 166 549.
+      - `check_stage.py`: all passed, release scan 0 findings (1 warning, the stock engine font path).
+        `web_secret_scan.py` with UnrealPak: 55 staged files and 1079 extracted files (85 ini; item 41: 1145 / 93),
+        0 hits, **RESULT clean**.
+      - Browser (harness, off-screen Chrome, deferred tier, `hcj_click_play`, fixture unchanged, engine Python
+        `Engine\Binaries\ThirdParty\Python3\Win64\python.exe -I`). A first try with the system Python stopped at
+        `No module named 'playwright'` before a page opened (item 37's note); that folder was deleted and the run
+        made again. `PackagedWeb\runs\ship8_deferred` (engine server, port 8090): **PASS**, READY after 6.7 s, 0
+        WebGPU errors, no error line in the console log (Chrome's `powerPreference` warnings and the pointer-lock log
+        line as in item 41). `title.png` shows Difficulty Easy with its line. `match_a..c.png` show a 4-D match: the
+        SCATTER CANNON from the start (16 shots), the SCATTER pad with its ring, the hypercube map, a black hole and
+        the player's ship killed once. `PackagedWeb\runs\pages8_noheaders` (the GitHubPages folder from
+        `web_plain_server.py`, port 8091): "PAGE ISOLATION reload under the service worker", **PASS**, READY after
+        6.9 s, 0 WebGPU errors, 0 error lines. The match runs (Bot-05 locked, FIRE, a repair pad, a black hole). No
+        device loss this time, so no retry. Both servers were stopped.
+    - `PackagedWeb\GitHubPages` (deleted, then `web_split_for_pages.py`, exit code 0): **36 files, 261 797 307 bytes**,
+      the wasm in three parts (50 000 000 + 50 000 000 + 42 584 945), the container 99 483 952 as it is (largest
+      file), no `.br`, `.nojekyll` there; no file of 100 000 000 bytes or more.
+    - Not verified: FIND GAMES / QUICK PLAY between 0.22.0 and 0.23.0 through EOS (only the direct join was tried;
+      the lobby filter is unit-tested); two machines; the editor-binary playthrough suite (only the packaged one ran);
+      the Python test-discovery error lines above; anything by a person or on a rendered Windows screen; the web
+      forward tier, the 10-minute soak, Super Easy in the browser, sound, other browsers, GitHub Pages itself.
+      `PackagedWeb\itch` and the itch zip are still the old build (item 28).
+
 ## Measurements
-- Automation tests: 9 at the start, 87 now (item 40: 87 of 87; item 38: 84 of 84; item 36: 81 of 81; items 33 and 34: 77 of 77), all passing (added: the start weapon, pickup reach and aim assist of Easy, a person's torpedo homing, the pad pointer; the beginner's help of Easy, the kinds / light columns of the pads and the pad markers of the HUD; the game controller - aim stick, switch, menu focus, prompt names -; the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
+- Automation tests: 9 at the start, 88 now (item 44: 88 of 88; item 40: 87 of 87; item 38: 84 of 84; item 36: 81 of 81; items 33 and 34: 77 of 77), all passing (added: the start weapon, pickup reach and aim assist of Easy, a person's torpedo homing, the pad pointer; the beginner's help of Easy, the kinds / light columns of the pads and the pad markers of the HUD; the game controller - aim stick, switch, menu focus, prompt names -; the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station
   placement, lead aim).
 - Frame rate (editor binary, -game, 8 s averages): 101-128 fps with basic shapes (`-HCJNoAssets`), 98-129 fps
@@ -3505,9 +3592,12 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
   **nobody has played the amended one**, and nothing of it was seen on a screen (no pictures). Measured with an
   autopilot made to aim badly: K/D on Easy 1.45 -> 3.13 (8 degree wander) and 0.50 -> 1.31 (15 degrees), a death every
   1.6 / 1.5 min; Super Easy 49 and 5.0. A person's torpedo hits in about half the shots instead of one in twenty, also
-  on Normal (aiming pilot: kills 6 -> 18 in three matches). Whether Easy is now right for the player is open. The weapon pointer is not shown on a remote client. **0.22.0 cannot play with 0.21.0 / 0.20.0 builds** (the
-  engine was updated on 22 Nov; network version), and the README's packaging command needs `-IgnoreCookErrors` since
-  that update.
+  on Normal (aiming pilot: kills 6 -> 18 in three matches). Whether Easy is now right for the player is open. The weapon pointer is not shown on a remote client (fixed in 0.23.0, item 42). **0.22.0 cannot play with 0.21.0 / 0.20.0 builds** (the
+  engine was updated on 22 Nov; network version). The README's packaging command needed `-IgnoreCookErrors` after
+  that update; it no longer does (items 43, 44).
+- Item 44 (0.23.0 packaged: `Packaged\mariuz_HypeCubeJam.zip` and `PackagedWeb\GitHubPages`, both built without
+  `-IgnoreCookErrors`): `ProjectVersion` is 0.23.0, so 0.23.0 and 0.22.0 refuse each other (a direct join was tried
+  both ways; FIND GAMES / QUICK PLAY through EOS were not). Not published.
 - Item 38 (Easy for a beginner, pads that can be seen; packaged as `Packaged\mariuz_HypeCubeJam.zip`): **nobody has
   played it.** Easy was measured with the aiming autopilot only (kills over deaths 1.33 -> 4.14, deaths a minute 0.99
   -> 0.58, twelve matches of four minutes), which aims far better than the player it was made for; whether Easy is

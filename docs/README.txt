@@ -20,7 +20,8 @@ Start:  HypeCubeJam.exe            plays a 10 s intro (any key, mouse button or 
 Join:   type the host's address in the menu and press JOIN,
         or start with the address:  HypeCubeJam.exe <ip>       e.g. HypeCubeJam.exe 127.0.0.1
 Find games:  FIND GAMES in the menu lists the matches other players host (through Epic Online Services) with a
-        JOIN button - only matches you can join (same version, a free slot). A match you host with PLAY or
+        JOIN button - only matches you can join (same version, a free slot; build 0.23.0 does not play with
+        0.22.0 or older builds). A match you host with PLAY or
         QUICK PLAY is listed for the others automatically. Games are joined by
         network address: on one network that just works; over the internet the host must forward UDP port 7777
         and start with   HypeCubeJam.exe -HCJPublicAddress=<its public address>
