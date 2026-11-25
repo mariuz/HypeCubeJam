@@ -3580,6 +3580,29 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
     (major update), and announced on Bluesky (@mapopa.bsky.social) and Mastodon (@mariuz@mastodon.gamedev.place) with
     a link to it. The itch account's profile image is now the GitHub avatar of `mariuz`. Nothing in the game changed.
 
+## 25 Nov 2026 - GitHub Pages refused to start 0.22.0 and 0.23.0: CRLF -> LF in the gh-pages commit
+46. A player's report (25 Nov, 07:05 UTC): "The game files on this site do not match their list ...
+    HypeCubeJam-Wasm-Shipping.js is 257850 bytes ...; wasm-cache.json lists 257852 bytes", then HTTP 502 on the
+    service worker's refetch.
+    - **Cause.** The gh-pages checkout (`F:\work\HCJ_push\pages`) had `core.autocrlf=true`, so `git add` stored every
+      text file with LF line ends. The engine's `.js` has two CRLF lines and is listed with size and sha1 in
+      `wasm-cache.json`; the committed copy was 2 bytes shorter. The service worker of 0.22.0 and 0.23.0 checks listed
+      code and does not run a mismatched copy (`MISMATCH_CODE`), so **the Pages site did not start from the 0.22.0
+      publish (24 Nov 16:13) until this fix**. Every older Pages build (0.17.0 - 0.21.0) had the same 2-byte
+      difference, but their service worker had no such check. 13 other text files (`index.html`, `sw.js`, the
+      `wasm-*.js`, `_headers`) were also stored with LF; they are not listed, so they only lost their CRLF. The 502 was
+      GitHub's answer to the refetch, not part of the cause. The browser checks of items 41 and 44 served the
+      `PackagedWeb\GitHubPages` folder from disk, so they never saw what git committed; after publishing only the
+      `.ucas` size was compared, and it is binary.
+    - **Fix.** `docs/tools/web_split_for_pages.py` now writes a `.gitattributes` with `* -text` into its output, so
+      the file is copied into gh-pages with the rest and git stores every file byte for byte; `core.autocrlf` set to
+      false in the gh-pages checkout as well. gh-pages commit 4bb2b60 (same 0.23.0 build, plus `.gitattributes`):
+      all 37 committed blobs have the sizes of the build output; Pages built 4bb2b60; the live `.js`, `sw.js`,
+      `index.html` and `wasm-loader.js` have the sha1 of the build output. In Chrome on this PC the page reached
+      "Ready" and the title menu after a click.
+    - **Check to add after each Pages publish**: download the files listed in `wasm-cache.json` that are text
+      (the engine `.js`, the `StagedBuild` ini) from the live site and compare size and sha1 with the list.
+
 ## Measurements
 - Automation tests: 9 at the start, 88 now (item 44: 88 of 88; item 40: 87 of 87; item 38: 84 of 84; item 36: 81 of 81; items 33 and 34: 77 of 77), all passing (added: the start weapon, pickup reach and aim assist of Easy, a person's torpedo homing, the pad pointer; the beginner's help of Easy, the kinds / light columns of the pads and the pad markers of the HUD; the game controller - aim stick, switch, menu focus, prompt names -; the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station

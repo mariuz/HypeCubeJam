@@ -9,7 +9,8 @@
 # the parts in order and hands the page one body. Only whole-file loads can be split (the .wasm); an IoStore
 # container (.ucas) is read in byte ranges and must stay under the limit by itself - the script stops if one is not.
 # The .br siblings are left out (a host without header control cannot send Content-Encoding) and a .nojekyll file
-# is added so that GitHub Pages serves every file as it is. Nothing is uploaded.
+# is added so that GitHub Pages serves every file as it is, and a .gitattributes "* -text" so that git commits every
+# file byte for byte (no CRLF -> LF). Nothing is uploaded.
 import argparse
 import hashlib
 import json
@@ -90,6 +91,10 @@ def main():
     with open(os.path.join(out, 'wasm-cache.json'), 'w', encoding='utf-8', newline='\n') as handle:
         handle.write('[\n' + ',\n'.join('  ' + json.dumps(entry) for entry in entries) + '\n]\n')
     open(os.path.join(out, '.nojekyll'), 'w').close()
+    # Git must store every file byte for byte: with core.autocrlf the engine's .js (CRLF lines, listed with its sha1
+    # in wasm-cache.json) was committed with LF and the page refused it as a mixed upload (0.23.0, 25 Nov).
+    with open(os.path.join(out, '.gitattributes'), 'w', encoding='utf-8', newline='\n') as handle:
+        handle.write('* -text\n')
 
     # 3. report
     total = 0
