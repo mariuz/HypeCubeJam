@@ -3574,6 +3574,12 @@ Engine 5.9, 1280x720, seed 1234, listen server with 7 bots unless stated. Work w
       forward tier, the 10-minute soak, Super Easy in the browser, sound, other browsers, GitHub Pages itself.
       `PackagedWeb\itch` and the itch zip are still the old build (item 28).
 
+## 25 Nov 2026 - devlog #9 posted
+45. Devlog #9 (`docs/DEVLOG_9_DRAFT.md`, 0.23.0: the weapon pointer for joining players, items 42-44) posted on itch:
+    https://mariuz.itch.io/hypecubejam/devlog/1805325/devlog-9-0230-the-weapon-pointer-online-and-clean-builds-again
+    (major update), and announced on Bluesky (@mapopa.bsky.social) and Mastodon (@mariuz@mastodon.gamedev.place) with
+    a link to it. The itch account's profile image is now the GitHub avatar of `mariuz`. Nothing in the game changed.
+
 ## Measurements
 - Automation tests: 9 at the start, 88 now (item 44: 88 of 88; item 40: 87 of 87; item 38: 84 of 84; item 36: 81 of 81; items 33 and 34: 77 of 77), all passing (added: the start weapon, pickup reach and aim assist of Easy, a person's torpedo homing, the pad pointer; the beginner's help of Easy, the kinds / light columns of the pads and the pad markers of the HUD; the game controller - aim stick, switch, menu focus, prompt names -; the richer lobby rows and the pilot record; the computer voice - limiter rules, configured waves -; the hypercube map - projection and label placement -, the stages and the detail of a ship's explosion; two playthroughs - a match of bots to the frag limit and the next one, three minutes of an open match -, the lobby filter and the quick-play steps; decorative rocks - determinism, keep-outs, belt beyond the kill radius, layout untouched; ship systems - warp state machine, warp and boost followed by the server, tractor pull, cloak device - and ship types - table, server validation; the intro flow and its command-line rule, phasers, destroyable asteroids, shockwave / debris rules, music tracks, photon torpedoes, shield facings, online logic, hints, rock visuals, ship look, sector sky, black hole
   placement, black hole gravity, pickup pad placement, weapon rules, wormhole links, wormhole routing, station
